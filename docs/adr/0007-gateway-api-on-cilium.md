@@ -25,3 +25,8 @@ and notebooks. ingress-nginx was the usual default, but upstream announced its r
 
 - **ingress-nginx:** retired upstream.
 - **Envoy Gateway or Traefik:** good options, but they add another data plane. Revisit if Cilium's Gateway lacks a feature we need (for example ext-auth for API keys).
+
+## Update 2026-10-23
+
+- Each region runs its own Gateway for workload traffic. `api.`, `app.`, and `auth.` are served by the global plane (ADR-0009).
+- Endpoint API keys, token metering, rate limits, and failover move into a regional **inference gateway** behind this Gateway (ADR-0010).

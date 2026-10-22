@@ -29,3 +29,8 @@ Run **Kubernetes** (k3s, see ADR-0002) as the single orchestration layer:
 - **Proxmox:** the easiest VM platform for 1–5 nodes, but it's weak for container serving and multi-tenancy, and it has no declarative API we could build on easily.
 - **OpenStack** (Nova, Neutron, Cinder): a real cloud, but very heavy to operate for a small team, and container serving would still need a second system.
 - **Plain libvirt and our own scheduler:** maximum control, but we'd reinvent scheduling, networking, and storage.
+
+## Update 2026-10-23
+
+This stack is deployed once per region, as a regional cell (ADR-0009). CPU worker nodes join the same
+clusters to run CPU instances and fallbacks (ADR-0010).

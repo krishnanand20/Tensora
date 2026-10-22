@@ -35,6 +35,12 @@ Base images are CDI `DataSource`s in `tensora-images`. Each VM's root disk is a 
 On a **single node with `replicas: 1`**, a disk failure loses customer data. Make that explicit
 to any early users, and keep Postgres backups off-node from day one.
 
+## Regions
+
+- **Each regional cell has its own block storage and object store.** Workload data (disks, models, endpoint logs) never leaves its region unless the customer moves it ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)).
+- **Global data** (accounts, intent, events, usage) lives in the global Postgres. Its backups go to a location chosen for its privacy-law position, which must be documented in the privacy policy.
+- A region's backups stay in that region, or in another facility in the same country.
+
 ## Encryption
 
 Volumes are not encrypted at rest yet. Freed blocks can hold previous tenants' data. Plan:

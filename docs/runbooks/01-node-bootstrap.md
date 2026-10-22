@@ -5,7 +5,8 @@ Takes a racked server to a Ready k3s node with the platform installed. It takes 
 ## Prerequisites
 
 - A server cabled with data NICs and a BMC, with BMC access working
-- Static IP plan filled in ([networking.md](../architecture/networking.md))
+- Static IP plan filled in, using this region's own non-overlapping ranges ([networking.md](../architecture/networking.md))
+- A region ID for this cluster (for example `in-mum-1`) and its own inventory and environment file ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md))
 - An admin workstation with Ansible, helm, helmfile, kustomize, kubectl, and WireGuard
 
 ## 1. BIOS/UEFI

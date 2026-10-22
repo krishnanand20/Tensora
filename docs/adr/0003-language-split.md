@@ -33,3 +33,9 @@ CLIs or Kubernetes Jobs, with JSON on stdout. The dashboard talks only to the pu
 
 - **Python everywhere** (FastAPI control plane): one language, but the Kubernetes client and concurrency story is weaker, and runtime type safety for billing and tenancy code is weaker too.
 - **Go everywhere:** no viable story for model validation or burn-in without reimplementing parts of the Python ML ecosystem.
+
+## Update 2026-10-23
+
+The regional inference gateway (ADR-0010) belongs to the Go core platform if it's built as a custom
+proxy rather than on Envoy. The `tensora` CLI and Python SDK (Phase 3) are client libraries: the CLI is in Go,
+sharing the API types, and the SDK is in Python, for ML users.

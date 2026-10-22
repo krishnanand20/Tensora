@@ -7,7 +7,8 @@ These rules add to the root [AGENTS.md](../AGENTS.md); read that first.
 ML-specific tooling that the Go core platform orchestrates but does not implement:
 
 - `validate.py` is **security-critical**. It decides which model files a tenant may serve. It's an allowlist: new file types are rejected unless explicitly added. Pickle formats and `.py` files are never allowed, and neither is `auto_map` or `trust_remote_code` in configs.
-- `ingest.py`: download → validate → upload with a checksum manifest. It uploads only the files the validator accepted.
+- `ingest.py`: download → validate → upload with a checksum manifest. It uploads only the files the validator accepted, and only to the object store **in the region where the model will be served** (ADR-0009).
+- The validator's `total_bytes` will also decide whether a model is small enough for **CPU fallback** (ADR-0010). Keep it accurate.
 - `bench.py`: endpoint load testing (TTFT, latency, throughput).
 - `burnin.py`: GPU acceptance tests for new nodes. Needs the `burnin` extra (torch).
 

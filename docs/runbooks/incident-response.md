@@ -25,6 +25,8 @@
 | **Disk full** | Alert at 85% | Prometheus and Loki retention, container images (`crictl rmi --prune`), Longhorn snapshots |
 | **Workloads stuck in provisioning** | Alert, dashboard | `kubectl -n t-<tenant> describe vm|sts|isvc`; check controller logs; capacity versus allocated |
 | **Postgres down** | readyz 503 | The API fails closed and running workloads continue. Restore from the replica or backup. |
+| **Region outage** | Alerts from that region, status page | Only that region is affected (ADR-0009). Update its status page entry and tell affected tenants. Never move workloads to another region unless the tenant opted in. |
+| **GPU class sold out** | Queue depth and fallback-rate alerts | Expected under load: opted-in workloads go to their fallbacks and the rest queue (ADR-0010). If it lasts, add capacity or adjust quotas. |
 | **Certificate expired** | Alert at 14 days | `kubectl get certificate -A`; check the ACME HTTP-01 route through the Gateway |
 | **Tenant abuse** (mining stolen cards, outbound attacks, illegal content) | Abuse report, Hubble flows | Stop the tenant's workloads (API or DB), keep their data and logs, suspend the account, follow the AUP process, and get legal advice if needed |
 | **Suspected cross-tenant exposure** | Anything | **Sev 1.** Stop affected workloads, preserve evidence, and investigate before restoring service. There may be a legal duty to notify regulators and customers. GDPR requires notification within 72 hours; DPDP and other laws have their own rules. |

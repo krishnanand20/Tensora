@@ -14,3 +14,6 @@ seeded tenant: `globex` (untrusted) or `internal` (trusted, which also sees inte
 
 In production, the static build is served by nginx (see `Dockerfile`), and the Gateway routes
 `app.<domain>` here and `api.<domain>` to the control plane.
+
+Planned (ADR-0009 and ADR-0010): a region picker and a fallback opt-in on the launch form, the
+placed class and a fallback badge in the workload list, and USD usage and billing pages.

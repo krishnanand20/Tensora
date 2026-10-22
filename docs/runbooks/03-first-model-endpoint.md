@@ -11,6 +11,11 @@ kubectl -n tensora-smoke logs deploy/qwen-predictor -c storage-initializer   # m
 kubectl -n tensora-smoke logs deploy/qwen-predictor -f            # vLLM startup
 ```
 
+This runbook calls the endpoint directly, which is fine for a smoke test. From Phase 3, customer traffic goes
+through the regional **inference gateway** (API keys, token metering, failover; ADR-0010). Repeat
+the test through the gateway once it exists. To test CPU fallback, apply the same InferenceService with
+`runtime: tensora-vllm-cpu`, no GPU resources, and a small model.
+
 ## Call it
 
 ```bash

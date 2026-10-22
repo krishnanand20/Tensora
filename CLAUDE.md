@@ -7,7 +7,7 @@
 - **Skills** (`.claude/skills/`): `/verify`, `/new-adr`, `/add-api-resource`, `/add-platform-component`.
   Each wraps a playbook in `docs/playbooks/` so Claude, Codex, and humans follow the same steps.
 - **Subagents** (`.claude/agents/`):
-  - `tenancy-reviewer` — run after any change to `controlplane/internal/{api,service,store,cluster}`, `deploy/`, or `ml/src/tensora_ml/validate.py`. Looks for cross-tenant leaks, isolation regressions, and billing-integrity bugs.
+  - `tenancy-reviewer` — run after any change to `controlplane/internal/{api,service,store,cluster}`, `deploy/`, or `ml/src/tensora_ml/validate.py`. Looks for cross-tenant leaks, isolation regressions, billing-integrity bugs, data leaving its region (rule 9), and hidden fallbacks (rule 10).
   - `platform-reviewer` — run after changes to `deploy/` or `infra/`. Checks pinning, secrets, ordering, and blast radius.
 - **Permissions** (`.claude/settings.json`): secret files are denied; cluster-mutating commands
   require explicit approval. Personal overrides go in `.claude/settings.local.json` (gitignored).

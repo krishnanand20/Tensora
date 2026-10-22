@@ -26,3 +26,8 @@ minimal moving parts while we learn.
 - **kubeadm:** upstream and flexible, but more to manage by hand.
 - **RKE2:** hardened k3s sibling with CIS defaults; worth reconsidering for production (Phase 4) if compliance demands it.
 - **Managed Kubernetes:** not applicable on our own hardware.
+
+## Update 2026-10-23
+
+Each region is its own k3s cluster (ADR-0009). Until the second region opens, the first region's
+cluster also hosts the global control plane.

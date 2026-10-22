@@ -20,23 +20,27 @@ Tensora assembles proven open-source infrastructure and adds the product layer o
 ```mermaid
 flowchart LR
   user([Customer]) --> web[Dashboard<br/>TypeScript]
-  user --> sdk[API clients]
+  user --> sdk[API · CLI · SDK]
   web --> api
   sdk --> api
-  subgraph cp[Core platform · Go]
+  subgraph global[Global control plane · Go]
     api[tensora api] --> pg[(Postgres)]
-    ctrl[tensora controller] --> pg
     meter[tensora metering] --> pg
+    api -. OIDC .-> kc[Keycloak]
   end
-  api -. OIDC .-> kc[Keycloak]
-  ctrl --> k8s{{k3s / Kubernetes}}
-  k8s --> kv[KubeVirt VMs<br/>GPU passthrough]
-  k8s --> nb[Notebooks<br/>Kata containers]
-  k8s --> ep[KServe + vLLM<br/>endpoints]
-  ctrl --> mljob[ML layer jobs · Python<br/>ingest / validate]
-  mljob --> s3[(Object store)]
-  ep --> s3
-  k8s --- gpu[[NVIDIA GPU Operator<br/>VFIO · MIG · DCGM]]
+  subgraph cell[Regional cell · one per region, India first]
+    ctrl[tensora controller] --> k8s{{k3s / Kubernetes}}
+    gw[Inference gateway<br/>keys · metering · failover]
+    k8s --> kv[KubeVirt VMs<br/>GPU passthrough]
+    k8s --> nb[Notebooks<br/>Kata containers]
+    k8s --> ep[KServe + vLLM endpoints<br/>GPU, or opt-in CPU fallback]
+    k8s --> mljob[ML layer jobs · Python<br/>ingest / validate]
+    mljob --> s3[(Regional object store)]
+    ep --> s3
+    k8s --- nodes[[GPU nodes · CPU nodes]]
+  end
+  ctrl --> pg
+  user -- model API calls --> gw --> ep
 ```
 
 Details are in [docs/architecture/overview.md](docs/architecture/overview.md).

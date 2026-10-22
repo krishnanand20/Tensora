@@ -9,6 +9,9 @@ Used by humans, Codex, and the Claude Code `/add-api-resource` skill. Example: a
 - Does it have a lifecycle? If so, use explicit states, transitions, and events, like workloads.
 - Does it create cluster objects, or run ML layer Jobs? If so, the controller does that, never the API.
 - Does it affect quota or billing? If so, update [metering-and-billing.md](../architecture/metering-and-billing.md) and get a `tenancy-reviewer` pass.
+- Is it **regional** (it lives in one region, like workloads and models) or **global** (like orgs and API keys)? Regional resources carry an immutable `region`, are handled by that region's controller, and keep their data in-region (rule 9, ADR-0009).
+- Could a **substitute** ever serve it (another class, CPU, model, or region)? If so, the substitute must be opt-in and visible in responses and billing (rule 10, ADR-0010).
+- Prices and money amounts are in **USD**.
 
 ## 1. Schema
 
@@ -38,7 +41,8 @@ Add `internal/service/<resource>.go`:
 
 1. Add view structs to `internal/api/json.go`. Never return domain structs directly, and never expose internals.
 2. Add handlers to `server.go` and register routes under `/v1`. Async actions return 202.
-3. Add tests to `server_test.go`: happy path, validation errors, **cross-tenant 404**, and unknown fields rejected.
+3. Add tests to `server_test.go`: happy path, validation errors, **cross-tenant 404**, unknown fields rejected, and (for regional resources) region validation.
+4. `POST` handlers honour `Idempotency-Key` once that exists (ADR-0010). Never add a non-idempotent create without it.
 
 ## 6. Cluster (if needed)
 

@@ -10,6 +10,9 @@
 | Network flows | Cilium Hubble | Useful for policy debugging and abuse detection |
 | Hardware | IPMI/BMC (power, temperature, fans, PSU) | Exporter or BMC SNMP, Phase 2 |
 
+Each regional cell runs its own metrics and logs stack, so customer logs stay in-region (ADR-0009).
+A global Grafana can query every region read-only, and alerts route to one on-call channel.
+
 ## Alerts that matter
 
 | Alert | Source | Why |
@@ -22,6 +25,8 @@
 | Workloads in `provisioning` longer than 15 min, or queue depth growing | Control plane `/metrics` (Phase 3) | Stuck admission or capacity exhaustion |
 | Metering lag (last closed hour not metered after 30 min) | Control plane `/metrics` | Billing correctness |
 | Certificate expiry within 14 days | cert-manager | |
+| Fallback rate rising (placements on fallback classes, gateway failovers) | Control plane and inference gateway metrics (planned) | Capacity is short in a region, so buy GPUs or adjust quotas (ADR-0010) |
+| Inference gateway errors after failover, or circuit breakers open | Inference gateway metrics (planned) | Endpoints failing beyond what fallbacks can absorb |
 | Postgres down or replication lag | Postgres exporter | |
 
 ## Dashboards

@@ -11,12 +11,18 @@
 | 10.99.0.0/24 | WireGuard admin VPN | inventory `wireguard_address` |
 | Public IPs | Gateway and (later) VM SSH | ISP or colocation |
 
+Give **each region its own non-overlapping ranges** (for example `10.<region-number>.0.0/16` for nodes,
+with separate pod and service CIDRs per cluster). Regions can then be linked later (private links, VPN)
+without renumbering ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)).
+
 ## Components
 
 - **Cilium** provides the CNI, kube-proxy replacement, NetworkPolicy enforcement, Hubble flow visibility, and the Gateway API implementation.
 - **MetalLB** in L2 mode hands out LoadBalancer IPs on bare metal.
 - **Gateway API** handles ingress. One `Gateway` named `tensora` (namespace `tensora-gateway`) has HTTPS listeners for `api.`, `app.`, and `auth.`. cert-manager issues per-listener certificates via ACME HTTP-01. ingress-nginx is retired upstream, so we don't use it (ADR-0007).
 - **WireGuard** is the only intended path to SSH and the Kubernetes API. The firewall enforcing this is a Phase 2 task.
+- **Global versus regional entry points:** `api.`, `app.`, and `auth.` are served by the global control plane. Workload traffic (`*.<region>.ep.` and `*.<region>.nb.` hosts, and VM SSH) enters **its own region's Gateway directly** and never passes through the global plane (ADR-0009).
+- **Inference gateway** (planned, [ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)): each region's endpoint traffic goes through it for API keys, token metering, rate limits, and failover. It routes by API key → tenant → endpoint, never by hostname alone.
 
 ## Tenant traffic rules
 
@@ -37,8 +43,8 @@ Gaps to close:
 
 | Workload | Proposal |
 |---|---|
-| Endpoint | Per-workload HTTPRoute on `<id>.ep.<domain>` with a wildcard certificate (needs DNS-01). API keys are checked at the Gateway via ext-auth, or by a small auth proxy in front of vLLM. |
-| Notebook | HTTPRoute on `<id>.nb.<domain>`, behind an authenticating proxy (oauth2-proxy with Keycloak), with per-workload `JUPYTER_TOKEN` as a second factor |
+| Endpoint | `<id>.<region>.ep.<domain>`, with one wildcard certificate per region (needs DNS-01), routed to the regional **inference gateway**, which checks keys, meters tokens, and fails over (ADR-0010) |
+| Notebook | HTTPRoute on `<id>.<region>.nb.<domain>`, behind an authenticating proxy (oauth2-proxy with Keycloak), with per-workload `JUPYTER_TOKEN` as a second factor |
 | VM SSH | Option A: a MetalLB IP per VM. It's simple, but IPv4 is scarce. Option B: a shared IP with a port per VM (Gateway TCPRoute or Cilium L4LB), like RunPod's TCP mapping. Option C: an SSH bastion with jump hosts. |
 
 ## Physical network
@@ -46,4 +52,4 @@ Gaps to close:
 - Minimum 2× 25 GbE per node (bonded or split between storage and front-end), plus a 1 GbE BMC/IPMI port on a separate management switch.
 - Ceph (Phase 2) wants its own VLAN or NICs at 25 GbE or more.
 - Multi-node training needs InfiniBand or RoCEv2 with lossless configuration. That's out of scope until there's demand.
-- India: get dual ISP uplinks and static public IPs in writing, and check upstream DDoS protection with the ISP or colocation provider.
+- In every region, get dual ISP uplinks and static public IPs in writing, and check upstream DDoS protection with the ISP or colocation provider.

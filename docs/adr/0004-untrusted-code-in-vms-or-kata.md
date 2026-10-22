@@ -27,3 +27,8 @@ defend for hostile tenants.
 - **gVisor:** strong syscall isolation, but no practical GPU passthrough.
 - **runc with hardening** (seccomp, AppArmor, user namespaces): still a shared kernel and shared GPU driver.
 - **One node per tenant:** strong, but wasteful at our scale.
+
+## Update 2026-10-23
+
+CPU workloads, including CPU fallback (ADR-0010), follow the same rule: a VM or Kata for untrusted
+tenants. Capacity pressure never relaxes isolation. A fallback is never a shared GPU or a plain container.

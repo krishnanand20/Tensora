@@ -11,6 +11,15 @@ What customers can launch.
 Endpoint images aren't built here. The `vllm` catalog entry points to the `tensora-vllm`
 ClusterServingRuntime in `deploy/charts/cluster-config`, which pins an upstream vLLM image.
 
+**Planned catalog changes** (ADR-0009, ADR-0010):
+
+- a `regions:` list
+- each class gains `kind: gpu|cpu` and the `regions` where it's offered
+- CPU classes (for example `cpu-16c-64g`) for CPU instances and fallback
+- the endpoint image gets a CPU variant on the `tensora-vllm-cpu` runtime
+
+The catalog loader rejects unknown fields today, so these arrive together with the code change.
+
 ## Adding an image
 
 1. Build it: add a directory under `containers/` or `vm/`.

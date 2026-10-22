@@ -27,3 +27,9 @@ is actually running.
 
 - **CRDs as the source of truth** (Tensora resources stored in Kubernetes): native and watch-driven, but it puts tenant and billing data in etcd, makes queries hard, and couples the API's availability to the cluster.
 - **The API calls Kubernetes synchronously:** simpler at first, but slow, fragile, and the API would need cluster credentials.
+
+## Update 2026-10-23
+
+With regions (ADR-0009) there is **one controller per region**, each the only cluster client for its
+region. Postgres and the API stay global. Fallback placement (ADR-0010) is part of the controller's
+admission step, and it records both `requested_class` and `placed_class`.

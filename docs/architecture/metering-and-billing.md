@@ -12,9 +12,11 @@ GPU bound to `vfio-pci` is invisible to the host's DCGM exporter.
 flowchart LR
   T[service.Transition] -->|append| E[(workload_events<br/>append-only)]
   E --> M[tensora metering<br/>every 5 min]
-  M -->|insert if absent| U[(usage_records<br/>workload × UTC hour)]
-  U --> I[invoicing · Phase 4]
-  I --> P[payment provider]
+  M -->|insert if absent| U[(usage_records<br/>workload × UTC hour<br/>placed class · region)]
+  G[inference gateway<br/>per request · planned] -->|token counts| TU[(token usage<br/>serverless and fallback models)]
+  U --> I[invoicing in USD · Phase 4]
+  TU --> I
+  I --> P[Stripe worldwide<br/>Razorpay for UPI]
 ```
 
 ## Rules (as implemented in `controlplane/internal/metering`)

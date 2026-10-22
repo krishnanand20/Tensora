@@ -37,6 +37,11 @@ Do not edit files. Report findings only.
 - `validate.py` remains an allowlist. No pickle or `.py` files get through, `auto_map` and `trust_remote_code` are rejected, and weights are never loaded.
 - The serving runtime keeps `--load-format=safetensors` and never gains `--trust-remote-code`.
 
+**Regions and fallbacks** (AGENTS.md rules 9 and 10)
+- Regional code filters by region. One region never reads or acts on another region's workloads, and workload data never leaves its region without explicit opt-in.
+- Every fallback (another GPU class, CPU, replica, model, or region) is opt-in, recorded as `placed_class` or in the response headers, and billed as what actually ran.
+- Gateway failover never routes to another tenant's resources. It only goes to the same tenant's resources or to shared serverless pools.
+
 ## Output
 
 List findings most severe first. For each one give:

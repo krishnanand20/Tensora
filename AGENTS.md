@@ -23,7 +23,7 @@ judged against that bar. See [docs/architecture/tenancy-and-isolation.md](docs/a
 
 | Path | Owns | Language / tooling |
 |---|---|---|
-| `controlplane/` | Core platform: REST API, controller (reconciles Postgres ↔ Kubernetes), metering. One `tensora` binary with subcommands. | Go 1.27, stdlib `net/http`, pgx, client-go, goose, golangci-lint |
+| `controlplane/` | Core platform: REST API, controller (reconciles Postgres ↔ Kubernetes), metering, and (planned) the inference gateway. One `tensora` binary with subcommands; one controller per region. | Go 1.27, stdlib `net/http`, pgx, client-go, goose, golangci-lint |
 | `ml/` | ML layer: model ingestion + validation, endpoint benchmarking, GPU burn-in. Runs as CLI and as in-cluster Jobs. | Python 3.12, uv, ruff, mypy, pytest |
 | `web/` | Customer dashboard | TypeScript, React, Vite, TanStack Query |
 | `deploy/` | Cluster add-ons (helmfile), `cluster-config` chart (our CRs), `tensora` chart | Helm, helmfile, Kustomize |

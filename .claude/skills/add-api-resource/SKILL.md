@@ -11,7 +11,8 @@ Before writing code, state:
 
 - the resource's fields and lifecycle
 - whether it creates cluster objects
-- whether it affects quota or billing
+- whether it affects quota or billing (prices in USD)
+- whether it's **regional** or **global**, and whether any **fallback** can serve it (AGENTS.md rules 9 and 10)
 
 Ask if any of that is ambiguous. When you're done:
 

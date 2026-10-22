@@ -12,6 +12,9 @@
 | **Garage** | Light and built for small self-hosted clusters. AGPL. |
 | **MinIO** | The community edition stopped shipping prebuilt binaries and images in late 2025 and moved to maintenance mode. Check its current status before choosing it. |
 
+The object store is **regional**: every region runs its own, and model weights and backups for a
+region stay in it (ADR-0009). `tensora-ml ingest` uploads to the store of the region where the model will be served.
+
 Whichever you pick:
 
 - Deploy it in the **`tensora-models`** namespace. cluster-config creates it with the label

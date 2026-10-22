@@ -19,6 +19,7 @@ Also check these when they apply:
 - **API shape changed:** `web/src/api/types.ts` matches `controlplane/internal/api/json.go`.
 - **New cluster kind:** `kube.allowed` and the controller ClusterRole were both updated (`TestBuildersOnlyEmitAllowedKinds` passes).
 - **Lifecycle changed:** the diagram in `docs/architecture/control-plane.md` matches `domain/state.go`.
+- **Region or fallback logic changed:** there's a test that one region never sees another's workloads, and a test that fallbacks are recorded (`placed_class`) and billed as what ran (rules 9 and 10).
 - **Isolation-sensitive paths changed** (see `CONTRIBUTING.md`): run the `tenancy-reviewer`.
 
 ## Missing tools

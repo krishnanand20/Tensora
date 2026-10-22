@@ -15,6 +15,8 @@ upload arbitrary files, and probe everything they can reach.
 | Billing evasion | Keeping GPUs while showing as stopped | GPUs released before `stopped` or `failed` is recorded; allocation-based billing; append-only events |
 | Abuse of third parties | Outbound attacks, spam, crypto mining on stolen cards | Acceptable use policy, egress monitoring, port 25 block (Phase 3), KYC for paid accounts (Phase 4) |
 | Control plane compromise | Stolen controller credentials | The API has no cluster access; the controller's RBAC is limited to an allowlist of kinds; admin access only over WireGuard |
+| Data leaving its region | A fallback or a bug sends a request or a disk to another country | Rule 9: cross-region fallback only with explicit opt-in; region enforced in admission and in the inference gateway (ADR-0009, ADR-0010) |
+| Gateway misrouting | Tenant A's request served by tenant B's endpoint | The inference gateway routes by API key → tenant → endpoint, never by hostname alone. Failover only goes to the same tenant's resources or to shared serverless pools. |
 
 ## Isolation tiers
 
@@ -31,6 +33,7 @@ The tier is stored per tenant (`tenants.tier`). The manifest builders set `runti
 - Tenant pods get `automountServiceAccountToken: false`, no host namespaces or hostPath, dropped capabilities, the RuntimeDefault seccomp profile, and requests equal to limits.
 - Namespaces enforce PSA `baseline` and warn on `restricted`. *Phase 1 task:* confirm virt-launcher runs under `baseline`.
 - No GPU time-slicing, ever. Multi-tenant MIG needs a VM or Kata boundary.
+- CPU workloads, including CPU fallback (ADR-0010), get exactly the same isolation as GPU ones: a VM or Kata for untrusted tenants.
 
 **Network** (details in [networking.md](networking.md))
 - `tenant-baseline` policy allows ingress from the same namespace only. Egress is allowed to the same namespace, DNS, the model store, and `0.0.0.0/0` **except** 10/8, 172.16/12, 192.168/16, 100.64/10, and 169.254/16.

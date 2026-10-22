@@ -3,6 +3,9 @@
 Catalog id `ubuntu-24.04-cuda` refers to the CDI **DataSource** of the same name in the
 `tensora-images` namespace. Customer VMs clone their root disk from it.
 
+Base images are **per region** (ADR-0009). Import the same versioned DataSource into every region's
+`tensora-images` namespace, so a catalog image means the same thing everywhere.
+
 ## Phase 1: stock cloud image
 
 `datasource.yaml` imports the Ubuntu 24.04 cloud image. The NVIDIA driver is **not**

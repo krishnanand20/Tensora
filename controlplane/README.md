@@ -37,6 +37,14 @@ your laptop, use `TENSORA_CLUSTER_BACKEND=kubernetes`. It reads `KUBECONFIG`. Ne
 Errors look like `{"error": {"code": "quota_exceeded", "message": "..."}}`. The design behind the
 lifecycle, admission, and metering is in [docs/architecture/control-plane.md](../docs/architecture/control-plane.md).
 
+**Planned** (ADR-0009, ADR-0010; see the roadmap):
+
+- create takes `region`, `fallback`, and `fallback_after`
+- responses include `region`, `requested_class`, and `placed_class`
+- `POST` accepts `Idempotency-Key`, and 503s carry `Retry-After`
+- the controller runs once per region (`TENSORA_REGION`)
+- a `tensora gateway` role fronts model endpoints
+
 ## Build
 
 ```bash

@@ -1,5 +1,9 @@
 # Add a node
 
+A node belongs to one region's cluster, so use that region's inventory and environment file (ADR-0009).
+**CPU worker nodes** (for CPU instances and fallback, ADR-0010) and control-plane CPU servers skip the
+`iommu` role, the GPU steps, and the GPU burn-in. Check that their CPU capacity shows up for the CPU classes instead.
+
 1. **Before racking:** firmware updates and BIOS settings as in [01, step 1](01-node-bootstrap.md#1-biosuefi).
 2. **Install Ubuntu** as in 01, step 2.
 3. **Inventory:** add the host to `infra/ansible/inventory/hosts.yml`:

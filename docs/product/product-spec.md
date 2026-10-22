@@ -175,8 +175,8 @@ server. **Second hire:** support and developer relations, ideally in a different
 | **M1 Lab** | One real server in the first region; a VM, a notebook, and an endpoint all work end to end through the API; regions in the data model; burn-in done; backups off-node | Phase 1 + kube backend from Phase 3 |
 | **M2 Private beta** | 10–20 invited users (from any country) using all three products; signup, orgs, API keys, access to every product, usage page, status page, docs | Phase 3 core |
 | **M3 Public launch (v1)** | Anyone eligible worldwide can sign up and pay in USD (cards worldwide, UPI in India), with tax-compliant invoices, sanctions screening, spend limits, CLI and SDK, legal pages, 99.5% SLA. The control plane runs on separate small CPU servers. At least 2 GPU servers. | Phases 2 and 4 core |
-| **M4 Growth (v1.5)** | **Second region live**; serverless model API; custom images; snapshots; reserved instances | — |
-| **M5 Enterprise (v2)** | SSO and audit, dedicated or sovereign regions, contracts, SOC 2 or ISO 27001 underway, private-cloud edition | — |
+| **M4 Growth (v1.5)** | **Second region live**; serverless model API; custom images; snapshots; reserved instances | Phase 5 |
+| **M5 Enterprise (v2)** | SSO and audit, dedicated or sovereign regions, contracts, SOC 2 or ISO 27001 underway, private-cloud edition | Phase 6 |
 
 ## Not doing (until a milestone says so)
 

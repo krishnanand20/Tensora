@@ -19,6 +19,19 @@ helmfile -e single-node apply                               # first run takes 15
 The steps are walked through in [docs/runbooks/](../docs/runbooks/), including how to label nodes
 for container or passthrough mode.
 
+## Regions and environments
+
+Each region is its own cluster with its own environment file. Today `single-node` is the first
+region's cell, and it also hosts the global control plane. When the second region opens, add
+`environments/<region-id>.yaml` per cell plus a global environment, and split the two (ADR-0009).
+
+Planned additions (ADR-0010):
+
+- CPU worker nodes
+- the `tensora-vllm-cpu` ClusterServingRuntime
+- the regional inference gateway
+- `region:` in every environment file
+
 ## Secrets created out of band
 
 None of these live in git. Create them before the first apply:

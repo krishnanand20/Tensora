@@ -9,6 +9,10 @@ Takes a freshly installed Ubuntu 24.04 GPU server to a k3s node that is ready fo
 | `wireguard` | Sets up the admin VPN interface (`wg0`). The Kubernetes API and SSH are meant to be reachable only over it, but **no firewall rule enforces that yet** (TODO in the roadmap, Phase 2). |
 | `k3s` | Installs k3s with embedded etcd and with flannel, network policy, kube-proxy, traefik, and servicelb disabled, plus secrets encryption |
 
+**Regions:** keep one inventory per region (each region is its own cluster, ADR-0009).
+**CPU nodes** for CPU instances, fallback (ADR-0010), and the control plane need only `base`, `wireguard`, and `k3s`.
+A `cpu_nodes` inventory group is planned for them. All hosts run on UTC.
+
 ## Use
 
 ```bash

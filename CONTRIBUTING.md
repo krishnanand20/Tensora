@@ -29,6 +29,7 @@ Changes to these paths need a reviewer who knows the isolation model:
 - `controlplane/internal/metering`: billing correctness
 - `ml/src/tensora_ml/validate.py`: the rule that tenant models must be safetensors with no remote code
 - `deploy/charts/cluster-config`, plus anything touching NetworkPolicy, RBAC, or RuntimeClass
+- region filtering, fallback placement, and the inference gateway: data residency and visible fallbacks (AGENTS.md rules 9 and 10)
 
 ## AI agents
 

@@ -5,7 +5,7 @@ One Go binary (`controlplane/`), deployed as three processes plus a migration Jo
 | Process | Owns | Talks to | Replicas |
 |---|---|---|---|
 | `tensora api` | Authn/z, validation, quota checks, recording intent | Postgres only | 2+ (stateless) |
-| `tensora controller` | Admission, applying and observing cluster objects, lifecycle transitions | Postgres, Kubernetes | 1 (leader election is Phase 4) |
+| `tensora controller` | Admission, applying and observing cluster objects, lifecycle transitions | Postgres, its region's Kubernetes | 1 per region (ADR-0009; leader election is Phase 4) |
 | `tensora metering` | Turning events into hourly usage records | Postgres | 1 |
 
 ## Sources of truth ([ADR-0008](../adr/0008-postgres-intent-kubernetes-runtime.md))
@@ -22,8 +22,8 @@ Source: `controlplane/internal/domain/state.go`. Keep this diagram in sync with 
 stateDiagram-v2
   [*] --> pending: POST /v1/workloads
   pending --> queued: no capacity
-  pending --> provisioning: admitted
-  queued --> provisioning: admitted
+  pending --> provisioning: admitted (requested class, or opt-in fallback)
+  queued --> provisioning: admitted (requested class, or opt-in fallback)
   provisioning --> running: objects ready
   provisioning --> failed: timeout / error
   running --> stopping: POST …/stop
@@ -97,6 +97,7 @@ VM images.
 - Async actions return **202** and the workload's current state. Clients poll.
 - Another tenant's object is always **404**.
 - IDs are UUIDv7. Cluster object names are `w-<hex id>` and never use the tenant-chosen name.
+- *Planned (ADR-0009, ADR-0010):* create takes `region`, `fallback`, and `fallback_after`. Responses include `region`, `requested_class`, and `placed_class`. `POST` accepts an `Idempotency-Key` header, and every 503 carries `Retry-After`.
 
 ## Failure modes
 
@@ -106,6 +107,8 @@ VM images.
 | Postgres down | API not ready (503) and the controller pauses; the cluster keeps running | |
 | Kubernetes API down | Admission and observation stop; the API still accepts requests | |
 | Node lost | Its workloads go to `failed` once their objects vanish or stop being ready | VMs could live-migrate once storage is RWX (Phase 2) |
+| One region down | Only that region's workloads are affected; the global API and other regions keep working | ADR-0009 |
+| Requested GPU class sold out | The workload waits in `queued`, or is placed on a fallback the customer opted into | ADR-0010 |
 
 ## Regions and fallback placement
 

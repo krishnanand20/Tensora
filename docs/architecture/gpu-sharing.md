@@ -6,9 +6,15 @@
 |---|---|---|---|---|
 | **Whole-GPU passthrough** (VFIO) | Strong: the VM owns the device | Almost any; consumer cards have caveats | None | **Default for VMs** |
 | **Whole GPU to a container** | Good with Kata; weak with runc | Any | None | Default for notebooks and endpoints |
-| **MIG** (Multi-Instance GPU) | Hardware-partitioned memory and SMs; a shared driver | A100, H100, H200, B200 (and some others) | None for containers. MIG-backed vGPU needs a vGPU licence. | Phase 4, for small endpoints, behind Kata |
+| **MIG** (Multi-Instance GPU) | Hardware-partitioned memory and SMs; a shared driver | A100, H100, H200, B200 (and some others) | None for containers. MIG-backed vGPU needs a vGPU licence. | Phase 5 (M4), for small endpoints, behind Kata |
 | **vGPU** | Strong (mediated device per VM) | Datacenter cards | NVIDIA vGPU/AI Enterprise licence per GPU | Not planned. Revisit if fractional VMs are in demand. |
 | **Time-slicing** | **None**: shared memory and no fault isolation | Any | None | **Never across tenants**, and only for internal dev |
+
+## When GPUs are sold out
+
+Customers may opt in to **placement fallback**: another GPU class, or CPU, after a wait they choose
+([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). Fallback never means
+sharing a GPU. Time-slicing stays forbidden across tenants even under capacity pressure.
 
 ## GPU Operator node modes
 
@@ -36,7 +42,7 @@ Consequences:
   marks `rtx4090-24gb` as `internal_only`, so only `trusted` tenants can use it.
 - Their thermals assume desktop airflow. Blower-style or server-validated variants are needed in racks.
 
-## MIG notes (Phase 4)
+## MIG notes (Phase 5)
 
 - MIG profiles (for example `1g.10gb` and `3g.40gb` on A100 80GB) appear as separate resources
   (`nvidia.com/mig-1g.10gb`) with `mig.strategy: mixed`. Each profile becomes its own GPU class in the catalog.

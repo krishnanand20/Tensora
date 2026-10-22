@@ -46,68 +46,78 @@ These assumptions shape most decisions. **Confirm or correct them.** They are tr
 
 ```mermaid
 flowchart TB
-  subgraph Internet
-    cust([Customer])
-  end
-  subgraph Edge
-    gw[Cilium Gateway<br/>api. / app. / auth.]
-    lb[MetalLB IP]
-  end
-  subgraph CP[tensora-system]
+  cust([Customer])
+  subgraph Global["Global control plane (one)"]
+    ggw[Gateway<br/>api. / app. / auth.]
     api[tensora api]
-    ctrl[tensora controller]
-    meter[tensora metering]
     web[dashboard]
-    pg[(Postgres)]
-  end
-  subgraph Platform
+    meter[tensora metering]
     kc[Keycloak]
-    s3[(Object store<br/>tensora-models)]
+    pg[(Postgres<br/>accounts · intent · events · usage)]
+  end
+  subgraph Cell["Regional cell (one per region, e.g. in-mum-1)"]
+    rgw[Region gateway<br/>id.region.ep.domain]
+    igw[Inference gateway<br/>keys · token metering · failover]
+    ctrl[tensora controller<br/>TENSORA_REGION]
+    s3[(Object store)]
     obs[Prometheus · Loki · Grafana]
+    subgraph Tenant["t-&lt;tenant&gt; namespaces"]
+      vm[VirtualMachine]
+      nb[Notebook]
+      ep[InferenceService<br/>GPU, or CPU fallback]
+    end
+    subgraph Nodes[Nodes]
+      gpus[[GPU nodes: container or vm-passthrough]]
+      cpus[[CPU nodes]]
+    end
   end
-  subgraph Tenant["t-&lt;tenant&gt; namespaces (one per tenant)"]
-    vm[VirtualMachine]
-    nb[Notebook StatefulSet]
-    ep[InferenceService]
-  end
-  subgraph Node[GPU nodes]
-    gpuop[GPU Operator]
-    gpus[[GPUs: container or vm-passthrough mode]]
-  end
-  cust --> lb --> gw
-  gw --> api & web & kc
+  cust --> ggw --> api & web & kc
+  cust -- workload traffic --> rgw --> igw --> ep
   api --> pg
   meter --> pg
   ctrl --> pg
   ctrl -- server-side apply --> Tenant
   ep -- storage initializer --> s3
-  Tenant --> gpus
-  gpuop --- gpus
-  obs -. scrapes .- Node
+  Tenant --> Nodes
+  obs -. scrapes .- Nodes
 ```
+
+Until the second region opens, the global plane and the first region's cell run in **the same
+cluster**. They split when region two arrives ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)).
+The inference gateway, CPU nodes, and fallback placement are designed but not built yet ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)).
 
 ## Request flow: launching an endpoint
 
 ```mermaid
 sequenceDiagram
   actor U as Customer
-  participant A as API
-  participant DB as Postgres
-  participant C as Controller
-  participant K as Kubernetes
-  U->>A: POST /v1/workloads {kind: endpoint, model_uri}
-  A->>DB: lock quota row, check GPUs held, insert workload (pending) + event
+  participant A as API (global)
+  participant DB as Postgres (global)
+  participant C as Controller (region)
+  participant K as Kubernetes (region)
+  participant G as Inference gateway (region)
+  U->>A: POST /v1/workloads {kind: endpoint, region, gpu_class, fallback: [cpu]}
+  A->>DB: lock quota row, check GPUs held, insert workload (pending, requested_class) + event
   A-->>U: 201 {state: pending}
   loop every 5s
-    C->>DB: pending/queued workloads, GPUs allocated
-    C->>K: node capacity per GPU class
-    C->>K: apply tenant namespace bundle + InferenceService
-    C->>DB: pending → provisioning (+event)
+    C->>DB: pending/queued workloads in my region, GPUs allocated
+    C->>K: capacity per class (GPU and CPU)
+    alt requested class has room
+      C->>K: apply tenant bundle + InferenceService on GPU
+    else sold out past fallback_after (opted in)
+      C->>K: apply tenant bundle + InferenceService on CPU (tensora-vllm-cpu)
+    end
+    C->>DB: pending → provisioning, placed_class recorded (+event)
     C->>K: observe InferenceService Ready?
-    C->>DB: provisioning → running (+event), billing starts
+    C->>DB: provisioning → running (+event); billing starts at the placed class
   end
   U->>A: GET /v1/workloads (dashboard polls)
+  U->>G: POST /v1/chat/completions (API key)
+  G-->>U: answer + X-Tensora-Served-By / X-Tensora-Fallback headers
 ```
+
+Today's code runs this flow without `region`, fallback placement, or the inference gateway. Those
+are designed but not built yet (see the [roadmap task breakdown](../roadmap.md#task-breakdown-regions-and-fallback-placement)).
 
 ## Deliberately out of scope (for now)
 

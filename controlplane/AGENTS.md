@@ -48,6 +48,14 @@ Allowed imports flow downward: `api → service → store, domain`; `controller 
 - Every new endpoint needs a cross-tenant test: tenant B gets 404 for tenant A's object.
 - Prefer table-driven tests. Controller tests drive `ReconcileOnce` with `fake.Backend` and assert on states.
 
+## Planned changes (design accepted, not in code yet)
+
+The [roadmap task breakdown](../docs/roadmap.md#task-breakdown-regions-and-fallback-placement) has the full list. Until it lands:
+
+- **Regions (ADR-0009):** don't write code that assumes one region or one cluster. New regional queries take a `region` parameter.
+- **Fallbacks (ADR-0010):** don't treat the requested class as the class that runs. Anything about capacity, billing, or display will use `placed_class`.
+- **Inference gateway (ADR-0010):** this will be a new process in this module (`tensora gateway`), or Envoy plus a Go auth and metering service. Keep request-path code out of the API process.
+
 ## Commands
 
 ```bash

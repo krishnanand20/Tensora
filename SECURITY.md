@@ -24,6 +24,8 @@ The full model and its controls are in
 - Tenant namespaces have a default-deny NetworkPolicy that blocks private and link-local ranges.
 - Tenant pods don't mount a ServiceAccount token. Tenants never get Kubernetes API access.
 - Tenant models must be safetensors, and `trust_remote_code` is never enabled.
+- Workload data stays in its region. Cross-region, CPU, and other-class fallbacks happen only with the customer's explicit opt-in, and they're always visible.
+- Customers are screened against sanctions and export-control rules before they get GPU access.
 - The controller's ServiceAccount is the most powerful credential in the cluster. The API has no cluster access.
 - No secrets in git. Use Ansible Vault for node secrets and Kubernetes Secrets, created out of band, for cluster secrets.
 

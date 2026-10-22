@@ -1,5 +1,8 @@
 # Keycloak (Phase 3)
 
+Keycloak is **global**: it runs once, in the global control plane, not in every region (ADR-0009).
+Until the second region opens, that's the first region's cluster.
+
 The operator is installed by helmfile when `features.keycloak` is true. These still have to be done:
 
 1. **Database:** Keycloak needs Postgres. Use a separate database from Tensora's, with its own credentials stored in a Secret created out of band.

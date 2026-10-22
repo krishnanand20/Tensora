@@ -27,4 +27,5 @@ export AWS_ENDPOINT_URL=https://s3.tensora.internal AWS_ACCESS_KEY_ID=... AWS_SE
 uv run tensora-ml ingest hf://Qwen/Qwen2.5-0.5B-Instruct@<commit-sha> s3://tensora-models/internal/qwen2.5-0.5b
 ```
 
-Pin a commit SHA. Branch names like `main` can change under you.
+Pin a commit SHA. Branch names like `main` can change under you. Upload to the object store
+of the **region where the model will be served**, because model data never leaves its region (ADR-0009).

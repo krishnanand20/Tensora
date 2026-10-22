@@ -3,6 +3,7 @@
 For third-party add-ons such as Kueue, Velero, CloudNativePG, or an object store.
 
 1. **Justify it.** Which layer is it in, what does it replace or enable, and which phase needs it? If it's a new category or replaces a component, write an ADR first ([write-an-adr.md](write-an-adr.md)).
+   Also say whether it runs **in every regional cell** (most add-ons) or **once in the global plane** (Keycloak, the global Postgres). A regional component must never depend on another region (ADR-0009).
 2. **Pick a version.** Use the current stable release from upstream. Read its install and upgrade notes, and note its Kubernetes version range against our k3s version. If you can't verify the version, say so in the PR. Don't guess.
 3. **helmfile:** add a release under the right layer heading in `deploy/helmfile.yaml.gotmpl`:
    - an exact `version:`

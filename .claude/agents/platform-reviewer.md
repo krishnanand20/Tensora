@@ -28,6 +28,9 @@ Do not edit files, and never run commands that touch a cluster or a host. You ma
 - **Ansible:** tasks are idempotent and use FQCN modules. Reboots happen only behind `iommu_allow_reboot`. k3s flags still disable flannel, network policy, kube-proxy, traefik, and servicelb.
 - **Blast radius:** say what breaks, and for whom, if this change is wrong. Is there a rollback?
 
+- **Regions (ADR-0009):** environment files per region stay consistent; network ranges don't overlap; regional components never depend on another region; global-only components are marked. Inventories stay one per region.
+- **Fallbacks (ADR-0010):** a CPU serving runtime keeps the same model-safety flags as the GPU one, and CPU nodes get the same isolation as GPU nodes.
+
 ## Output
 
 List findings most severe first (blocker, major, or minor), each with its `path:line`, the problem,

@@ -36,6 +36,7 @@ The rules:
 - **Account data is global, workload data is regional.** Strict-residency customers (EU, some governments) may later require account and personal data to be stored in-region too. That's a v2 option: regional Postgres for personally identifiable data, or a fully independent sovereign stack.
 - Where the global plane runs has legal weight (cross-border data transfers). Put it in a jurisdiction with clear transfer mechanisms, and document it in the privacy policy.
 - Quotas stay global per GPU class for now. Per-region quotas are added if abuse or capacity planning needs them.
+- Until the second region opens, the global plane and the first region's cell share one cluster. Splitting them is a deployment change, not a code change, as long as code never assumes they're co-located.
 
 ## Alternatives considered
 

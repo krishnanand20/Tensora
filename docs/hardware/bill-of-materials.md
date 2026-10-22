@@ -29,6 +29,17 @@ If small fractional GPUs matter to customers, choose A100 or H100, which do have
 | Power supplies | Redundant 2+2 or 1+1, Titanium or Platinum, sized for the GPU TDP sum × 1.3 | GPU power spikes; one PSU can fail |
 | BIOS | VT-d/AMD-Vi, SR-IOV, Above-4G decoding, ACS (if offered) | Needed for passthrough (runbook 01) |
 
+## CPU nodes
+
+These are cheap compared with GPU servers, and they matter for reliability and fallbacks:
+
+| Role | Spec | Why | Phase |
+|---|---|---|---|
+| **Control-plane servers** (×3 per region) | 1U, 8–16 cores, 64 GB RAM, 2× NVMe (RAID 1), 2× 10/25 GbE | k3s servers, Postgres, API, controller. A GPU node failure must never take down the platform. | 2 |
+| **CPU worker nodes** | 1U/2U, 64–128 cores (EPYC), 256–512 GB RAM, NVMe | CPU instances, CPU fallback for small-model endpoints and notebooks (ADR-0010), data prep | 2–3 |
+
+On a single node in Phase 1, CPU workloads use the GPU server's spare cores.
+
 ## Shared infrastructure
 
 | Item | Spec |

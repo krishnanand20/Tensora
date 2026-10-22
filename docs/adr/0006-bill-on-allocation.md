@@ -27,3 +27,9 @@ The original idea was to track GPU-hours from DCGM exporter metrics. But:
 
 - **DCGM utilization:** doesn't work for VMs, and is lossy.
 - **Kubernetes pod lifetimes from kube-state-metrics:** closer to right, but not durable and not tied to our tenant model.
+
+## Update 2026-10-23
+
+- Usage is priced by the class a workload actually ran on (`placed_class`), so an opt-in CPU or other-class fallback is billed at its own price (ADR-0010).
+- Requests served by the serverless pool or a fallback model are billed per token, from inference gateway counts.
+- All prices are in USD.

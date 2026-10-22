@@ -21,6 +21,9 @@ scripts/                       read-only diagnostics to run on a node (IOMMU gro
 - Use fully qualified module names (`ansible.builtin.apt`, not `apt`).
 - **Scripts** in `scripts/` are diagnostics only. Read-only, `set -euo pipefail`, and they must pass shellcheck.
 - Keep k3s flags in sync with deploy/: Cilium needs flannel, network policy, and kube-proxy disabled, and MetalLB needs servicelb disabled.
+- **One inventory per region** (ADR-0009). Never mix regions' hosts in one inventory, because each region is its own cluster with its own network ranges.
+- **CPU worker nodes** (ADR-0010) and control-plane CPU servers use `base`, `wireguard`, and `k3s`, but not `iommu`. Put them in a separate group (planned: `cpu_nodes`).
+- The fleet runs on **UTC**, so logs and billing events line up across regions.
 
 ## Commands
 

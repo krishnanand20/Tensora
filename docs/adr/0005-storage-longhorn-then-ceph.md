@@ -25,3 +25,8 @@ filesystem. Ceph does all three but wants at least 3 nodes and real operational 
 - **Ceph from day one:** possible on one node, but fragile and with no real redundancy.
 - **local-path only:** fastest, but no replication, snapshots, or expansion.
 - **NFS:** simple, but a single point of failure, and a poor fit for VM disks.
+
+## Update 2026-10-23
+
+Storage is per region (ADR-0009). Every regional cell runs its own block storage and object store, and
+the choices above apply to each region. Only the global Postgres is shared across regions.
