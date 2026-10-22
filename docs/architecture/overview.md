@@ -119,6 +119,35 @@ sequenceDiagram
 Today's code runs this flow without `region`, fallback placement, or the inference gateway. Those
 are designed but not built yet (see the [roadmap task breakdown](../roadmap.md#task-breakdown-regions-and-fallback-placement)).
 
+## Request flow: launching a GPU VM
+
+```mermaid
+sequenceDiagram
+  actor U as Customer
+  participant A as API (global)
+  participant DB as Postgres (global)
+  participant C as Controller (region)
+  participant K as Kubernetes + KubeVirt (region)
+  participant N as GPU node (vm-passthrough mode)
+  U->>A: POST /v1/workloads {kind: vm, image_id, gpu_class, gpu_count, ssh_public_key}
+  A->>DB: check quota, insert workload (pending) + event
+  A-->>U: 201 {state: pending}
+  C->>K: apply tenant bundle + VirtualMachine (runStrategy: Always)
+  K->>K: CDI clones the root disk from the DataSource in tensora-images
+  K->>N: schedule virt-launcher; whole GPUs passed through via VFIO
+  N-->>K: VM boots; cloud-init installs the customer's SSH key
+  C->>K: observe VM printableStatus = Running
+  C->>DB: provisioning → running (+event); billing starts
+  U->>N: ssh into the VM, run nvidia-smi (public SSH exposure is Phase 3)
+  U->>A: POST /v1/workloads/{id}/stop
+  C->>K: runStrategy: Halted (disk kept, GPUs freed)
+  C->>DB: stopping → stopped (+event); billing stops
+```
+
+Code for each step: VM manifest in `controlplane/internal/cluster/manifests/workloads.go`
+(`virtualMachine`), status in `cluster/kube/kube.go` (`observeVM`), and the stop logic in the controller's park step.
+To try it on hardware, see [runbook 02](../runbooks/02-gpu-passthrough.md).
+
 ## Deliberately out of scope (for now)
 
 - Multi-node distributed training (InfiniBand/RoCE, NCCL tuning, gang scheduling)
