@@ -1,5 +1,8 @@
 # Phase 1: one GPU node running everything. Edit for your hardware before use.
 # Consumed by helmfile (feature flags, templated values files) and by the cluster-config chart.
+# This is the first region's cell; it also hosts the global control plane until region 2 (ADR-0009).
+
+region: in-mum-1 # read once regions land in code (roadmap Phase 0, task 12)
 
 domain: tensora.example.com
 acmeEmail: ops@tensora.example.com

@@ -1,3 +1,4 @@
+# Planned (ADR-0010): CPU-only nodes get base + wireguard + k3s, but not iommu, via a cpu_nodes group.
 - name: Prepare GPU nodes
   hosts: gpu_nodes
   become: true

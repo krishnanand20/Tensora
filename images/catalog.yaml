@@ -2,6 +2,10 @@
 # Loaded by the control plane (TENSORA_CATALOG_PATH) and deployed as a ConfigMap by the
 # tensora chart. Field reference: controlplane/internal/catalog/catalog.go.
 # Control plane tests load this file, so `make test-cp` catches mistakes here.
+#
+# Planned (ADR-0009, ADR-0010): a top-level `regions:` list, `kind: gpu|cpu` and `regions: [...]`
+# on every class, and CPU classes for CPU instances and fallback. The loader rejects unknown
+# fields, so these arrive together with the code change (roadmap Phase 0 task breakdown).
 
 gpu_classes:
   - id: l40s-48gb

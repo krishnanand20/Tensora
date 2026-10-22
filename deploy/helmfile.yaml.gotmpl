@@ -2,6 +2,9 @@
 #   Render:  helmfile -e single-node template
 #   Apply:   helmfile -e single-node apply      ← humans only, on purpose (AGENTS.md safety rules)
 #
+# One environment = one regional cell (ADR-0009). Until the second region opens, the first cell
+# also hosts the global control plane (Keycloak, global Postgres, API, dashboard).
+#
 # VERSIONS were pinned at scaffold time (2026-10) and are probably behind. Before the first
 # install, check each upstream's current stable release and upgrade notes, bump here, and
 # record the date in deploy/README.md#versions. Never use floating versions.

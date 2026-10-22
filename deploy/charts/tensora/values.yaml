@@ -23,6 +23,7 @@ cluster:
   untrustedRuntimeClass: kata-qemu-nvidia-gpu
   storageClass: tensora-block
   imagesNamespace: tensora-images
+  # Planned (ADR-0009): `region: in-mum-1`, passed to this cell's controller as TENSORA_REGION.
 
 gateway:
   name: tensora

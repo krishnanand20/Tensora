@@ -19,3 +19,5 @@ vllm:
   # Pin a tested release; bump deliberately and re-run tensora-ml bench.
   image: vllm/vllm-openai:v0.10.0
   shmSize: 16Gi
+  # Planned (ADR-0010): a tensora-vllm-cpu ClusterServingRuntime for CPU fallback, with the same
+  # safety flags (--load-format=safetensors, never --trust-remote-code).
