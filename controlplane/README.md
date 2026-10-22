@@ -28,7 +28,7 @@ your laptop, use `TENSORA_CLUSTER_BACKEND=kubernetes`. It reads `KUBECONFIG`. Ne
 | GET | `/healthz`, `/readyz` | liveness, and readiness (checks the DB) |
 | GET | `/v1/catalog` | GPU classes and images visible to the caller's tenant |
 | GET | `/v1/workloads` | `{"items": [...]}` |
-| POST | `/v1/workloads` | `{name, kind, image_id, gpu_class, gpu_count, ssh_public_key?, model_uri?}` → 201 |
+| POST | `/v1/workloads` | `{name, kind, image_id, gpu_class, gpu_count, ssh_public_key?, model_uri?}` → 201. `kind` is `vm` (GPU VM, needs `ssh_public_key`), `notebook`, or `endpoint` (needs `model_uri`). |
 | GET | `/v1/workloads/{id}` | |
 | POST | `/v1/workloads/{id}/stop` | 202; VMs and notebooks keep their disks |
 | POST | `/v1/workloads/{id}/start` | 202; re-checks quota |

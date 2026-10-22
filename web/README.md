@@ -1,7 +1,8 @@
 # web: Tensora dashboard
 
-The customer dashboard, built with React, Vite, and TanStack Query. It lists workloads with
-live state, provides stop, start, and delete actions, and has a launch form driven by the catalog.
+The customer dashboard, built with React, Vite, and TanStack Query. Customers launch **GPU VMs**,
+**Jupyter notebooks**, and **model endpoints** from a catalog-driven form, see them with live state,
+and stop, start, or delete them.
 
 ```bash
 make dev        # from the repo root: API on :8080

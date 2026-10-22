@@ -79,8 +79,8 @@ answers, a CPU-placed workload runs, and the node can be rebuilt from scratch wi
 
 ## Phase 3: Platform (→ M2 private beta)
 
-**Done when:** an invited user anywhere in the world can sign up, launch each workload kind from the
-dashboard in the first region, use it, and see their usage.
+**Done when:** an invited user anywhere in the world can sign up, launch a GPU VM, a notebook, and a
+model endpoint from the dashboard in the first region, use them, and see their usage.
 
 - [ ] Run the controller against the real cluster end to end (kube backend), plus an orphan sweep
 - [ ] Keycloak + OIDC in the API (already supported) and in the dashboard (PKCE)

@@ -16,7 +16,7 @@ region you choose, with your data kept in that region. It's simple enough for a 
 
 - **Customers increasingly need to choose where compute and data live.** Privacy law (GDPR, DPDP, and others) and national "sovereign AI" programs push AI workloads into specific countries. The big GPU clouds concentrate capacity in a few US and EU locations. Regions where good, developer-friendly GPU clouds are thin are our wedge.
 - **Developer experience wins users that price can't.** That means launching in minutes, clear pricing, good docs, and an API and CLI for everything.
-- **Inference is the growth market.** Most companies will *use* models more than they train them. Raw GPUs and a model API in one place cover the whole journey: experiment in a notebook, fine-tune on a VM, serve on an endpoint.
+- **Inference is the growth market.** Most companies will *use* models more than they train them. GPU VMs, notebooks, and a model API in one place cover the whole journey: experiment in a notebook, fine-tune on a GPU VM, serve on an endpoint.
 - **Sell worldwide from day one, build regions by demand.** Selling globally costs only software (global payments, tax, and compliance). Each region costs hardware. The first region is **India**: home market, cost and presence advantage, and local payment methods like UPI. Customers anywhere can sign up and use it. New regions open where demand proves out.
 
 ## Regions
@@ -106,7 +106,7 @@ S3-compatible storage buckets, fine-tuning jobs, batch jobs, multi-node training
 | Hyperscalers (AWS, Azure, GCP, Oracle) | Breadth, a presence in every major market, enterprise trust | Price, simplicity, per-second GPUs, an AI-focused product |
 | Large GPU clouds (CoreWeave, Lambda, Crusoe, Nebius and others) | Huge capacity, training clusters | Self-serve simplicity for small teams; regions they don't serve |
 | Developer GPU clouds (RunPod, Vast.ai, Paperspace and others) | Community, price, many locations | Data residency, VM-grade isolation by default, an integrated inference API, compliance |
-| Inference APIs (Together, Fireworks and others) | Model breadth, raw speed | Raw GPUs and an API in one place; private dedicated endpoints in-region |
+| Inference APIs (Together, Fireworks and others) | Model breadth, raw speed | GPU VMs, notebooks, and a model API in one place; private dedicated endpoints in-region |
 | Regional providers (for example E2E Networks and Yotta in India) | Local capacity, government ties | Developer experience; reach across several regions |
 
 We won't win on price or scale at the start, because bigger players buy GPUs cheaper. We'll win on
@@ -173,7 +173,7 @@ server. **Second hire:** support and developer relations, ideally in a different
 |---|---|---|
 | **M0 Foundation** ✓ | Repo, architecture, core platform on a fake cluster, ML validator, dashboard skeleton | Phase 0 |
 | **M1 Lab** | One real server in the first region; a VM, a notebook, and an endpoint all work end to end through the API; regions in the data model; burn-in done; backups off-node | Phase 1 + kube backend from Phase 3 |
-| **M2 Private beta** | 10–20 invited users (from any country) using all three products; signup, orgs, API keys, access to every product, usage page, status page, docs | Phase 3 core |
+| **M2 Private beta** | 10–20 invited users (from any country) using GPU VMs, notebooks, and model endpoints; signup, orgs, API keys, access to every product, usage page, status page, docs | Phase 3 core |
 | **M3 Public launch (v1)** | Anyone eligible worldwide can sign up and pay in USD (cards worldwide, UPI in India), with tax-compliant invoices, sanctions screening, spend limits, CLI and SDK, legal pages, 99.5% SLA. The control plane runs on separate small CPU servers. At least 2 GPU servers. | Phases 2 and 4 core |
 | **M4 Growth (v1.5)** | **Second region live**; serverless model API; custom images; snapshots; reserved instances | Phase 5 |
 | **M5 Enterprise (v2)** | SSO and audit, dedicated or sovereign regions, contracts, SOC 2 or ISO 27001 underway, private-cloud edition | Phase 6 |

@@ -38,7 +38,9 @@ export function WorkloadsPage() {
       </div>
       {action.isError && <p className="error">{action.error.message}</p>}
       {items.length === 0 ? (
-        <p className="muted">Nothing running yet.</p>
+        <p className="muted">
+          Nothing running yet. <Link to="/launch">Launch</Link> a GPU VM, a notebook, or a model endpoint.
+        </p>
       ) : (
         <div className="table-wrap">
           <table>
