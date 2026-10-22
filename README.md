@@ -1,7 +1,8 @@
 # Tensora
 
-**A global GPU cloud for AI teams.** Rent GPUs by the second, run notebooks, or serve open
-models through an OpenAI-compatible API, in the region you choose, with your data kept there.
+**A global GPU cloud for AI teams.** Launch **GPU VMs** with root access, run **Jupyter notebooks**,
+or serve **open models** through an OpenAI-compatible API. Everything is billed by the second, in the
+region you choose, with your data kept there.
 Built for developers first, with an architecture ready for enterprise. The first region is India.
 See the [product definition](docs/product/product-spec.md).
 
