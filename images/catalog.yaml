@@ -1,0 +1,67 @@
+# Tensora launch catalog: the GPU classes and images customers can choose from.
+# Loaded by the control plane (TENSORA_CATALOG_PATH) and deployed as a ConfigMap by the
+# tensora chart. Field reference: controlplane/internal/catalog/catalog.go.
+# Control plane tests load this file, so `make test-cp` catches mistakes here.
+
+gpu_classes:
+  - id: l40s-48gb
+    display_name: NVIDIA L40S 48GB
+    vram_gb: 48
+    # Advertised by the GPU Operator device plugin on nodes in "container" mode.
+    container_resource: nvidia.com/gpu
+    # Advertised by the sandbox device plugin on "vm-passthrough" nodes. Must match
+    # KubeVirt permittedHostDevices (deploy/environments/*.yaml). Verify on a real node:
+    #   kubectl get node <name> -o jsonpath='{.status.allocatable}'
+    vm_device_name: nvidia.com/AD102GL_L40S
+    # GPU Feature Discovery labels that select container-mode nodes with this GPU.
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-L40S
+    vcpus_per_gpu: 8
+    memory_gib_per_gpu: 64
+
+  - id: a100-80gb
+    display_name: NVIDIA A100 80GB PCIe
+    vram_gb: 80
+    container_resource: nvidia.com/gpu
+    vm_device_name: nvidia.com/GA100_A100_PCIE_80GB
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-A100-80GB-PCIe
+    vcpus_per_gpu: 12
+    memory_gib_per_gpu: 120
+
+  # Consumer card. NVIDIA's GeForce driver licence restricts datacenter deployment, so this
+  # class is internal-only (trusted tenants) until legal review says otherwise.
+  # See docs/architecture/gpu-sharing.md.
+  - id: rtx4090-24gb
+    display_name: NVIDIA GeForce RTX 4090 24GB
+    vram_gb: 24
+    container_resource: nvidia.com/gpu
+    vm_device_name: nvidia.com/AD102_GEFORCE_RTX_4090
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-GeForce-RTX-4090
+    vcpus_per_gpu: 8
+    memory_gib_per_gpu: 48
+    internal_only: true
+
+images:
+  # kind: vm → ref is a CDI DataSource in the images namespace (images/vm/).
+  - id: ubuntu-24.04-cuda
+    display_name: Ubuntu 24.04 + NVIDIA driver
+    kind: vm
+    ref: ubuntu-24.04-cuda
+    root_disk_gib: 100
+    description: A full VM with whole GPUs passed through. Log in over SSH with your key.
+
+  # kind: notebook → ref is a container image (images/containers/).
+  - id: pytorch-notebook
+    display_name: PyTorch + JupyterLab
+    kind: notebook
+    ref: ghcr.io/your-org/tensora-pytorch-notebook:0.1.0
+    description: JupyterLab with PyTorch and CUDA. Your work directory persists across restarts.
+
+  # kind: endpoint → ref is a KServe ClusterServingRuntime (deploy/charts/cluster-config).
+  - id: vllm
+    display_name: vLLM (OpenAI-compatible API)
+    kind: endpoint
+    ref: tensora-vllm
+    description: Serve a safetensors model from Hugging Face or S3 behind an OpenAI-compatible API.

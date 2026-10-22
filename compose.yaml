@@ -1,0 +1,32 @@
+# Local dependencies for development. `make dev` needs none of this; `make dev-pg` uses Postgres.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tensora
+      POSTGRES_PASSWORD: tensora
+      POSTGRES_DB: tensora
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tensora"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Optional: a local Keycloak to exercise TENSORA_AUTH_MODE=oidc.
+  #   docker compose --profile auth up -d keycloak   → http://localhost:8180 (admin/admin)
+  keycloak:
+    profiles: ["auth"]
+    image: quay.io/keycloak/keycloak:26.3
+    command: ["start-dev", "--http-port=8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "127.0.0.1:8180:8180"
+
+volumes:
+  pgdata:

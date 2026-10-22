@@ -1,0 +1,55 @@
+domain: tensora.example.com
+env: production
+
+image:
+  repository: ghcr.io/your-org/tensora-controlplane
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+webImage:
+  repository: ghcr.io/your-org/tensora-web
+  tag: "0.1.0"
+
+database:
+  # Secret with key DATABASE_URL, created out of band. Never put credentials in values.
+  existingSecret: tensora-db
+
+auth:
+  oidcIssuer: https://auth.tensora.example.com/realms/tensora
+  oidcAudience: tensora-api
+  tenantClaim: tensora_tenant
+
+cluster:
+  untrustedRuntimeClass: kata-qemu-nvidia-gpu
+  storageClass: tensora-block
+  imagesNamespace: tensora-images
+
+gateway:
+  name: tensora
+  namespace: tensora-gateway
+
+api:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+# One replica: reconcile passes are idempotent but not yet leader-elected (Phase 4).
+controller:
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+metering:
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+web:
+  replicas: 2
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+# Contents of images/catalog.yaml. helmfile passes it with --set-file catalog=...
+catalog: ""

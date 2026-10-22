@@ -1,0 +1,175 @@
+# Cluster add-ons in install order, grouped by layer (docs/architecture/overview.md).
+#   Render:  helmfile -e single-node template
+#   Apply:   helmfile -e single-node apply      ← humans only, on purpose (AGENTS.md safety rules)
+#
+# VERSIONS were pinned at scaffold time (2026-10) and are probably behind. Before the first
+# install, check each upstream's current stable release and upgrade notes, bump here, and
+# record the date in deploy/README.md#versions. Never use floating versions.
+# Local kustomize "charts" (./platform/*) need the kustomize binary (helmfile uses chartify).
+
+environments:
+  single-node:
+    values: [environments/single-node.yaml]
+  production:
+    values: [environments/production.yaml]
+---
+helmDefaults:
+  wait: true
+  timeout: 900
+  createNamespace: true
+
+repositories:
+  - name: cilium
+    url: https://helm.cilium.io
+  - name: metallb
+    url: https://metallb.github.io/metallb
+  - name: jetstack
+    url: https://charts.jetstack.io
+  - name: nvidia
+    url: https://helm.ngc.nvidia.com/nvidia
+  - name: longhorn
+    url: https://charts.longhorn.io
+  - name: rook
+    url: https://charts.rook.io/release
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
+  - name: grafana
+    url: https://grafana.github.io/helm-charts
+  - name: kserve
+    url: ghcr.io/kserve/charts
+    oci: true
+
+releases:
+  # ---------------------------------------------------------------- Layer 6: networking
+  - name: gateway-api-crds
+    namespace: kube-system
+    chart: ./platform/gateway-api
+
+  - name: cilium
+    namespace: kube-system
+    chart: cilium/cilium
+    version: 1.18.0
+    values: [platform/cilium/values.yaml.gotmpl]
+    needs: [kube-system/gateway-api-crds]
+
+  - name: metallb
+    namespace: metallb-system
+    chart: metallb/metallb
+    version: 0.15.2
+    needs: [kube-system/cilium]
+
+  - name: cert-manager
+    namespace: cert-manager
+    chart: jetstack/cert-manager
+    version: v1.18.2
+    values: [platform/cert-manager/values.yaml]
+    needs: [kube-system/cilium]
+
+  # ---------------------------------------------------------------- Layer 2: GPUs + virtualization
+  - name: gpu-operator
+    namespace: gpu-operator
+    chart: nvidia/gpu-operator
+    version: v25.3.1
+    values: [platform/gpu-operator/values.yaml]
+    needs: [kube-system/cilium]
+
+  - name: kubevirt
+    namespace: kubevirt
+    chart: ./platform/kubevirt
+    needs: [kube-system/cilium]
+
+  # ---------------------------------------------------------------- Layer 5: storage
+  - name: longhorn
+    namespace: longhorn-system
+    chart: longhorn/longhorn
+    version: 1.9.1
+    installed: {{ .Values.features.longhorn }}
+    values: [platform/longhorn/values.yaml.gotmpl]
+
+  - name: rook-ceph
+    namespace: rook-ceph
+    chart: rook/rook-ceph
+    version: v1.17.7
+    installed: {{ .Values.features.rookCeph }}
+
+  - name: rook-ceph-cluster
+    namespace: rook-ceph
+    chart: rook/rook-ceph-cluster
+    version: v1.17.7
+    installed: {{ .Values.features.rookCeph }}
+    values: [platform/rook-ceph/cluster-values.yaml]
+    needs: [rook-ceph/rook-ceph]
+
+  # ---------------------------------------------------------------- Layer 4: model serving
+  - name: kserve-crd
+    namespace: kserve
+    chart: kserve/kserve-crd
+    version: v0.15.2
+    installed: {{ .Values.features.kserve }}
+
+  - name: kserve
+    namespace: kserve
+    chart: kserve/kserve
+    version: v0.15.2
+    installed: {{ .Values.features.kserve }}
+    values: [platform/kserve/values.yaml]
+    needs: [kserve/kserve-crd, cert-manager/cert-manager]
+
+  # ---------------------------------------------------------------- Layer 7: identity
+  - name: keycloak-operator
+    namespace: keycloak
+    chart: ./platform/keycloak
+    installed: {{ .Values.features.keycloak }}
+
+  # ---------------------------------------------------------------- Layer 8: observability
+  - name: kube-prometheus-stack
+    namespace: observability
+    chart: prometheus-community/kube-prometheus-stack
+    version: 75.15.1
+    installed: {{ .Values.features.observability }}
+    values: [platform/observability/kube-prometheus-stack.yaml]
+
+  - name: loki
+    namespace: observability
+    chart: grafana/loki
+    version: 6.35.0
+    installed: {{ .Values.features.observability }}
+    values: [platform/observability/loki.yaml]
+
+  - name: alloy
+    namespace: observability
+    chart: grafana/alloy
+    version: 1.2.0
+    installed: {{ .Values.features.observability }}
+    values: [platform/observability/alloy.yaml]
+    needs: [observability/loki]
+
+  # ---------------------------------------------------------------- Our cluster objects
+  # Address pool, ACME issuer, Gateway, KubeVirt/CDI config, serving runtime, storage class.
+  - name: cluster-config
+    namespace: tensora-system
+    chart: ./charts/cluster-config
+    values: [environments/{{ .Environment.Name }}.yaml]
+    needs:
+      - metallb-system/metallb
+      - cert-manager/cert-manager
+      - kubevirt/kubevirt
+{{- if .Values.features.kserve }}
+      - kserve/kserve
+{{- end }}
+
+  # ---------------------------------------------------------------- Layer 7: Tensora
+  - name: tensora
+    namespace: tensora-system
+    chart: ./charts/tensora
+    installed: {{ .Values.features.tensora }}
+    set:
+      - name: domain
+        value: {{ .Values.domain }}
+      - name: image.tag
+        value: {{ .Values.tensora.version | quote }}
+      - name: webImage.tag
+        value: {{ .Values.tensora.version | quote }}
+      - name: catalog
+        file: ../images/catalog.yaml
+    needs: [tensora-system/cluster-config]

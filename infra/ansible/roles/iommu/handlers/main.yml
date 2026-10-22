@@ -1,0 +1,18 @@
+- name: Update grub
+  ansible.builtin.command: update-grub
+  changed_when: true
+
+- name: Update initramfs
+  ansible.builtin.command: update-initramfs -u
+  changed_when: true
+
+- name: Reboot for kernel arguments
+  ansible.builtin.reboot:
+    reboot_timeout: 1200
+  when: iommu_allow_reboot | bool
+
+- name: Warn that a reboot is pending
+  ansible.builtin.debug:
+    msg: "IOMMU kernel arguments changed. Reboot {{ inventory_hostname }} (or rerun with -e iommu_allow_reboot=true)."
+  when: not (iommu_allow_reboot | bool)
+  listen: Reboot for kernel arguments

@@ -1,0 +1,8 @@
+crds:
+  enabled: true
+
+# Lets ACME HTTP-01 challenges be served through the Gateway (cluster-config ClusterIssuer).
+config:
+  apiVersion: controller.config.cert-manager.io/v1alpha1
+  kind: ControllerConfiguration
+  enableGatewayAPI: true

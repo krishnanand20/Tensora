@@ -1,0 +1,5 @@
+# Copy to vault.yml, fill in, then: ansible-vault encrypt group_vars/all/vault.yml
+# vault.yml is gitignored; only the encrypted file should ever leave your machine.
+vault_k3s_token: "generate with: openssl rand -hex 32"
+vault_wireguard_private_keys:
+  gpu-node-01: "generate with: wg genkey"

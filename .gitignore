@@ -1,0 +1,39 @@
+# Secrets & local config
+.env
+.env.local
+*.kubeconfig
+kubeconfig*
+*.key
+secrets/
+infra/ansible/inventory/hosts.yml
+infra/ansible/group_vars/all/vault.yml
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Go
+controlplane/bin/
+*.test
+*.out
+coverage.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+
+# Ansible
+*.retry
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

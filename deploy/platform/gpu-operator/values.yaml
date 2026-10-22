@@ -1,0 +1,49 @@
+# NVIDIA GPU Operator. One per-node label decides how that node's GPUs are used:
+#   kubectl label node <n> --overwrite nvidia.com/gpu.workload.config=container        # notebooks, endpoints
+#   kubectl label node <n> --overwrite nvidia.com/gpu.workload.config=vm-passthrough   # KubeVirt VMs
+# Switching rebinds every GPU on the node, so drain GPU workloads first. See gpu-sharing.md.
+
+sandboxWorkloads:
+  enabled: true
+  defaultWorkload: container
+
+driver:
+  enabled: true
+
+toolkit:
+  enabled: true
+  # k3s keeps containerd's config and socket in non-default paths. Check these against the
+  # GPU Operator docs for your k3s version (newer k3s releases use config-v3.toml.tmpl).
+  env:
+    - name: CONTAINERD_CONFIG
+      value: /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+    - name: CONTAINERD_SOCKET
+      value: /run/k3s/containerd/containerd.sock
+    - name: CONTAINERD_RUNTIME_CLASS
+      value: nvidia
+    - name: CONTAINERD_SET_AS_DEFAULT
+      value: "true"
+
+devicePlugin:
+  enabled: true
+  # Never configure time-slicing here: sharing a GPU across tenants is forbidden (AGENTS.md rule 4).
+
+mig:
+  strategy: mixed
+migManager:
+  enabled: true
+
+dcgmExporter:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+
+# Passthrough: bind GPUs on vm-passthrough nodes to vfio-pci and advertise them to KubeVirt.
+vfioManager:
+  enabled: true
+sandboxDevicePlugin:
+  enabled: true
+
+# Phase 3, after validating Kata + GPU passthrough (ADR-0004).
+kataManager:
+  enabled: false

@@ -1,0 +1,69 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ required "acmeEmail is required" .Values.acmeEmail }}
+    privateKeySecretRef:
+      name: letsencrypt-account
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: tensora
+                namespace: tensora-gateway
+                kind: Gateway
+---
+# Single public entry point. cert-manager issues a certificate per HTTPS listener.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: tensora
+  namespace: tensora-gateway
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- range $host := list "api" "app" "auth" }}
+    - name: https-{{ $host }}
+      protocol: HTTPS
+      port: 443
+      hostname: {{ $host }}.{{ $.Values.domain }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: {{ $host }}-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [tensora-system, keycloak]
+    {{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: https-redirect
+  namespace: tensora-gateway
+spec:
+  parentRefs:
+    - name: tensora
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301

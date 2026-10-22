@@ -1,0 +1,24 @@
+- name: Prepare GPU nodes
+  hosts: gpu_nodes
+  become: true
+  roles:
+    - base
+    - iommu
+    - wireguard
+
+- name: Install k3s servers
+  hosts: k3s_servers
+  become: true
+  serial: 1 # first server initializes etcd; the rest join it
+  roles:
+    - role: k3s
+      vars:
+        k3s_role: server
+
+- name: Install k3s agents
+  hosts: k3s_agents
+  become: true
+  roles:
+    - role: k3s
+      vars:
+        k3s_role: agent

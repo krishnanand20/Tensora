@@ -1,0 +1,45 @@
+apiVersion: kubevirt.io/v1
+kind: KubeVirt
+metadata:
+  name: kubevirt
+  namespace: kubevirt
+spec:
+  configuration:
+    developerConfiguration:
+      # Check which gates your KubeVirt version still requires for GPU passthrough.
+      featureGates:
+        - GPU
+        - HostDevices
+    {{- with .Values.gpuPassthrough.devices }}
+    permittedHostDevices:
+      pciHostDevices:
+        {{- range . }}
+        - pciVendorSelector: {{ .pciVendorSelector | quote }}
+          resourceName: {{ .resourceName }}
+          # The GPU Operator's sandbox device plugin advertises these, not KubeVirt.
+          externalResourceProvider: true
+        {{- end }}
+    {{- end }}
+  workloadUpdateStrategy:
+    workloadUpdateMethods:
+      - LiveMigrate
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: CDI
+metadata:
+  name: cdi
+spec:
+  config:
+    featureGates:
+      - HonorWaitForFirstConsumer
+---
+# Lets VM disks be cloned from base images in tensora-images. The controller binds this
+# per tenant (manifests.Tenant) and also holds it itself, as KubeVirt checks the VM creator.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tensora-image-cloner
+rules:
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]

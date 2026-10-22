@@ -1,0 +1,27 @@
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    # Pick up ServiceMonitors from every chart (DCGM exporter, Cilium, Longhorn, KServe...).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: tensora-block
+          resources:
+            requests:
+              storage: 100Gi
+
+grafana:
+  admin:
+    # Create out of band: kubectl -n observability create secret generic grafana-admin \
+    #   --from-literal=admin-user=admin --from-literal=admin-password=...
+    existingSecret: grafana-admin
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+
+alertmanager:
+  enabled: true

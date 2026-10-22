@@ -1,0 +1,8 @@
+# Gateway API CRDs. Must exist before Cilium starts for its Gateway API support to enable.
+# Cilium also needs the experimental TLSRoute CRD. Keep the version in step with what the
+# installed Cilium release supports.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml
+  - https://raw.githubusercontent.com/kubernetes-sigs/gateway-api/v1.3.0/config/crd/experimental/gateway.networking.k8s.io_tlsroutes.yaml

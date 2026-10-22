@@ -1,0 +1,20 @@
+# Cilium: CNI, kube-proxy replacement, NetworkPolicy enforcement, Gateway API.
+# k3s must be installed with flannel, network policy, and kube-proxy disabled (infra/ansible/roles/k3s).
+kubeProxyReplacement: true
+k8sServiceHost: {{ .Values.apiServerHost }}
+k8sServicePort: {{ .Values.apiServerPort }}
+
+ipam:
+  mode: kubernetes
+
+gatewayAPI:
+  enabled: true
+
+operator:
+  replicas: {{ .Values.cilium.operatorReplicas }}
+
+hubble:
+  relay:
+    enabled: true
+  ui:
+    enabled: true

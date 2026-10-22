@@ -1,0 +1,39 @@
+# Phase 1: one GPU node running everything. Edit for your hardware before use.
+# Consumed by helmfile (feature flags, templated values files) and by the cluster-config chart.
+
+domain: tensora.example.com
+acmeEmail: ops@tensora.example.com
+
+# Node IP of the k3s server. Cilium replaces kube-proxy and must reach the API directly.
+apiServerHost: 10.0.10.11
+apiServerPort: 6443
+
+metallb:
+  # Free addresses on the node's L2 segment, outside your DHCP range.
+  addresses:
+    - 10.0.10.200-10.0.10.220
+
+# GPUs offered as whole-GPU passthrough to VMs. pciVendorSelector comes from `lspci -nn`
+# (vendor:device). resourceName must equal vm_device_name in images/catalog.yaml.
+gpuPassthrough:
+  devices:
+    - pciVendorSelector: "10DE:26B9"
+      resourceName: nvidia.com/AD102GL_L40S
+
+storage:
+  provisioner: longhorn  # longhorn | rook-ceph
+  replicas: 1            # one node → no replication; back up VM disks (docs/architecture/storage.md)
+
+cilium:
+  operatorReplicas: 1
+
+features:
+  longhorn: true
+  rookCeph: false
+  kserve: true
+  keycloak: false
+  observability: true
+  tensora: false  # Phase 3
+
+tensora:
+  version: "0.1.0"

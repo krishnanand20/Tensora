@@ -1,0 +1,73 @@
+# The API has no Kubernetes access at all (AGENTS.md rule 1): no ServiceAccount token.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tensora-api
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: tensora-api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tensora-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tensora-api
+      annotations:
+        checksum/catalog: {{ .Values.catalog | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "tensora.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: api
+          image: {{ include "tensora.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [api]
+          env:
+            {{- include "tensora.env" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- include "tensora.containerSecurityContext" . | nindent 10 }}
+          {{- include "tensora.catalogMount" . | nindent 10 }}
+      {{- include "tensora.catalogVolume" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tensora-api
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: tensora-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: tensora-api
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name }}
+      namespace: {{ .Values.gateway.namespace }}
+      sectionName: https-api
+  hostnames:
+    - api.{{ .Values.domain }}
+  rules:
+    - backendRefs:
+        - name: tensora-api
+          port: 80

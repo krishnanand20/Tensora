@@ -1,0 +1,102 @@
+# The controller is the only component with cluster credentials, and the most powerful
+# credential in the cluster (it can create pods in any namespace). Rules mirror the kind
+# allowlist in controlplane/internal/cluster/kube/kube.go — keep them in sync.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tensora-controller
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tensora-controller
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [""]
+    resources: [services, resourcequotas, persistentvolumeclaims]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [cilium.io]
+    resources: [ciliumnetworkpolicies]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    resourceNames: [tensora-image-cloner]
+    verbs: [bind]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines]
+    verbs: [get, list, watch, create, patch, update, delete]
+  - apiGroups: [serving.kserve.io]
+    resources: [inferenceservices]
+    verbs: [get, list, watch, create, patch, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tensora-controller
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tensora-controller
+subjects:
+  - kind: ServiceAccount
+    name: tensora-controller
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tensora-controller
+  labels:
+    {{- include "tensora.labels" . | nindent 4 }}
+    app.kubernetes.io/name: tensora-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tensora-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tensora-controller
+      annotations:
+        checksum/catalog: {{ .Values.catalog | sha256sum }}
+    spec:
+      serviceAccountName: tensora-controller
+      {{- include "tensora.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: controller
+          image: {{ include "tensora.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [controller]
+          env:
+            {{- include "tensora.env" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          {{- include "tensora.containerSecurityContext" . | nindent 10 }}
+          {{- include "tensora.catalogMount" . | nindent 10 }}
+      {{- include "tensora.catalogVolume" . | nindent 6 }}

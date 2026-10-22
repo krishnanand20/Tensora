@@ -1,0 +1,15 @@
+# Copy to hosts.yml (gitignored) and fill in real addresses.
+# gpu_workload_config sets the GPU Operator mode at registration: container | vm-passthrough.
+all:
+  children:
+    gpu_nodes:
+      children:
+        k3s_servers:
+          hosts:
+            gpu-node-01:
+              ansible_host: 10.0.10.11
+              node_ip: 10.0.10.11
+              wireguard_address: 10.99.0.11/24
+              gpu_workload_config: container
+        k3s_agents:
+          hosts: {}

@@ -1,0 +1,41 @@
+# First passthrough VM (runbook 02). Ephemeral containerDisk, so nothing to clone.
+# Node must be labeled nvidia.com/gpu.workload.config=vm-passthrough.
+# Replace the SSH key and deviceName (must match permittedHostDevices), then:
+#   kubectl apply -f deploy/examples/vm-gpu-passthrough.yaml
+#   virtctl ssh ubuntu@vm/gpu-test -n default   # then: lspci | grep -i nvidia
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: gpu-test
+  namespace: default
+spec:
+  runStrategy: Always
+  template:
+    spec:
+      domain:
+        cpu:
+          cores: 8
+        memory:
+          guest: 32Gi
+        devices:
+          gpus:
+            - name: gpu0
+              deviceName: nvidia.com/AD102GL_L40S
+          disks:
+            - name: root
+              disk:
+                bus: virtio
+            - name: cloudinit
+              disk:
+                bus: virtio
+      volumes:
+        - name: root
+          containerDisk:
+            image: quay.io/containerdisks/ubuntu:24.04
+        - name: cloudinit
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              ssh_authorized_keys:
+                - ssh-ed25519 AAAA...replace-me you@laptop
+              ssh_pwauth: false

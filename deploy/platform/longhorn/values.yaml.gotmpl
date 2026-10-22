@@ -1,0 +1,11 @@
+# Longhorn: replicated block storage for small clusters (Phase 1–2). Requires open-iscsi and
+# nfs-common on every node (infra/ansible/roles/base). The default StorageClass is
+# tensora-block from cluster-config, not Longhorn's own.
+persistence:
+  defaultClass: false
+  defaultClassReplicaCount: {{ .Values.storage.replicas }}
+
+defaultSettings:
+  defaultReplicaCount: {{ .Values.storage.replicas }}
+  # Keep a replica on the node running the workload when possible (lower latency).
+  defaultDataLocality: best-effort

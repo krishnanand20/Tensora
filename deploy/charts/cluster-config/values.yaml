@@ -1,0 +1,21 @@
+# Defaults only. Real values come from deploy/environments/<env>.yaml.
+domain: tensora.example.com
+acmeEmail: ops@tensora.example.com
+
+metallb:
+  addresses: []
+
+gpuPassthrough:
+  devices: []
+
+storage:
+  provisioner: longhorn
+  replicas: 1
+
+features:
+  kserve: true
+
+vllm:
+  # Pin a tested release; bump deliberately and re-run tensora-ml bench.
+  image: vllm/vllm-openai:v0.10.0
+  shmSize: 16Gi

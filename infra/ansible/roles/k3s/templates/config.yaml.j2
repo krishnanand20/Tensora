@@ -1,0 +1,27 @@
+# Managed by Ansible (infra/ansible/roles/k3s). Changes here need a k3s restart.
+token: "{{ k3s_token }}"
+node-ip: "{{ node_ip }}"
+node-label:
+  - "nvidia.com/gpu.workload.config={{ gpu_workload_config | default('container') }}"
+{% if k3s_role == 'server' %}
+{% if inventory_hostname == groups['k3s_servers'][0] %}
+cluster-init: true
+{% else %}
+server: "https://{{ k3s_api_endpoint }}:6443"
+{% endif %}
+tls-san: {{ k3s_tls_san | to_json }}
+cluster-cidr: "{{ k3s_cluster_cidr }}"
+service-cidr: "{{ k3s_service_cidr }}"
+# Cilium provides CNI, NetworkPolicy, and kube-proxy replacement (deploy/platform/cilium).
+flannel-backend: none
+disable-network-policy: true
+disable-kube-proxy: true
+# MetalLB and Gateway API replace these.
+disable:
+  - traefik
+  - servicelb
+secrets-encryption: true
+write-kubeconfig-mode: "0600"
+{% else %}
+server: "https://{{ k3s_api_endpoint }}:6443"
+{% endif %}

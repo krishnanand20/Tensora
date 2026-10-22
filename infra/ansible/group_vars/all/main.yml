@@ -1,0 +1,24 @@
+# Non-secret settings shared by every node. Secrets: vault.yml (see vault.yml.example).
+
+ansible_user: ubuntu
+timezone: Asia/Kolkata
+
+# k3s — pin to a tested release; keep in step with the Kubernetes version the add-ons support.
+k3s_version: v1.33.4+k3s1
+k3s_cluster_cidr: 10.42.0.0/16
+k3s_service_cidr: 10.43.0.0/16
+k3s_api_endpoint: "{{ hostvars[groups['k3s_servers'][0]].node_ip }}"
+k3s_tls_san:
+  - "{{ k3s_api_endpoint }}"
+k3s_token: "{{ vault_k3s_token }}"
+
+# IOMMU: changing the kernel cmdline needs a reboot. Opt in per run with -e iommu_allow_reboot=true.
+iommu_allow_reboot: false
+
+# WireGuard admin VPN. Peers are operator laptops / the bastion.
+wireguard_port: 51820
+wireguard_private_key: "{{ vault_wireguard_private_keys[inventory_hostname] }}"
+wireguard_peers: []
+#  - name: ops-laptop
+#    public_key: "..."
+#    allowed_ips: 10.99.0.100/32

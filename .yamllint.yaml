@@ -1,0 +1,24 @@
+extends: default
+
+ignore: |
+  deploy/charts/*/templates/
+  *.gotmpl
+  **/node_modules/
+  **/.venv/
+  web/dist/
+
+rules:
+  line-length:
+    max: 140
+    level: warning
+  document-start: disable
+  truthy:
+    allowed-values: ["true", "false", "on"]
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  indentation:
+    spaces: 2
+    indent-sequences: whatever
+  braces:
+    max-spaces-inside: 1

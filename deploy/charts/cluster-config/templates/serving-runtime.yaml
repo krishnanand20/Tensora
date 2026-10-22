@@ -1,0 +1,43 @@
+{{- if .Values.features.kserve }}
+# The only runtime tenant endpoints may use (catalog image "vllm" → ref tensora-vllm).
+# AGENTS.md rule 6: weights must be safetensors; never add --trust-remote-code here.
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
+metadata:
+  name: tensora-vllm
+spec:
+  annotations:
+    prometheus.kserve.io/port: "8080"
+    prometheus.kserve.io/path: /metrics
+  supportedModelFormats:
+    - name: huggingface
+      version: "1"
+      autoSelect: false
+  containers:
+    - name: kserve-container
+      image: {{ .Values.vllm.image }}
+      args:
+        - --model=/mnt/models
+        - --served-model-name={{ "{{.Name}}" }}
+        - --port=8080
+        - --load-format=safetensors
+      env:
+        # Weights come from the storage initializer; never fetch anything at runtime.
+        - name: HF_HUB_OFFLINE
+          value: "1"
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: {{ .Values.vllm.shmSize }}
+{{- end }}

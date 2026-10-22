@@ -1,0 +1,96 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  controlplane:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tensora
+          POSTGRES_PASSWORD: tensora
+          POSTGRES_DB: tensora
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tensora" --health-interval 2s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: controlplane
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: controlplane/go.mod
+          cache-dependency-path: controlplane/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: test (including Postgres store)
+        run: go test -race ./...
+        env:
+          TENSORA_TEST_DATABASE_URL: postgres://tensora:tensora@localhost:5432/tensora?sslmode=disable
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          working-directory: controlplane
+
+  ml:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+      - run: make deploy-check
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx --from shellcheck-py shellcheck infra/scripts/*.sh
+      - name: ansible-lint
+        working-directory: infra/ansible
+        run: |
+          uvx --from ansible-core ansible-galaxy collection install -r requirements.yml
+          uvx ansible-lint --offline
+      - run: uvx yamllint -c .yamllint.yaml .

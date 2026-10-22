@@ -1,0 +1,41 @@
+# Grafana Alloy ships pod logs to Loki (Promtail is end-of-life).
+# Tenant container logs are customer data: they are labeled with the tenant and must only
+# be viewed for operational reasons (docs/architecture/observability.md). Logs from inside
+# VMs are never collected — only virt-launcher's.
+alloy:
+  configMap:
+    content: |
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_tensora_io_tenant"]
+          target_label  = "tenant"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+        endpoint {
+          url = "http://loki-gateway.observability.svc/loki/api/v1/push"
+        }
+      }

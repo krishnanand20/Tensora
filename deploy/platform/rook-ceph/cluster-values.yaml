@@ -1,0 +1,20 @@
+# Rook-Ceph cluster (Phase 2+, ≥3 nodes). Chart defaults also create an RBD pool
+# (block), CephFS (shared filesystem) and an RGW object store (S3) — review those
+# sections of the upstream values before enabling.
+operatorNamespace: rook-ceph
+
+toolbox:
+  enabled: true
+
+cephClusterSpec:
+  mon:
+    count: 3
+  mgr:
+    count: 2
+  dashboard:
+    enabled: true
+  storage:
+    useAllNodes: true
+    useAllDevices: false
+    # Data NVMe only — never the OS disk. Adjust to your BOM (docs/hardware/bill-of-materials.md).
+    deviceFilter: "^nvme[1-9]n1$"

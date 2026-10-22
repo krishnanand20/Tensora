@@ -1,0 +1,12 @@
+# Managed by Ansible (infra/ansible/roles/wireguard). Admin access only — never customer traffic.
+[Interface]
+Address = {{ wireguard_address }}
+ListenPort = {{ wireguard_port }}
+PrivateKey = {{ wireguard_private_key }}
+{% for peer in wireguard_peers %}
+
+# {{ peer.name }}
+[Peer]
+PublicKey = {{ peer.public_key }}
+AllowedIPs = {{ peer.allowed_ips }}
+{% endfor %}

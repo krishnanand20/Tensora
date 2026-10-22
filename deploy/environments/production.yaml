@@ -1,0 +1,37 @@
+# Phase 4 target: ≥3 nodes, HA control plane, Ceph, Keycloak, Tensora. Edit before use.
+
+domain: tensora.example.com
+acmeEmail: ops@tensora.example.com
+
+# A virtual IP in front of the three k3s servers (e.g. kube-vip or a load balancer).
+apiServerHost: 10.0.10.10
+apiServerPort: 6443
+
+metallb:
+  addresses:
+    - 10.0.10.200-10.0.10.250
+
+gpuPassthrough:
+  devices:
+    - pciVendorSelector: "10DE:26B9"
+      resourceName: nvidia.com/AD102GL_L40S
+    - pciVendorSelector: "10DE:20B5"
+      resourceName: nvidia.com/GA100_A100_PCIE_80GB
+
+storage:
+  provisioner: rook-ceph
+  replicas: 3
+
+cilium:
+  operatorReplicas: 2
+
+features:
+  longhorn: false
+  rookCeph: true
+  kserve: true
+  keycloak: true
+  observability: true
+  tensora: true
+
+tensora:
+  version: "0.1.0"

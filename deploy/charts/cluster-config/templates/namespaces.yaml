@@ -1,0 +1,14 @@
+{{- /* Platform namespaces. tensora.io/role labels are referenced by tenant NetworkPolicies. */}}
+{{- $namespaces := dict "tensora-images" "" "tensora-gateway" "gateway" "tensora-models" "model-store" }}
+{{- range $name, $role := $namespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/part-of: tensora
+    {{- with $role }}
+    tensora.io/role: {{ . }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,36 @@
+# Enables IOMMU so GPUs can be passed through to VMs. Binding GPUs to vfio-pci is NOT done
+# here: the GPU Operator's vfio-manager does it on nodes labeled vm-passthrough, which lets
+# the same node switch between container and passthrough modes.
+
+- name: Choose IOMMU kernel arguments for this CPU
+  ansible.builtin.set_fact:
+    iommu_cmdline: "{{ 'intel_iommu=on iommu=pt' if 'GenuineIntel' in ansible_processor else 'amd_iommu=on iommu=pt' }}"
+
+- name: Add IOMMU arguments to the kernel command line
+  ansible.builtin.copy:
+    dest: /etc/default/grub.d/90-tensora-iommu.cfg
+    content: |
+      GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT {{ iommu_cmdline }}"
+    mode: "0644"
+  notify:
+    - Update grub
+    - Reboot for kernel arguments
+
+- name: Load VFIO modules at boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/vfio.conf
+    content: |
+      vfio
+      vfio_iommu_type1
+      vfio_pci
+    mode: "0644"
+  notify: Update initramfs
+
+- name: Blacklist nouveau (conflicts with the NVIDIA driver and vfio-pci)
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/blacklist-nouveau.conf
+    content: |
+      blacklist nouveau
+      options nouveau modeset=0
+    mode: "0644"
+  notify: Update initramfs
