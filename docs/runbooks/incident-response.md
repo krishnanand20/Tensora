@@ -27,7 +27,7 @@
 | **Postgres down** | readyz 503 | The API fails closed and running workloads continue. Restore from the replica or backup. |
 | **Certificate expired** | Alert at 14 days | `kubectl get certificate -A`; check the ACME HTTP-01 route through the Gateway |
 | **Tenant abuse** (mining stolen cards, outbound attacks, illegal content) | Abuse report, Hubble flows | Stop the tenant's workloads (API or DB), keep their data and logs, suspend the account, follow the AUP process, and get legal advice if needed |
-| **Suspected cross-tenant exposure** | Anything | **Sev 1.** Stop affected workloads, preserve evidence, and investigate before restoring service. There may be a legal duty to notify (DPDP Act). |
+| **Suspected cross-tenant exposure** | Anything | **Sev 1.** Stop affected workloads, preserve evidence, and investigate before restoring service. There may be a legal duty to notify regulators and customers. GDPR requires notification within 72 hours; DPDP and other laws have their own rules. |
 
 ## After every Sev 1 or Sev 2
 

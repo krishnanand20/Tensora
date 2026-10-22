@@ -60,7 +60,11 @@ The tier is stored per tenant (`tenants.tier`). The manifest builders set `runti
 | The controller's ServiceAccount can create pods in any namespace | Accepted | Kind allowlist, RBAC limited to listed resources, audit logging (Phase 2). |
 | Tenant container logs reach operators via Loki | Accepted | Treated as customer data, with access restricted and retention limited (see observability.md). |
 
-## Compliance notes (India)
+## Compliance notes
 
-- **DPDP Act 2023:** customer account data is personal data. Collect the minimum, define retention, and support deletion requests.
-- Workload data (volumes, models) belongs to the customer. Our ToS must state that we don't back it up unless they opt in.
+Tensora serves customers worldwide (see the [product spec's legal section](../product/product-spec.md#legal-and-compliance-for-a-worldwide-service)). The points that affect isolation design:
+
+- **Privacy law:** account data is personal data under GDPR (EU and UK), DPDP (India), CCPA (California), and others. Collect the minimum, define retention, support access and deletion requests, and document where account data is stored and transferred (the global control plane, ADR-0009).
+- **Data residency:** workload data stays in its region. Cross-region fallback needs the customer's explicit opt-in (ADR-0010).
+- **Sanctions and export controls:** screen customers before they get GPUs, and block restricted jurisdictions.
+- **Ownership:** workload data (volumes, models) belongs to the customer. Our ToS must state that we don't back it up unless they opt in.

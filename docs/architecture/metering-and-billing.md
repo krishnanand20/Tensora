@@ -20,6 +20,7 @@ flowchart LR
 ## Rules (as implemented in `controlplane/internal/metering`)
 
 - **Billable state:** `running` only. Provisioning time (image pull, model download) is not billed.
+- **Bill what ran, not what was asked for:** usage is priced by the class a workload was actually placed on (`placed_class`, ADR-0010), so a CPU fallback is billed at CPU prices. *Not yet in code: `usage_records.gpu_class` currently holds the requested class.*
 - **Granularity:** per second, rounded down within each hour segment, stored as one row per workload per UTC hour. GPU-seconds equal `seconds × gpu_count`.
 - **Closed hours only:** an hour is metered once `now − 5 min` has passed its end (the settle delay for in-flight transitions).
 - **Idempotent:** rows are insert-if-absent on `(workload_id, period_start)` and never updated. Re-running metering is safe.
@@ -30,10 +31,11 @@ flowchart LR
 
 | Piece | Notes |
 |---|---|
-| Price book | Price per GPU class per hour in INR, versioned with effective dates; priced from usage at invoice time |
+| Price book | Price per region, per class (GPU and CPU), per hour, **in USD**. Versioned with effective dates; priced from usage at invoice time. |
 | Storage billing | GB-hours for persistent disks (stopped VMs and notebooks still hold storage) |
-| Invoices | Monthly. GST at the applicable rate on the service (18% for most cloud services; confirm with a CA). GSTIN for B2B customers. Sequential invoice numbers. |
-| Payments | Razorpay (India-first, UPI and cards) or Stripe India. Prepaid credits suit a new provider: they avoid bad debt and allow hard spend limits. |
+| Invoices | Monthly, tax-compliant for the customer's location: GST (India, with GSTIN for B2B), VAT (EU and UK, with reverse charge for B2B), US sales tax. Use a tax engine (for example Stripe Tax) and an accountant per jurisdiction. Sequential invoice numbers. |
+| Payments | Stripe for cards worldwide; Razorpay for UPI and Indian cards. Credits and charges are in USD; a method that needs local currency (UPI) is converted at checkout. Prepaid credits suit a new provider: they avoid bad debt and allow hard spend limits. |
+| Screening | Sanctions and export-control checks before an account can buy GPU time (see the product spec's legal section) |
 | Spend limits | Stop or park workloads when credits run out, after warnings |
 | Credits | Automatic credits for platform-caused failures (see the gap below) |
 

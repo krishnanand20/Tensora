@@ -1,7 +1,11 @@
 # Tensora
 
-A small GPU cloud: customers launch GPU VMs, Jupyter notebooks, and model endpoints on
-bare-metal GPU servers. Similar in spirit to RunPod, Lambda, or E2E Networks.
+**A global GPU cloud for AI teams.** Rent GPUs by the second, run notebooks, or serve open
+models through an OpenAI-compatible API, in the region you choose, with your data kept there.
+Built for developers first, with an architecture ready for enterprise. The first region is India.
+See the [product definition](docs/product/product-spec.md).
+
+> "Tensora" is a working name. The final name is pending a trademark search.
 
 Tensora assembles proven open-source infrastructure and adds the product layer on top:
 

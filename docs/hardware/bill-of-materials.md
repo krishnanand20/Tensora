@@ -43,12 +43,12 @@ If small fractional GPUs matter to customers, choose A100 or H100, which do have
 
 1. Is this chassis validated (thermally and with BIOS) for 4× L40S, or whatever card you choose?
 2. Which PCIe topology results: does each GPU land in its own IOMMU group? Ask for `lspci -tv` from a reference unit.
-3. What's the lead time on GPUs, and is there warranty and RMA turnaround **in India**?
+3. What's the lead time on GPUs, and is there warranty and RMA turnaround **in the country where the server will run**?
 4. Is a BMC with Redfish and a remote console licence included?
 5. What's the power draw at full GPU load (measured, not nameplate)?
 
 ## Quotes
 
-| Date | Vendor | Config | Price (₹, ex-GST) | Lead time | Notes |
-|---|---|---|---|---|---|
-| | | | | | |
+| Date | Region | Vendor | Config | Price (currency, ex-tax) | Lead time | Notes |
+|---|---|---|---|---|---|---|
+| | | | | | | |

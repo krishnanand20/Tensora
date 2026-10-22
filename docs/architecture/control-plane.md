@@ -107,6 +107,14 @@ VM images.
 | Kubernetes API down | Admission and observation stop; the API still accepts requests | |
 | Node lost | Its workloads go to `failed` once their objects vanish or stop being ready | VMs could live-migrate once storage is RWX (Phase 2) |
 
+## Regions and fallback placement
+
+*Designed, not yet built.* Roadmap Phase 0 adds these to the data model before any real data exists.
+
+- **Regions** ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)): each workload gets an immutable `region`. One controller runs per region (`TENSORA_REGION`), touching only that region's workloads, and capacity is computed per region. The API, accounts, quotas, and billing stay global.
+- **Fallback placement** ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)): workloads may carry `fallback`, an ordered list of other GPU classes and/or `cpu`, plus `fallback_after`. Admission tries the requested class first, then each fallback once `fallback_after` has passed. It records `requested_class` and `placed_class`, and the event says why. Freed GPUs go to workloads waiting for that class before CPU-fallback endpoints are promoted back to GPU.
+- **Inference failover** happens per request in the regional inference gateway, not in the controller.
+
 ## Next resources (Phase 3)
 
 - **Models:** `POST /v1/models {source: hf://…}` launches a `tensora-ml ingest` Job that validates the model and copies it to `s3://tensora-models/<tenant>/<id>`. Endpoints then reference `model_id` instead of a raw URI.

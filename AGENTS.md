@@ -9,8 +9,9 @@ closest to the files you are changing. Rules here apply everywhere; nested files
 
 ## What Tensora is
 
-Tensora is a small GPU cloud: customers launch **GPU VMs**, **Jupyter notebooks**, and
-**model endpoints** on bare-metal GPU servers we operate. It is assembled from open-source
+Tensora (a working name) is a global, multi-region GPU cloud: customers launch **GPU VMs**,
+**Jupyter notebooks**, and **model endpoints** on bare-metal GPU servers we operate, in the
+region they choose. It is assembled from open-source
 infrastructure (k3s/Kubernetes, KubeVirt, NVIDIA GPU Operator, KServe + vLLM, Cilium,
 MetalLB, Longhorn → Rook-Ceph, Keycloak, Prometheus/DCGM/Loki). The code we write is the
 product layer on top.
@@ -55,6 +56,8 @@ touched and report the actual output. If a tool is missing, say so — do not cl
 6. **Tenant model weights must be safetensors; `trust_remote_code` is never enabled** for tenant models. The ML layer's validator (`ml/src/tensora_ml/validate.py`) is the enforcement point.
 7. **Every workload state change goes through `service.Transition`**, which validates against `domain` state rules and appends a `workload_events` row. Metering depends on those rows. Never write `state` directly.
 8. **Every store query that touches tenant data is scoped by tenant ID.** A request from tenant B for tenant A's object returns 404, never 403 (don't leak existence).
+9. **Every workload belongs to exactly one region, and its data never leaves that region** unless the customer explicitly opts in ([ADR-0009](docs/adr/0009-regions-global-control-plane-regional-cells.md)). *This isn't in code yet (roadmap Phase 0). New code must not assume a single region.*
+10. **Fallbacks are opt-in and visible** ([ADR-0010](docs/adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). Never silently give a customer a different GPU class, CPU, model, or region. Record `placed_class`, say what served each response, and bill for what actually ran.
 
 ## Conventions
 
@@ -85,6 +88,7 @@ Step-by-step playbooks live in `docs/playbooks/` (Claude Code exposes them as sk
 
 ## Where to find things
 
+- What we sell, to whom, and the milestone scope: [docs/product/product-spec.md](docs/product/product-spec.md). Check new features against its milestone tables before building.
 - Current phase, scope, and open decisions: [docs/roadmap.md](docs/roadmap.md)
 - Why things are the way they are: [docs/adr/](docs/adr/)
 - Terms (MIG, VFIO, RawDeployment, cohort, …): [docs/glossary.md](docs/glossary.md)

@@ -2,6 +2,7 @@
 
 | Area | Start here |
 |---|---|
+| **What the product is, who it's for, how it makes money** | [product/product-spec.md](product/product-spec.md) |
 | **What we're building, and in what order** | [roadmap.md](roadmap.md) |
 | **How it fits together** | [architecture/overview.md](architecture/overview.md) |
 | Control plane: lifecycle, admission, reconciliation | [architecture/control-plane.md](architecture/control-plane.md) |

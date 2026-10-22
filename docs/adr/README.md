@@ -13,5 +13,7 @@ Short records of decisions that are expensive to reverse. How to write one:
 | [0006](0006-bill-on-allocation.md) | Bill GPU allocation time, not utilization | Accepted |
 | [0007](0007-gateway-api-on-cilium.md) | Gateway API on Cilium for ingress | Accepted |
 | [0008](0008-postgres-intent-kubernetes-runtime.md) | Postgres owns intent, Kubernetes owns runtime, and a controller reconciles them | Accepted |
+| [0009](0009-regions-global-control-plane-regional-cells.md) | Regions: one global control plane, independent regional cells | Accepted (not yet in code) |
+| [0010](0010-fallbacks-cpu-placement-and-inference-failover.md) | Fallbacks: CPU placement when GPUs are unavailable, and inference failover | Accepted (not yet in code) |
 
 Statuses: Proposed → Accepted → (Superseded by NNNN | Deprecated). Never delete an ADR; supersede it.

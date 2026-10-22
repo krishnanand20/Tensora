@@ -1,7 +1,7 @@
 # Power and cooling
 
-Power is often the real bottleneck, before GPUs or money. In India, plan for grid instability,
-high ambient temperatures, and slow utility upgrades.
+Power is often the real bottleneck, before GPUs or money. In the first region (India), and in
+many other markets, plan for grid instability, high ambient temperatures, and slow utility upgrades.
 
 ## Rough draw per node
 
@@ -56,4 +56,4 @@ monthly kWh ≈ average kW × 24 × 30 × PUE (colocation ~1.5, office ~2+)
 ```
 
 For example, a node averaging 2.5 kW uses about 2.5 × 720 × 1.5 ≈ 2,700 kWh a month. Multiply by your
-₹/kWh, or the colocation's per-kW rate, to find the floor price per GPU-hour before any margin.
+local electricity rate per kWh (or the colocation's per-kW rate), converted to USD, to find the floor price per GPU-hour before any margin.

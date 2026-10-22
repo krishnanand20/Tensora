@@ -16,7 +16,7 @@
 |---|---|---|
 | GPU XID errors (`DCGM_FI_DEV_XID_ERRORS` > 0) | DCGM | XID 79 (the GPU fell off the bus) or 48 (double-bit ECC) means draining the node and possibly an RMA |
 | ECC double-bit errors / retired pages | DCGM | Hardware degradation |
-| GPU temperature or power at its limit for 10 min or more | DCGM, IPMI | Cooling problems, which are common in Indian summers |
+| GPU temperature or power at its limit for 10 min or more | DCGM, IPMI | Cooling problems, which are common in hot climates and summer months |
 | Node NotReady, or disk over 85% | kube-state-metrics, node-exporter | |
 | Longhorn or Ceph degraded | Their exporters | Data at risk |
 | Workloads in `provisioning` longer than 15 min, or queue depth growing | Control plane `/metrics` (Phase 3) | Stuck admission or capacity exhaustion |
