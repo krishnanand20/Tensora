@@ -1,4 +1,4 @@
-# 03: First model endpoint (KServe + vLLM)
+# 03: First model endpoint (KServe + vLLM, Datacenter profile)
 
 Prerequisites: the node is in **container** mode ([02, part A](02-gpu-passthrough.md#part-a-container-mode)),
 KServe is installed, and `cluster-config` has created the `tensora-vllm` ClusterServingRuntime.
@@ -11,8 +11,8 @@ kubectl -n tensora-smoke logs deploy/qwen-predictor -c storage-initializer   # m
 kubectl -n tensora-smoke logs deploy/qwen-predictor -f            # vLLM startup
 ```
 
-This runbook calls the endpoint directly, which is fine for a smoke test. From Phase 3, customer traffic goes
-through the regional **inference gateway** (API keys, token metering, failover; ADR-0010). Repeat
+This runbook calls the endpoint directly, which is fine for a smoke test. Once it exists, user traffic goes
+through the regional **inference gateway** (API keys, token counts, failover; ADR-0010). Repeat
 the test through the gateway once it exists. To test CPU fallback, apply the same InferenceService with
 `runtime: tensora-vllm-cpu`, no GPU resources, and a small model.
 
@@ -35,7 +35,7 @@ cd ml && uv run tensora-ml bench http://localhost:8080 --model qwen --requests 6
 ```
 
 Record TTFT p50/p95 and tokens/s per GPU class in a table here. These numbers become the
-basis for pricing and per-class concurrency limits.
+basis for capacity planning and per-class concurrency limits.
 
 | Date | GPU | Model | Concurrency | TTFT p50 | TTFT p95 | Output tokens/s |
 |---|---|---|---|---|---|---|

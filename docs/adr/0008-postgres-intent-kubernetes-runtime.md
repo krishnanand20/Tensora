@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 
+> **Generalized 2026-10-23 ([ADR-0012](0012-deployment-profiles.md), [ADR-0013](0013-node-agent-and-apple-silicon.md)):** the store may be **SQLite or Postgres**, and the runtime may be **node agents or Kubernetes**. Mentions of customers and billing below are historical (ADR-0011: Tensora is free; usage is accounted, not billed). The principle (store owns intent, runtime owns runtime state, the controller reconciles) is unchanged.
+
 ## Context
 
 Customer requests must be fast and reliable even when the cluster is slow or partially down.
@@ -31,5 +33,5 @@ is actually running.
 ## Update 2026-10-23
 
 With regions (ADR-0009) there is **one controller per region**, each the only cluster client for its
-region. Postgres and the API stay global. Fallback placement (ADR-0010) is part of the controller's
+region. The store and the API serve the whole deployment. Fallback placement (ADR-0010) is part of the controller's
 admission step, and it records both `requested_class` and `placed_class`.

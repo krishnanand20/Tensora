@@ -237,7 +237,7 @@ func (q *queries) WorkloadsForMetering(ctx context.Context, since time.Time) ([]
 		WHERE state = ANY($1)
 		   OR EXISTS (SELECT 1 FROM workload_events e WHERE e.workload_id = w.id AND e.at >= $2)
 		ORDER BY created_at, id`,
-		store.StatesAsStrings(domain.StatesWhere(domain.State.Billable)), since)
+		store.StatesAsStrings(domain.StatesWhere(domain.State.Metered)), since)
 }
 
 // ---- events and usage

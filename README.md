@@ -1,47 +1,49 @@
 # Tensora
 
-**A global GPU cloud for AI teams.** Launch **GPU VMs** with root access, run **Jupyter notebooks**,
-or serve **open models** through an OpenAI-compatible API. Everything is billed by the second, in the
-region you choose, with your data kept there.
-Built for developers first, with an architecture ready for enterprise. The first region is India.
-See the [product definition](docs/product/product-spec.md).
+**A free, open GPU cloud you run yourself.** Install it on any machine you have, from a MacBook or
+Mac Studio to a gaming PC or a rack of NVIDIA servers. Then launch **GPU VMs**, **Jupyter notebooks**,
+and **OpenAI-compatible model endpoints** on it. Use it alone, share it with your team or class, or lend
+idle machines to others. The same software runs from one laptop to a datacenter, **free for everyone**:
+students, developers, startups, small companies, enterprises, and big tech.
 
 > "Tensora" is a working name. The final name is pending a trademark search.
+> See the [product definition](docs/product/product-spec.md) for the full picture.
 
-Tensora assembles proven open-source infrastructure and adds the product layer on top:
+## What you can run
 
-- **Core platform (Go):** API, controller, and metering
-- **ML layer (Python):** model ingestion and validation, benchmarking, GPU burn-in
-- **Dashboard (TypeScript):** the web UI customers use
+| Workload | Mac (Apple Silicon) | Linux + NVIDIA | CPU-only machine |
+|---|---|---|---|
+| **GPU VM**: a full VM with root access over SSH | macOS VM with Metal | KVM with whole-GPU passthrough | Linux VM |
+| **Notebook**: JupyterLab with a persistent workspace | PyTorch (MPS) and MLX on Metal | PyTorch with CUDA | PyTorch on CPU |
+| **Model endpoint**: an OpenAI-compatible API | MLX or llama.cpp on Metal | vLLM or llama.cpp | llama.cpp (small models) |
 
-> **Status:** Phase 0, which covers decisions and scaffolding. See [docs/roadmap.md](docs/roadmap.md).
+If the GPU you want is busy, opt-in fallbacks run your workload on another GPU, on CPU, or on another machine.
+
+## Three ways to deploy, one product
+
+| Profile | For | Install |
+|---|---|---|
+| **Solo** | One person, one machine | One binary: `tensora up` (planned) |
+| **Lab** | Classes, teams, home labs, small companies, with mixed Mac and Linux machines | `tensora up` on one machine and `tensora agent` on the rest (planned) |
+| **Datacenter** | Startups at scale, enterprises, big tech | Kubernetes with KubeVirt, KServe, and the GPU Operator ([deploy/](deploy/), [infra/](infra/)) |
+
+Every machine is **private by default**. Owners can share an idle machine with invited people, or with a
+community pool, under strong host protections ([ADR-0014](docs/adr/0014-sharing-idle-compute.md)).
 
 ## Architecture at a glance
 
 ```mermaid
 flowchart LR
-  user([Customer]) --> web[Dashboard<br/>TypeScript]
-  user --> sdk[API · CLI · SDK]
-  web --> api
-  sdk --> api
-  subgraph global[Global control plane · Go]
-    api[tensora api] --> pg[(Postgres)]
-    meter[tensora metering] --> pg
-    api -. OIDC .-> kc[Keycloak]
+  user([User: dashboard · CLI · API]) --> cp
+  subgraph cp[Control plane · the tensora binary · Go]
+    api[API + dashboard] --> store[(SQLite or Postgres)]
+    ctrl[Controller] --> store
+    acct[Usage accounting] --> store
   end
-  subgraph cell[Regional cell · one per region, India first]
-    ctrl[tensora controller] --> k8s{{k3s / Kubernetes}}
-    gw[Inference gateway<br/>keys · metering · failover]
-    k8s --> kv[KubeVirt VMs<br/>GPU passthrough]
-    k8s --> nb[Notebooks<br/>Kata containers]
-    k8s --> ep[KServe + vLLM endpoints<br/>GPU, or opt-in CPU fallback]
-    k8s --> mljob[ML layer jobs · Python<br/>ingest / validate]
-    mljob --> s3[(Regional object store)]
-    ep --> s3
-    k8s --- nodes[[GPU nodes · CPU nodes]]
-  end
-  ctrl --> pg
-  user -- model API calls --> gw --> ep
+  ctrl -- "agents dial out (mTLS)" --> mac["Mac · Apple Silicon<br/>Metal: MLX · llama.cpp · macOS VMs"]
+  ctrl -- "agents dial out (mTLS)" --> lin["Linux PC or server<br/>NVIDIA or CPU: containers · KVM VMs"]
+  ctrl -- "Datacenter profile" --> k8s{{"Kubernetes<br/>KubeVirt · KServe · GPU Operator"}}
+  ml["ML layer · Python<br/>validate · ingest · bench · burn-in"] -.-> mac & lin & k8s
 ```
 
 Details are in [docs/architecture/overview.md](docs/architecture/overview.md).
@@ -49,27 +51,24 @@ Details are in [docs/architecture/overview.md](docs/architecture/overview.md).
 ## Repository layout
 
 ```
-controlplane/   Go: API, controller, metering (one `tensora` binary)
-ml/             Python: model ingestion/validation, endpoint benchmarks, GPU burn-in
-web/            TypeScript: customer dashboard
-deploy/         helmfile for cluster add-ons, cluster-config chart, tensora chart
-infra/          Ansible bootstrap for bare-metal GPU nodes
+controlplane/   Go: the tensora binary — API, controller, usage accounting, (planned) node agent, dashboard host
+ml/             Python: model validation, ingestion, endpoint benchmarks, GPU burn-in
+web/            TypeScript: the dashboard
+deploy/         Datacenter profile: helmfile for cluster add-ons, cluster-config chart, tensora chart
+infra/          Datacenter profile: Ansible bootstrap for Linux GPU servers
 images/         Launch catalog and notebook/VM image definitions
-docs/           Architecture, ADRs, runbooks, playbooks, hardware, roadmap
+docs/           Product spec, architecture, ADRs, roadmap, runbooks, playbooks, hardware
 ```
 
-## Quickstart (no GPU required)
+## Try it today (no GPU needed; runs on macOS and Linux)
 
-Prerequisites: Go 1.27+, [uv](https://docs.astral.sh/uv/), and Node 22+. Docker is only
-needed for `make dev-pg`.
+Prerequisites: Go 1.27+, [uv](https://docs.astral.sh/uv/), and Node 22+.
 
 ```bash
-make setup      # install dev deps for all components
-make dev        # API, controller, and metering in one process, with an in-memory store and fake cluster
+make setup      # install dev dependencies for all components
+make dev        # API, controller, and usage accounting in one process, with an in-memory store and a fake backend
 make web-dev    # dashboard on http://localhost:5173 (in a second terminal)
 ```
-
-Try the API as the seeded dev tenant `acme`:
 
 ```bash
 curl -s localhost:8080/v1/catalog -H 'X-Dev-Tenant: acme' | jq
@@ -79,12 +78,28 @@ curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' -H 'Content-Type: ap
 curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' | jq   # pending → provisioning → running
 ```
 
-## Bringing up real hardware
+`make build-all` cross-compiles the binary for macOS (Apple Silicon), Linux amd64, and Linux arm64.
 
-1. [docs/hardware/bill-of-materials.md](docs/hardware/bill-of-materials.md): choose the hardware
-2. [docs/runbooks/01-node-bootstrap.md](docs/runbooks/01-node-bootstrap.md): BIOS, Ubuntu, Ansible, and k3s
-3. [docs/runbooks/02-gpu-passthrough.md](docs/runbooks/02-gpu-passthrough.md): GPU Operator, KubeVirt, and the first GPU VM
-4. [docs/runbooks/03-first-model-endpoint.md](docs/runbooks/03-first-model-endpoint.md): KServe and vLLM
+## Status
+
+| | Built | Planned |
+|---|---|---|
+| Control plane | API, lifecycle, quotas, controller, usage accounting, Postgres and in-memory stores, Kubernetes backend | SQLite store, node agent and drivers, `tensora up`, local accounts, regions, fallbacks, sharing |
+| ML layer | Model validator (safetensors), ingestion, benchmarking, CUDA burn-in | GGUF validation, Metal burn-in |
+| Dashboard | Workload list, launch form | Machines, sharing, usage reports, embedded in the binary |
+| Datacenter | Charts, add-ons, Ansible, runbooks (rendered and linted, not yet run on hardware) | Production validation |
+
+The full plan is in the [roadmap](docs/roadmap.md). Your Mac is enough hardware for Phases 1–2.
+
+## Docs
+
+- [Product definition](docs/product/product-spec.md)
+- [Roadmap](docs/roadmap.md)
+- [Architecture](docs/architecture/overview.md)
+- [Decisions (ADRs)](docs/adr/README.md)
+- [Runbooks](docs/runbooks/README.md)
+- [Playbooks](docs/playbooks/)
+- [Glossary](docs/glossary.md)
 
 ## Working with AI agents
 
@@ -92,7 +107,7 @@ curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' | jq   # pending →
 - [CLAUDE.md](CLAUDE.md) imports AGENTS.md and adds Claude Code skills and subagents.
 - Each component directory has its own `AGENTS.md` and `CLAUDE.md`.
 
-## Docs
+## Licence
 
-The [docs index](docs/README.md) links to the [roadmap](docs/roadmap.md), [ADRs](docs/adr/),
-[runbooks](docs/runbooks/), [playbooks](docs/playbooks/), and the [glossary](docs/glossary.md).
+Open source and free for everyone ([ADR-0011](docs/adr/0011-free-for-everyone.md)). The licence is
+still to be chosen (Apache-2.0 is recommended); see the roadmap.

@@ -1,7 +1,9 @@
 # 0006. Bill GPU allocation time, not utilization
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0011](0011-free-for-everyone.md) (no billing; usage accounting kept)
 - **Date:** 2026-10-22
+
+> **Superseded in part by [ADR-0011](0011-free-for-everyone.md) (2026-10-23): Tensora is free, and there is no billing.** The mechanism below, allocation-based records from lifecycle events, is kept as **usage accounting** for quotas, fair share, and reports ([usage-accounting.md](../architecture/usage-accounting.md)). Read every "bill" or "price" below as historical.
 
 ## Context
 
@@ -28,8 +30,7 @@ The original idea was to track GPU-hours from DCGM exporter metrics. But:
 - **DCGM utilization:** doesn't work for VMs, and is lossy.
 - **Kubernetes pod lifetimes from kube-state-metrics:** closer to right, but not durable and not tied to our tenant model.
 
-## Update 2026-10-23
+## Update 2026-10-23 (superseded by ADR-0011)
 
-- Usage is priced by the class a workload actually ran on (`placed_class`), so an opt-in CPU or other-class fallback is billed at its own price (ADR-0010).
-- Requests served by the serverless pool or a fallback model are billed per token, from inference gateway counts.
-- All prices are in USD.
+There are no prices and no billing. Usage is **accounted** by the class a workload actually ran on
+(`placed_class`, ADR-0010) and by inference gateway token counts, for quotas, fair share, and reports.

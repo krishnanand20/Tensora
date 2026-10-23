@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 
+> **Scope since 2026-10-23 ([ADR-0012](0012-deployment-profiles.md)):** this covers the **Datacenter profile**. In Solo and Lab, the control plane serves the dashboard and API itself and relays access to workloads ([networking.md](../architecture/networking.md)).
+
 ## Context
 
 We need TLS ingress for the API, dashboard, and Keycloak, and later per-workload routes for endpoints
@@ -28,5 +30,5 @@ and notebooks. ingress-nginx was the usual default, but upstream announced its r
 
 ## Update 2026-10-23
 
-- Each region runs its own Gateway for workload traffic. `api.`, `app.`, and `auth.` are served by the global plane (ADR-0009).
+- Each region runs its own Gateway for workload traffic. `api.`, `app.`, and `auth.` are served by the control plane (ADR-0009).
 - Endpoint API keys, token metering, rate limits, and failover move into a regional **inference gateway** behind this Gateway (ADR-0010).

@@ -1,7 +1,7 @@
-# Phase 4 target: ≥3 nodes, HA control plane, Ceph, Keycloak, Tensora. Edit before use.
+# Datacenter profile at scale: ≥3 nodes, HA control plane, Ceph, Keycloak, Tensora. Edit before use.
 # One file per regional cell: copy and rename it per region (ADR-0009).
 
-region: in-mum-1 # read once regions land in code (roadmap Phase 0, task 12)
+region: dc-1 # read once regions land in code (roadmap)
 
 domain: tensora.example.com
 acmeEmail: ops@tensora.example.com

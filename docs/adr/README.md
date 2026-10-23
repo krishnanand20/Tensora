@@ -1,19 +1,27 @@
 # Architecture Decision Records
 
-Short records of decisions that are expensive to reverse. How to write one:
+Short records of decisions that are expensive to reverse. To write one, follow
 [docs/playbooks/write-an-adr.md](../playbooks/write-an-adr.md). Claude Code users can run `/new-adr`.
+
+ADRs are history, so they're never rewritten. When a later decision changes an earlier one, the earlier
+ADR gets a banner at the top saying what still applies. **Read the newest ADRs first:** 0011 to 0014
+define today's product.
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-kubernetes-kubevirt-gpu-operator.md) | Kubernetes + KubeVirt + GPU Operator, not Proxmox or OpenStack | Accepted |
-| [0002](0002-k3s-single-node-first.md) | k3s with embedded etcd, starting on a single node | Accepted |
+| [0011](0011-free-for-everyone.md) | **Free for everyone:** no pricing, no billing, open source | Accepted |
+| [0012](0012-deployment-profiles.md) | **Deployment profiles:** Solo, Lab, Datacenter | Accepted (not yet in code) |
+| [0013](0013-node-agent-and-apple-silicon.md) | **Node agent and drivers; Apple Silicon Macs as first-class hosts** | Accepted (not yet in code) |
+| [0014](0014-sharing-idle-compute.md) | **Sharing idle compute:** private, invite-only, community pools | Accepted (not yet in code) |
+| [0001](0001-kubernetes-kubevirt-gpu-operator.md) | Kubernetes, KubeVirt, and the GPU Operator | Accepted; Datacenter profile only (0012) |
+| [0002](0002-k3s-single-node-first.md) | k3s with embedded etcd | Accepted; Datacenter profile only (0012) |
 | [0003](0003-language-split.md) | Go for the core platform, Python for the ML layer, TypeScript for the dashboard | Accepted |
-| [0004](0004-untrusted-code-in-vms-or-kata.md) | Untrusted code runs only in VMs or Kata containers | Accepted |
-| [0005](0005-storage-longhorn-then-ceph.md) | Longhorn and a small S3 store first, Rook-Ceph from Phase 2 | Accepted (object store choice open) |
-| [0006](0006-bill-on-allocation.md) | Bill GPU allocation time, not utilization | Accepted |
-| [0007](0007-gateway-api-on-cilium.md) | Gateway API on Cilium for ingress | Accepted |
-| [0008](0008-postgres-intent-kubernetes-runtime.md) | Postgres owns intent, Kubernetes owns runtime, and a controller reconciles them | Accepted |
-| [0009](0009-regions-global-control-plane-regional-cells.md) | Regions: one global control plane, independent regional cells | Accepted (not yet in code) |
-| [0010](0010-fallbacks-cpu-placement-and-inference-failover.md) | Fallbacks: CPU placement when GPUs are unavailable, and inference failover | Accepted (not yet in code) |
+| [0004](0004-untrusted-code-in-vms-or-kata.md) | Untrusted code runs only behind strong isolation (VMs, Kata) | Accepted; generalized by the trust matrix (0014) |
+| [0005](0005-storage-longhorn-then-ceph.md) | Longhorn, then Rook-Ceph | Accepted; Datacenter profile only (0012) |
+| [0006](0006-bill-on-allocation.md) | Account usage on allocation, not utilization | **Superseded in part by 0011** (no billing; accounting kept) |
+| [0007](0007-gateway-api-on-cilium.md) | Gateway API on Cilium | Accepted; Datacenter profile only (0012) |
+| [0008](0008-postgres-intent-kubernetes-runtime.md) | The store owns intent, the runtime owns runtime state, a controller reconciles | Accepted; generalized by 0012 and 0013 |
+| [0009](0009-regions-global-control-plane-regional-cells.md) | Regions: one control plane, independent regional cells | Accepted; reframed for self-hosting by 0011 and 0012 (not yet in code) |
+| [0010](0010-fallbacks-cpu-placement-and-inference-failover.md) | Fallbacks: CPU placement and inference failover | Accepted; "billed" reads as "accounted" (0011) (not yet in code) |
 
-Statuses: Proposed → Accepted → (Superseded by NNNN | Deprecated). Never delete an ADR; supersede it.
+Statuses run Proposed → Accepted → (Superseded by NNNN | Deprecated). Never delete an ADR; supersede it.

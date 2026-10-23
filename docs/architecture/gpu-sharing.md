@@ -1,50 +1,60 @@
-# GPU allocation and sharing
+# GPUs: access, allocation, and sharing
 
-## The options
+## Accelerators Tensora supports
 
-| Method | Isolation | Cards | Licensing | Tensora policy |
+| Accelerator | Platforms | How workloads use it | Partitioning | Status |
 |---|---|---|---|---|
-| **Whole-GPU passthrough** (VFIO) | Strong: the VM owns the device | Almost any; consumer cards have caveats | None | **Default for VMs** |
-| **Whole GPU to a container** | Good with Kata; weak with runc | Any | None | Default for notebooks and endpoints |
-| **MIG** (Multi-Instance GPU) | Hardware-partitioned memory and SMs; a shared driver | A100, H100, H200, B200 (and some others) | None for containers. MIG-backed vGPU needs a vGPU licence. | Phase 5 (M4), for small endpoints, behind Kata |
-| **vGPU** | Strong (mediated device per VM) | Datacenter cards | NVIDIA vGPU/AI Enterprise licence per GPU | Not planned. Revisit if fractional VMs are in demand. |
-| **Time-slicing** | **None**: shared memory and no fault isolation | Any | None | **Never across tenants**, and only for internal dev |
+| **NVIDIA** (datacenter and consumer) | Linux | CUDA in containers; VFIO passthrough to VMs | MIG on A100, H100 and newer; vGPU (licensed); time-slicing | Built (Datacenter); agent planned |
+| **Apple Silicon** (M-series GPU, unified memory) | macOS | Metal from native processes (MLX, llama.cpp, PyTorch MPS); paravirtualized Metal in macOS VMs | None | Planned (Phase 1) |
+| **CPU** | All | Everything without a GPU; small-model inference with llama.cpp | — | Planned |
+| **AMD** (ROCm) | Linux | Containers with ROCm | — | M5 |
 
-## When GPUs are sold out
+## NVIDIA: the options
 
-Customers may opt in to **placement fallback**: another GPU class, or CPU, after a wait they choose
-([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). Fallback never means
-sharing a GPU. Time-slicing stays forbidden across tenants even under capacity pressure.
+| Method | Isolation | Cards | Tensora policy |
+|---|---|---|---|
+| **Whole-GPU passthrough** (VFIO) | Strong: the VM owns the device | Almost any; consumer cards have caveats | Default for VMs |
+| **Whole GPU to a container** | Good with Kata, weak with runc | Any | Default for notebooks and endpoints |
+| **MIG** | Hardware-partitioned memory and SMs; a shared driver | A100, H100, H200, B200 and similar | M5, for small endpoints, behind Kata |
+| **vGPU** | Strong (a mediated device per VM) | Datacenter cards; licensed by NVIDIA | Not planned |
+| **Time-slicing** | **None** | Any | **Never between different users**; allowed for a single owner's own workloads |
 
-## GPU Operator node modes
+### GPU Operator node modes (Datacenter)
 
 The GPU Operator decides **per node** how all of its GPUs are used, through a label:
 
 ```
-nvidia.com/gpu.workload.config=container        # NVIDIA driver on host → nvidia.com/gpu for pods
+nvidia.com/gpu.workload.config=container        # NVIDIA driver on the host → nvidia.com/gpu for pods
 nvidia.com/gpu.workload.config=vm-passthrough   # vfio-pci bound → nvidia.com/<DEVICE> for KubeVirt
 ```
 
-Consequences:
+- A node can't serve VMs and containers at the same time. With one node, test the two modes one after the other. Relabeling rebinds every GPU, so drain GPU workloads first.
+- From two nodes onward, dedicate nodes to a mode.
+- Capacity per GPU class counts passthrough nodes by `vm_device_name`, and container nodes by `container_resource` plus `node_selector`.
 
-- **One node can't serve VMs and containers at the same time.** With a single node in
-  Phase 1, you test container mode (endpoint and burn-in) and passthrough mode (VM) one after the other.
-  Relabeling rebinds every GPU, so drain GPU workloads first.
-- From two nodes onward, dedicate nodes to a mode and let the catalog route each workload kind to the right one.
-- Node capacity per GPU class is computed this way (`cluster/kube`): passthrough nodes are counted by `vm_device_name`,
-  and container nodes by `container_resource` plus `node_selector`.
+On a Lab's Linux machines, the agent's `docker` and `libvirt` drivers switch modes the same way:
+a GPU is either given to containers or bound to vfio-pci for a VM, never both at once.
 
-## Consumer GPUs (RTX 4090, 5090)
+### Consumer NVIDIA cards (RTX 4090, 5090)
 
 - Cheap per FLOP, with no MIG or vGPU. Passthrough generally works, but some boards have reset quirks, so test stop/start cycles.
-- **Licensing:** NVIDIA's GeForce driver licence has historically excluded datacenter deployment.
-  Read the current EULA and get legal advice before selling consumer-GPU compute. Until then, the catalog
-  marks `rtx4090-24gb` as `internal_only`, so only `trusted` tenants can use it.
-- Their thermals assume desktop airflow. Blower-style or server-validated variants are needed in racks.
+- **At home (Solo and Lab):** a normal use of a GeForce card.
+- **In a datacenter:** NVIDIA's GeForce driver licence has historically excluded datacenter deployment. Datacenter operators should read the current licence. The catalog's `internal_only` flag restricts a class to trusted tenants.
 
-## MIG notes (Phase 5)
+## Apple Silicon
 
-- MIG profiles (for example `1g.10gb` and `3g.40gb` on A100 80GB) appear as separate resources
-  (`nvidia.com/mig-1g.10gb`) with `mig.strategy: mixed`. Each profile becomes its own GPU class in the catalog.
-- MIG gives memory and fault isolation, but tenants still share a host kernel unless they run in Kata.
-- Repartitioning needs an idle GPU. Plan fixed layouts per node rather than layouts that change on demand.
+- **Unified memory:** the GPU uses system RAM. macOS caps how much the GPU may wire by default (an administrator can raise it with a `sysctl`). The agent reports usable GPU memory and **keeps headroom for the owner**.
+- **Frameworks:**
+  - MLX (Apple's array framework, using safetensors weights)
+  - llama.cpp with its Metal backend (GGUF weights)
+  - PyTorch's MPS backend
+  - Both the MLX and llama.cpp servers provide OpenAI-compatible APIs. vLLM is the NVIDIA runtime and isn't used on Macs.
+- **VMs:** macOS guests get paravirtualized Metal through Apple's Virtualization framework. The macOS licence allows at most 2 macOS VMs per Mac. Linux guests get no GPU compute.
+- **No partitioning:** Metal has nothing like MIG. On shared Macs, one untrusted user gets the whole GPU or none of it, and an owner's own workloads may share freely.
+- **Capacity:** each Apple class is identified by chip family and unified memory, for example `apple-m4-max-128gb` (catalog, planned).
+
+## When GPUs are busy
+
+Users may opt in to **placement fallback**: another GPU class, or CPU, after a wait they choose
+([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). On a Mac, the natural
+order is Metal GPU, then CPU. A fallback is **never** a GPU shared with a stranger.

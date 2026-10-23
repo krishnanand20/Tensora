@@ -48,7 +48,7 @@ type Queries interface {
 	WorkloadsInStates(ctx context.Context, states ...domain.State) ([]domain.Workload, error)
 	// GPUsAllocated sums gpu_count by GPU class over workloads whose state HoldsCapacity.
 	GPUsAllocated(ctx context.Context) (map[string]int, error)
-	// WorkloadsForMetering returns workloads that are billable now or had an event at or after since.
+	// WorkloadsForMetering returns workloads that are metered now or had an event at or after since.
 	WorkloadsForMetering(ctx context.Context, since time.Time) ([]domain.Workload, error)
 
 	// Events (append-only) and usage.

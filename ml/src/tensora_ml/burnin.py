@@ -1,6 +1,6 @@
 """GPU burn-in for new nodes: sustained bf16 matmul load, NaN checks, and a VRAM pattern test.
 
-Run on every GPU before it is offered to customers (docs/runbooks/add-node.md). It needs
+Run on every GPU before it runs anyone else's workloads (docs/runbooks/add-node.md). It needs
 the `burnin` extra (PyTorch) and a node in container mode, because passthrough GPUs are
 bound to vfio-pci and invisible to CUDA on the host.
 """

@@ -8,192 +8,149 @@ document says *what* and *why*. Every roadmap item should trace back to somethin
 
 ## In one sentence
 
-**Tensora is a global GPU cloud for AI teams.** Launch GPU VMs with root access, run Jupyter notebooks,
-or serve open models through an OpenAI-compatible API. Everything is billed by the second, in the
-region you choose, with your data kept in that region. It's simple enough for a student and solid enough for an enterprise.
+**Tensora is a free, open GPU cloud you run yourself.** Install it on any machine you have (a MacBook,
+a Mac Studio, a gaming PC, a rack of NVIDIA servers) and launch **GPU VMs**, **Jupyter notebooks**,
+and **OpenAI-compatible model endpoints** on it. Use it alone, share it with your team or class, or
+lend your idle machines to others. The same software runs from one laptop to a datacenter, free for everyone.
 
-## The bet
+## Who it's for
 
-- **Customers increasingly need to choose where compute and data live.** Privacy law (GDPR, DPDP, and others) and national "sovereign AI" programs push AI workloads into specific countries. The big GPU clouds concentrate capacity in a few US and EU locations. Regions where good, developer-friendly GPU clouds are thin are our wedge.
-- **Developer experience wins users that price can't.** That means launching in minutes, clear pricing, good docs, and an API and CLI for everything.
-- **Inference is the growth market.** Most companies will *use* models more than they train them. GPU VMs, notebooks, and a model API in one place cover the whole journey: experiment in a notebook, fine-tune on a GPU VM, serve on an endpoint.
-- **Sell worldwide from day one, build regions by demand.** Selling globally costs only software (global payments, tax, and compliance). Each region costs hardware. The first region is **India**: home market, cost and presence advantage, and local payment methods like UPI. Customers anywhere can sign up and use it. New regions open where demand proves out.
-
-## Regions
-
-A **region** is one location (a city and datacenter) with its own GPU clusters, storage, and
-endpoint traffic. Customers pick a region per workload, and their data stays there
-([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)).
-
-| Region | Why | When |
+| Who | Typical setup | What they get |
 |---|---|---|
-| **India** (Mumbai or another metro with Tier III colocation) | Home market; cost and presence advantage; in-country data for Indian customers | First (M1–M3) |
-| **Second region**, chosen from demand data: EU (GDPR and sovereignty demand), US (largest market), or the Middle East or Southeast Asia (sovereign-AI programs) | Wherever paying signups and latency complaints come from | M4 |
-| More, including **dedicated sovereign regions** for a government or large enterprise | Contracted capacity in a specific country | M5+ |
+| **Students and learners** | One laptop or Mac; a university lab | Notebooks and local models with no cloud bill; access to their lab's shared GPUs |
+| **Developers and researchers** | A Mac, or a desktop with an RTX card | Private model endpoints, VMs for experiments, one API for every machine they own |
+| **Startups and small companies** | A few servers, plus the team's Macs | A shared internal GPU cloud, with users, quotas, and isolation, at no licence cost |
+| **Enterprises and big tech** | Datacenters, many sites | A full private GPU cloud: Kubernetes, VMs, SSO, audit logs, regions, HA. Every feature is free. |
+| **People with idle machines** | Any of the above, unused at night or between jobs | A way to share spare compute with a team, a class, or a community pool, safely |
 
-**A region is a repeatable kit.** It's the same `infra/` and `deploy/` stack, plus a colocation contract, hardware,
-IP transit, and local legal and tax registration where required. The fastest way to add regions
-without capital is a **partner region**: a datacenter partner hosts the GPUs, and Tensora supplies the software and the customers.
+## What you can run
 
-## Customers, in stages
+| Workload | What it is | Linux + NVIDIA | Mac (Apple Silicon) | CPU-only machine |
+|---|---|---|---|---|
+| **GPU VM** | A full VM with root access over SSH | KVM with whole-GPU passthrough | macOS VM with Metal (max 2 per Mac); Linux VM, CPU only | Linux VM |
+| **Notebook** | JupyterLab with a persistent workspace | PyTorch with CUDA | PyTorch (MPS) and MLX on Metal | PyTorch on CPU |
+| **Model endpoint** | An OpenAI-compatible API for an open model | vLLM or llama.cpp | MLX or llama.cpp on Metal | llama.cpp on CPU (small models) |
+| **CPU instance** | A VM or container without a GPU, and the opt-in fallback when GPUs are busy | ✓ | ✓ | ✓ |
 
-| Stage | Who | What they need most | Starts |
+AMD GPUs (ROCm) and Windows (through WSL2) come later (M5).
+
+## How you deploy it
+
+Profiles ([ADR-0012](../adr/0012-deployment-profiles.md)) are the same product at three sizes:
+
+| Profile | Install | Machines | Underneath |
 |---|---|---|---|
-| **1. Self-serve** | AI startups, developers, researchers, and students, worldwide | Instant signup, cheap per-second GPUs, notebooks, working templates, card payment (plus UPI in India) | Private beta (M2) |
-| **2. Growing companies** | Teams with production apps | Organizations and roles, API keys, tax-compliant invoices, reserved capacity, a region near their users | Public launch (M3) |
-| **3. Enterprise and government** | Regulated industries, the public sector, national AI programs | In-country data residency, SSO, audit logs, dedicated or private clusters, contracts, SOC 2 and ISO 27001 | v2 (M5) |
+| **Solo** | `brew install` or an install script, then `tensora up` | 1 | One binary, SQLite, built-in dashboard |
+| **Lab** | Solo on one machine, plus `tensora agent` on the others | 2 to ~20, mixing Linux and Mac | Node agents ([ADR-0013](../adr/0013-node-agent-and-apple-silicon.md)), SQLite or Postgres |
+| **Datacenter** | helmfile and Ansible (`deploy/`, `infra/`) | 3 to thousands | Kubernetes, KubeVirt, KServe, GPU Operator, Ceph, Postgres HA, SSO |
 
-We build stage 1 first, but never in a way that blocks stage 3. Isolation, audit trails, orgs,
-and regions are designed in from the start.
+**Sharing** ([ADR-0014](../adr/0014-sharing-idle-compute.md)): every machine is **private** by default.
+Its owner can open it to **invited** people, or to a **community pool**: any Tensora instance where hosts
+lend idle machines to its users.
 
-## What we sell
+## Principles
 
-### Tensora Compute
-
-| Product | What the customer gets | Billing |
-|---|---|---|
-| **GPU VMs** | A full Ubuntu VM with whole GPUs, root access over SSH, and a persistent disk. Stop it and you keep the disk. | Per second while running, plus disk GB-month |
-| **Notebooks** | JupyterLab in the browser with a GPU, ready-made templates (PyTorch, fine-tuning, diffusion), and a persistent workspace | Per second while running, plus disk GB-month |
-| **CPU instances** | CPU-only VMs and notebooks: cheap for data prep and small-model inference, and the opt-in fallback when GPUs are sold out ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)) | Per second, far below GPU prices |
-
-### Tensora Inference
-
-| Product | What the customer gets | Billing | When |
-|---|---|---|---|
-| **Dedicated endpoints** | Their chosen open model (safetensors) on their own GPUs in their chosen region, behind an OpenAI-compatible API with keys, logs, and autoscaling | Per GPU-hour | v1 |
-| **Serverless model API** | Curated popular open models (Llama, Qwen, DeepSeek, Mistral and similar), shared and always on, in every region | Per million tokens | v1.5 |
-
-The serverless API is the highest-margin product. We run the model code ourselves, so the
-tenant sends prompts, not code. Isolation is simpler, but it needs token metering and rate limiting.
-
-### Later
-
-S3-compatible storage buckets, fine-tuning jobs, batch jobs, multi-node training clusters, and
-**Tensora Private Cloud** (this platform licensed to companies that own their GPUs; see below).
+1. **Free for everyone, forever** ([ADR-0011](../adr/0011-free-for-everyone.md)). No pricing, no paid tiers, and no paywalled enterprise features.
+2. **Runs on what you have.** Linux and Apple Silicon Macs are first-class, and CPU-only machines are welcome.
+3. **One API everywhere.** Code written against a laptop works unchanged against a datacenter.
+4. **Private by default, safe when shared.** A machine is shared only by its owner's choice. Strangers' code never runs without strong isolation, and the dashboard is honest about what a host can see.
+5. **No dead ends.** If the GPU you wanted is busy, opt-in fallbacks keep you working: another GPU, CPU, or another machine ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)).
+6. **Open.** Open source, open formats (safetensors, GGUF), and standard APIs (OpenAI-compatible).
 
 ## Feature map
 
-| Area | M2 private beta | M3 public launch (v1) | M4 growth (v1.5) | M5 enterprise (v2) |
-|---|---|---|---|---|
-| **Regions** | One region (India) | Region chosen in API, dashboard, and CLI, even with one region; status per region | **Second region**; per-region pricing and capacity | Dedicated or sovereign regions, partner regions |
-| **Fallbacks** | Queue only | Opt-in placement fallback (another GPU class, or CPU); retry on another endpoint replica; `Idempotency-Key` on the API | CPU and serverless fallback for endpoints, fallback models, automatic return to GPU | Opt-in cross-region failover, guaranteed failover capacity |
-| **Accounts** | Email and Google signup, one user per org | Orgs with members and roles, MFA, API keys, **sanctions screening** | Projects within orgs, scoped keys | SSO (SAML/OIDC), SCIM, audit log export |
-| **Compute** | VMs with SSH, notebooks, stop/start, persistent disks | Templates, HTTPS ports for web apps, disk resize | Custom container images (Kata), snapshots, more GPU types | Dedicated nodes, private networking (VPC/WireGuard) |
-| **Inference** | Dedicated endpoints from Hugging Face, API keys | Autoscaling, request logs and metrics, model upload from S3 | **Serverless model API** (per token), fine-tuned adapters (LoRA) | Private model registry, guaranteed capacity |
-| **Billing** | Free credits, usage page, manual invoicing | All prices in **USD**; prepaid credits by card worldwide (Stripe) and UPI in India (Razorpay, converted at checkout); tax-compliant invoices; spend limits | Reserved instances, team budgets, more local payment methods | Postpaid contracts, PO-based invoicing |
-| **Developer tools** | REST API and dashboard | `tensora` CLI, Python SDK, public docs site | Terraform provider, webhooks | — |
-| **Trust** | Status page, ToS, AUP, privacy policy (GDPR and DPDP) | 99.5% monthly SLA, security page, incident comms | 99.9% SLA on endpoints | SOC 2 Type II, ISO 27001, DPAs |
-| **Support** | Email and community chat | Ticketing with response targets (follow-the-sun later) | Paid support tier | Named contact, enterprise SLAs |
+| Area | M1 Solo | M2 Lab | M3 Datacenter | M4 Sharing | M5 Ecosystem |
+|---|---|---|---|---|---|
+| **Platforms** | macOS (Apple Silicon), Linux (amd64 and arm64) | Mixed Linux and Mac machines | Kubernetes clusters | Any host type | Windows (WSL2), AMD ROCm |
+| **Workloads** | Notebooks, model endpoints, CPU instances | VMs (libvirt, macOS VZ); fallbacks | KubeVirt VMs, KServe endpoints | Preemptible guest workloads on shared machines | Batch jobs, fine-tuning jobs |
+| **Machines** | The local machine | Agents join over LAN, WireGuard, or the internet (outbound only) | Node pools, regions | Idle detection, schedules, caps, preemption | Auto-discovery on LAN |
+| **Users and access** | One local account, API tokens | Users, invites, teams, quotas | SSO (OIDC/SAML), audit logs, RBAC | Community accounts, fair share, reports and bans | SCIM |
+| **Inference** | Endpoints from Hugging Face (safetensors, GGUF) | API keys, request failover | Autoscaling, regional inference gateway | Managed inference on shared hosts | Serverless model API across a pool; model registry; LoRA adapters |
+| **Reliability and ops** | `tensora backup` | Machine health, alerts in the dashboard | HA control plane, Prometheus, backups | Host reputation | Upgrades without downtime |
+| **Developer tools** | REST API, dashboard | `tensora` CLI, Python SDK | Verified Datacenter install docs and charts | Pool directory | Terraform provider, templates gallery |
 
 ## Quality bar
 
 | Property | Target |
 |---|---|
-| Time to launch | Notebook or endpoint in 2 minutes or less after capacity is admitted; VM in 3 minutes or less |
-| Platform availability (global API and dashboard) | 99.5% at v1, 99.9% at v1.5 |
-| **Region independence** | An outage in one region never affects workloads in another. A global control-plane outage never stops running workloads. |
-| **Data residency** | Workload data (disks, models, endpoint traffic) never leaves its region unless the customer moves it |
-| **No dead ends** | When a customer has opted in to fallbacks, a sold-out GPU class or a failed replica never produces an error while an accepted substitute exists. Every response says what served it ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). |
-| Isolation | No shared kernel between tenants, ever (ADR-0004); no cross-tenant data path |
-| Billing accuracy | Per second; usage visible within the hour; zero double-billing (an idempotent pipeline) |
-| Durability | Platform data has off-site backups, with restores tested monthly. Customer disks are replicated from M3 (at least 3 nodes per region). |
-| Security response | Critical vulnerabilities patched or mitigated within 72 hours |
+| Install to first notebook (Solo) | **10 minutes or less** on a fresh Mac or Linux box |
+| Install footprint (Solo) | One binary plus the runtimes it downloads on demand. No Kubernetes, no Docker required on macOS. |
+| Isolation | Untrusted code only behind strong isolation, per the trust matrix in tenancy-and-isolation.md. Never a shared kernel between strangers. |
+| Host safety (sharing) | Guests never touch the owner's files or LAN. Reclaim within seconds when the owner returns. Community workloads get no internet by default. |
+| Data residency | A workload's data stays on its machine or region unless the user moves it (ADR-0009) |
+| No dead ends | With fallbacks opted in, a busy GPU never produces an error while an accepted substitute exists. Responses always say what served them. |
+| Usage accounting | Per second, idempotent, and visible within the hour, for quotas and fairness only |
+| Security response | Critical vulnerabilities fixed in a release within 72 hours |
 
-## Why customers pick us
+## How it compares
 
-| Versus | They win on | We win on |
+| Tool | Great at | Tensora adds |
 |---|---|---|
-| Hyperscalers (AWS, Azure, GCP, Oracle) | Breadth, a presence in every major market, enterprise trust | Price, simplicity, per-second GPUs, an AI-focused product |
-| Large GPU clouds (CoreWeave, Lambda, Crusoe, Nebius and others) | Huge capacity, training clusters | Self-serve simplicity for small teams; regions they don't serve |
-| Developer GPU clouds (RunPod, Vast.ai, Paperspace and others) | Community, price, many locations | Data residency, VM-grade isolation by default, an integrated inference API, compliance |
-| Inference APIs (Together, Fireworks and others) | Model breadth, raw speed | GPU VMs, notebooks, and a model API in one place; private dedicated endpoints in-region |
-| Regional providers (for example E2E Networks and Yotta in India) | Local capacity, government ties | Developer experience; reach across several regions |
+| Ollama, LM Studio | Running models on one machine | VMs and notebooks too; many machines; many users; sharing |
+| exo and similar | Pooling home devices for inference | VMs, notebooks, isolation between users, a datacenter path |
+| GPUStack and similar GPU cluster managers | Serving models across mixed GPU clusters | VMs and notebooks, idle-machine sharing, a fallback policy |
+| dstack, SkyPilot | Orchestrating jobs across clouds and on-prem | A self-contained cloud with a dashboard, from one Mac up |
+| DIY Kubernetes (KubeVirt + KServe) | Datacenter flexibility | A product on top: API, users, quotas, isolation rules, and a Solo or Lab mode for small setups |
+| Petals, BOINC (volunteer computing) | Pooling volunteers' machines | Interactive workloads, invite-only sharing, and strong host protection |
 
-We won't win on price or scale at the start, because bigger players buy GPUs cheaper. We'll win on
-**region, experience, and isolation**, and grow capacity with revenue. Many governments run
-**sovereign-AI programs** that buy or subsidize compute from local providers (India's IndiaAI Mission
-is one example). In each region, that's a possible stage 3 channel.
+Check this list again before launch, because these projects move fast.
 
-## Business model
+## Free and open: what that means
 
-Revenue comes from GPU-hours, inference tokens, storage, and later support plans and software licences.
-**All prices are in USD**, set per region (each region has its own cost base). Where a payment method
-needs local currency (UPI in India, for example), the USD amount is converted at checkout.
+- **No money anywhere:** no pricing pages, payment flows, invoices, or "contact sales". Usage accounting exists only for quotas, fairness, and reports.
+- **Open source.** Apache-2.0 is recommended. The licence is an open decision.
+- **Anyone can host a pool.** Universities, companies, communities, or the project itself. Pool operators set their own rules and are responsible for them.
+- **Models keep their own licences.** Users must follow each model's licence (for example, Llama's). The catalog shows the licence when one is known.
 
-```
-cost per GPU-hour (at 100% use) = (hardware amortization + colocation & power + bandwidth) per month
-                                   ÷ (GPUs × 720 hours)
-break-even utilization          = cost per GPU-hour ÷ price per GPU-hour
-```
+## Legal and safety
 
-Here's a worked example. **The inputs are made up to show the formula, not quotes.**
-A 4× L40S server costing $70,000, amortized over 36 months, is ≈ $1,944 a month. Add colocation,
-power, and bandwidth at ≈ $600 a month, for ≈ $2,544 a month, or ≈ $636 per GPU per month,
-which is ≈ $0.88 per GPU-hour at full use. Priced at $1.80 an hour, break-even is **≈ 49% utilization**, and at
-70% the gross margin is about 30% before people and software costs.
-
-**Utilization is the business.** Every product decision should be judged by whether it fills idle GPUs.
-Worldwide customers help here: one region's night is another market's working day.
-
-## Legal and compliance for a worldwide service
-
-| Topic | What it means for us | Needed by |
+| Topic | What it means | Needed by |
 |---|---|---|
-| Company and contracts | Which entity signs contracts and invoices; some countries need a local entity or tax registration before you sell or operate a region there | M3 |
-| Sales taxes | GST (India), VAT (EU and UK, with reverse charge for B2B), US sales tax (varies by state). Use a tax engine (for example Stripe Tax) and an accountant. | M3 |
-| Privacy | GDPR (EU and UK), DPDP (India), CCPA (California), and others: privacy policy, DPAs, data-subject requests, and knowing where account data is stored and transferred | M2–M3 |
-| **Export controls and sanctions** | Advanced GPUs are subject to export controls (US rules especially), and serving sanctioned countries or persons is prohibited. Screen customers, block restricted jurisdictions, and **get legal advice before taking payments.** | M3 |
-| Abuse and content | AUP enforcement, abuse reports, lawful-request handling per country | M2 |
-| Certifications | SOC 2 Type II (expected by US buyers), ISO 27001 (EU, India, and others) | M5 |
+| Licence and trademark | Choose the open-source licence; clear the product name | M1 |
+| Privacy | Solo keeps everything local. Pools hold account data, so a pool operator needs a privacy notice (GDPR, DPDP, CCPA and others apply to operators, not to the software). | M4 |
+| Acceptable use | A default AUP template for pools: no attacks, no illegal content, no crypto mining on shared hosts | M4 |
+| Host disclosure | Clear in-product warnings that host owners can see guest data | M4 |
 
-## Running this solo with AI agents
+## Building this solo with AI agents
 
-What's realistic: one person with AI agents **can** build the software. This repo is set up for
-exactly that, with AGENTS.md rules, reviewer subagents, and tests as guardrails. The hard parts aren't code:
+One person with AI agents can build the software, and this repo is set up for that. The constraints are:
 
 | Constraint | Mitigation |
 |---|---|
-| **Capital** (GPUs are expensive, and each region needs hardware) | One region first; grow from revenue; partner regions; the capital-light options below |
-| **24/7 operations across time zones** | Colocation with remote hands, aggressive alerting and automation, maintenance windows, an honest beta SLA, a small stack. Follow-the-sun support comes with hires. |
-| **Trust** (why would a company rely on a solo founder?) | A public status page, clear security docs, design partners first, transparency about scale |
-| **Sales and legal across countries** | Self-serve first. Enterprise sales waits until there's a team. Use external counsel for export, tax, and privacy. |
-
-Capital-light ways to start (they aren't exclusive):
-
-1. **Private beta on one server** in the first region. Prove demand with 10–20 design partners from anywhere.
-2. **Partner regions.** Datacenters that already own GPUs host them; Tensora supplies the software and customers for a revenue share. This is also the fastest way to add countries.
-3. **Tensora Private Cloud.** License this platform to companies and institutions anywhere that own GPUs but have no cloud layer. You need no GPU capex.
-
-**First hire:** an infrastructure or SRE engineer, once there are paying customers on more than one
-server. **Second hire:** support and developer relations, ideally in a different time zone.
+| **Hardware for testing** | Solo and Lab need none beyond your own machines. **The founder's Mac is the first test host.** Datacenter testing needs one Linux GPU server, which can be borrowed or shared. |
+| **Breadth of platforms** | Build in order: Mac and Linux Solo, then Lab, then Datacenter. CI covers linux/amd64, linux/arm64, and darwin/arm64. |
+| **Trust in a solo project** | Open source, clear security docs, reproducible releases, and a public issue tracker |
+| **Moderating community pools** | Pools are run by their operators. The project only ships the tools (reports, bans, rate limits). |
 
 ## Milestones
 
-| Milestone | Exit criteria | Maps to |
+| Milestone | Exit criteria | Roadmap |
 |---|---|---|
 | **M0 Foundation** ✓ | Repo, architecture, core platform on a fake cluster, ML validator, dashboard skeleton | Phase 0 |
-| **M1 Lab** | One real server in the first region; a VM, a notebook, and an endpoint all work end to end through the API; regions in the data model; burn-in done; backups off-node | Phase 1 + kube backend from Phase 3 |
-| **M2 Private beta** | 10–20 invited users (from any country) using GPU VMs, notebooks, and model endpoints; signup, orgs, API keys, access to every product, usage page, status page, docs | Phase 3 core |
-| **M3 Public launch (v1)** | Anyone eligible worldwide can sign up and pay in USD (cards worldwide, UPI in India), with tax-compliant invoices, sanctions screening, spend limits, CLI and SDK, legal pages, 99.5% SLA. The control plane runs on separate small CPU servers. At least 2 GPU servers. | Phases 2 and 4 core |
-| **M4 Growth (v1.5)** | **Second region live**; serverless model API; custom images; snapshots; reserved instances | Phase 5 |
-| **M5 Enterprise (v2)** | SSO and audit, dedicated or sovereign regions, contracts, SOC 2 or ISO 27001 underway, private-cloud edition | Phase 6 |
+| **M1 Solo** | On a fresh Mac (Apple Silicon) or Linux box: one-command install; `tensora up`; launch a notebook and a model endpoint on the local GPU (Metal or CUDA) or CPU from the dashboard, CLI, or API | Phase 1 |
+| **M2 Lab** | Mixed Mac and Linux machines in one instance; invites, users, and quotas; VMs (libvirt, macOS VZ); fallbacks; API keys for endpoints; usage reports | Phase 2 |
+| **M3 Datacenter** | The Kubernetes profile in production use: KubeVirt, KServe, Ceph, Postgres HA, SSO, regions, audit logs, published install docs | Phase 3 |
+| **M4 Sharing** | Invite-only sharing, then community pools: idle detection, caps, preemption, managed inference, fair share, abuse tools | Phase 4 |
+| **M5 Ecosystem** | Windows (WSL2), AMD ROCm, serverless model API across pools, Terraform, templates | Phase 5 |
 
 ## Not doing (until a milestone says so)
 
-Windows VMs, workloads that span regions or move between them while running, spot or preemptible
-pricing, a peer-to-peer GPU marketplace, bring-your-own hardware, a crypto-mining allowance (banned by
-the AUP), serving sanctioned jurisdictions, training fabrics (InfiniBand) before there's demand, and
-customer access to the Kubernetes API.
+Any pricing, payments, or paid features; Intel Macs; workloads spanning machines or regions while
+running; user access to the Kubernetes API; native (unsandboxed) code from strangers on personal
+machines; crypto mining on shared hosts; training fabrics (InfiniBand) before there's demand.
 
 ## Decision log
 
-| Date | Decision |
-|---|---|
-| 2026-10-23 | Customers: all segments, **staged**, starting with self-serve, then growing companies, then enterprise |
-| 2026-10-23 | Flagship at launch: **GPU VMs + notebooks + inference** together |
-| 2026-10-23 | Hardware scale: **undecided**; plan for 1–2 servers and design to grow |
-| 2026-10-23 | Team: **solo founder with AI agents**; first hire is infra/SRE |
-| 2026-10-23 | Market: **worldwide**. Sell globally from launch; **India is the first region**; regions are first-class (ADR-0009). |
-| 2026-10-23 | **Fallbacks** are part of the design: opt-in CPU or other-class placement when GPUs are unavailable, and per-request inference failover (ADR-0010) |
-| 2026-10-23 | **Name:** "Tensora" is a working name only; choose and clear a distinctive name before the first deployment |
-| 2026-10-23 | **Pricing is in USD** everywhere. Local-currency payment methods are converted at checkout. |
+| Date | Decision | Status |
+|---|---|---|
+| 2026-10-23 | Go for the core platform, Python for the ML layer, TypeScript for the dashboard (ADR-0003) | Current |
+| 2026-10-23 | Launch with GPU VMs, notebooks, and model endpoints together | Current |
+| 2026-10-23 | Solo builder with AI agents; the first hire, if any, is infra/SRE | Current |
+| 2026-10-23 | Regions are first-class for multi-location deployments (ADR-0009) | Current, reframed for self-hosting |
+| 2026-10-23 | Opt-in fallbacks: CPU or other-class placement, and inference failover (ADR-0010) | Current |
+| 2026-10-23 | **Free for everyone**: no pricing, no billing, open source (ADR-0011) | Current |
+| 2026-10-23 | **Self-hosted in three profiles**: Solo, Lab, Datacenter (ADR-0012) | Current |
+| 2026-10-23 | **Node agent; Apple Silicon Macs as first-class hosts** (ADR-0013) | Current |
+| 2026-10-23 | **Sharing idle compute**: private, invite-only, community pools (ADR-0014) | Current |
+| 2026-10-23 | "Tensora" is a working name; choose and clear a final name before the first release | Current |
+| 2026-10-23 | ~~Paid cloud with USD pricing, payments, and a first region in India~~ | Superseded by ADR-0011 and ADR-0012 |

@@ -1,4 +1,6 @@
-# 01: Node bootstrap
+# 01: Node bootstrap (Datacenter profile)
+
+For the Kubernetes Datacenter profile ([ADR-0012](../adr/0012-deployment-profiles.md)). For one Mac or Linux PC, use [00-quickstart.md](00-quickstart.md) instead.
 
 Takes a racked server to a Ready k3s node with the platform installed. It takes about 2 hours the first time.
 
@@ -6,7 +8,7 @@ Takes a racked server to a Ready k3s node with the platform installed. It takes 
 
 - A server cabled with data NICs and a BMC, with BMC access working
 - Static IP plan filled in, using this region's own non-overlapping ranges ([networking.md](../architecture/networking.md))
-- A region ID for this cluster (for example `in-mum-1`) and its own inventory and environment file ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md))
+- A region ID for this cluster (for example `dc-1`) and its own inventory and environment file ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md))
 - An admin workstation with Ansible, helm, helmfile, kustomize, kubectl, and WireGuard
 
 ## 1. BIOS/UEFI

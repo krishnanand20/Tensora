@@ -2,38 +2,54 @@
 
 | Term | Meaning |
 |---|---|
-| **Admission** | The controller's decision to place a pending or queued workload onto free GPUs |
-| **Allocation (billing)** | Time a GPU is reserved for a workload in a billable state, whatever its utilization (ADR-0006) |
-| **CDI** | Containerized Data Importer: imports and clones VM disk images into PVCs (DataVolume, DataSource) |
-| **Cell** | One region's own clusters, storage, gateway, and regional controller (ADR-0009) |
-| **Cilium** | eBPF-based CNI providing networking, NetworkPolicy, kube-proxy replacement, and Gateway API |
-| **DataSource** | A CDI object naming a "golden" disk that VM disks are cloned from (in `tensora-images`) |
-| **DCGM** | NVIDIA Data Center GPU Manager. Its exporter publishes GPU metrics (utilization, XID, ECC, temperature). |
-| **Fallback** | An opt-in substitute (another GPU class, CPU, replica, model, or region) used when the requested one is unavailable (ADR-0010) |
-| **Gateway API** | The Kubernetes ingress API that succeeds Ingress: `Gateway`, `HTTPRoute`, and related types |
-| **GPU class** | A catalog entry (`l40s-48gb`) mapping a sellable GPU type to cluster resource names |
-| **GPU Operator** | NVIDIA operator that installs the driver, container toolkit, device plugins, vfio-manager, MIG manager, and DCGM |
-| **Inference gateway** | Regional proxy in front of endpoints: API keys, token metering, rate limits, and request failover (ADR-0010) |
-| **Intent** | What a customer asked for, recorded in Postgres. The controller makes the cluster match it. |
+| **Admission** | The controller's decision to place a pending or queued workload onto free capacity |
+| **Agent (node agent)** | `tensora agent`: runs on each machine (Linux or macOS), dials out to the control plane, reports inventory, and runs workloads through drivers (ADR-0013) |
+| **Allocation (usage accounting)** | Time a resource is reserved for a workload in a metered state, whatever its utilization. Used for quotas and fairness, never money (ADR-0011). |
+| **Apple Silicon** | Apple's M-series chips. Their GPU is used through **Metal**, and CPU and GPU share **unified memory**. |
+| **CDI** | Containerized Data Importer (Datacenter): imports and clones VM disk images into PVCs (DataVolume, DataSource) |
+| **Cell** | One region's runtime (agent machines or a Kubernetes cluster), its storage, and its regional controller (ADR-0009) |
+| **Cilium** | eBPF-based CNI providing networking, NetworkPolicy, kube-proxy replacement, and Gateway API (Datacenter) |
+| **Community pool** | A Tensora instance where hosts lend idle machines to any of its users (ADR-0014) |
+| **DataSource** | A CDI object naming a "golden" disk that VM disks are cloned from (Datacenter) |
+| **DCGM** | NVIDIA Data Center GPU Manager. Its exporter publishes GPU metrics. |
+| **Driver** | The part of the agent that runs one kind of workload on one OS, for example `macos-native`, `macos-vz`, `docker`, or `libvirt` |
+| **Fallback** | An opt-in substitute (another GPU class, CPU, machine, replica, model, or region) used when the requested one is unavailable (ADR-0010) |
+| **Gateway API** | The Kubernetes ingress API that succeeds Ingress (Datacenter) |
+| **GGUF** | A code-free model file format used by llama.cpp. Allowed once the validator checks it (ADR-0013). |
+| **GPU class** | A catalog entry (`l40s-48gb`, `apple-m4-max-128gb`) mapping a GPU type to runtime resource names |
+| **GPU Operator** | NVIDIA operator that installs the driver, toolkit, device plugins, vfio-manager, MIG manager, and DCGM (Datacenter) |
+| **Host** | The owner of a machine that runs workloads. Can see guest data on their own machine. |
+| **Inference gateway** | A proxy in front of endpoints: API keys, token counts, rate limits, and request failover (ADR-0010) |
+| **Intent** | What a user asked for, recorded in the store. The controller makes the runtime match it. |
 | **IOMMU** | CPU feature (Intel VT-d, AMD-Vi) that isolates device DMA; required for passthrough |
-| **Isolation tier** | `trusted` (our team, runc allowed) or `untrusted` (customers, VMs or Kata only) |
-| **Kata Containers** | Runs each pod inside a lightweight VM; gives containers a VM-grade boundary |
-| **KServe** | Kubernetes model-serving layer. `InferenceService` is its main resource. RawDeployment mode avoids Knative. |
-| **KubeVirt** | Runs VMs as Kubernetes objects (`VirtualMachine`), each inside a virt-launcher pod |
-| **MetalLB** | Gives bare-metal clusters LoadBalancer IPs (L2/ARP or BGP) |
-| **MIG** | Multi-Instance GPU: hardware partitioning of A100, H100, and later cards into isolated slices |
+| **Isolation tier** | In code today: `trusted` (owners) or `untrusted` (invited and community users) |
+| **Kata Containers** | Runs each container inside a lightweight VM, giving containers a VM-grade boundary |
+| **KServe** | Kubernetes model-serving layer. `InferenceService` is its main resource. (Datacenter) |
+| **KubeVirt** | Runs VMs as Kubernetes objects (`VirtualMachine`) (Datacenter) |
+| **Managed inference** | A host runs a catalog model server with validated weights, and users only send prompts. The safe way for untrusted users to use a Mac. |
+| **Metal** | Apple's GPU API, used by MLX, llama.cpp, and PyTorch's MPS backend |
+| **Metered** | The workload states whose time is counted by usage accounting (`running`) |
+| **MetalLB** | Gives bare-metal clusters LoadBalancer IPs (Datacenter) |
+| **MIG** | Multi-Instance GPU: hardware partitioning of A100, H100, and later cards |
+| **MLX** | Apple's array framework for machine learning on Apple Silicon. Uses safetensors weights. |
+| **Operator** | Whoever runs a Tensora control plane: an individual, a team, a company, or a pool operator |
 | **Park** | Release a workload's GPUs while keeping its disks (VM halted, notebook scaled to 0) |
-| **Passthrough** | Giving a VM exclusive, direct access to a whole PCI device via VFIO |
-| **Placement** | Where a workload actually runs: its region and `placed_class`, which can differ from the requested class when fallback is enabled |
-| **PSA** | Pod Security Admission: per-namespace `privileged`, `baseline`, or `restricted` enforcement |
-| **Reconcile** | One controller pass that makes cluster state match intent: admit, observe, park, remove |
-| **Region** | One location with its own GPU clusters and storage. Every workload lives in exactly one (ADR-0009). |
+| **Passthrough** | Giving a VM exclusive, direct access to a whole PCI device through VFIO |
+| **Placement** | Where a workload actually runs: region, machine, and `placed_class` |
+| **Preempted** | (Planned) a workload stopped because a shared machine's owner reclaimed it (ADR-0014) |
+| **Profile** | One of three ways to deploy the same product: **Solo**, **Lab**, or **Datacenter** (ADR-0012) |
+| **PSA** | Pod Security Admission: per-namespace `privileged`, `baseline`, or `restricted` enforcement (Datacenter) |
+| **Reconcile** | One controller pass that makes the runtime match intent: admit, observe, park, remove |
+| **Region** | One location (a home, an office, a datacenter) within a deployment. Every workload lives in exactly one, and Solo has one called `local` (ADR-0009). |
 | **safetensors** | A tensor file format that can't execute code when loaded, unlike pickle-based `.bin` and `.pt` files |
-| **Server-side apply** | Kubernetes apply where the API server merges fields by manager; idempotent |
-| **Tenant** | A customer account (organization). Its objects live in namespace `t-<slug>`. |
-| **Time-slicing** | Several processes sharing one GPU with no memory isolation; never used across tenants |
-| **vGPU** | NVIDIA's licensed mediated-device GPU sharing for VMs |
-| **VFIO** | Linux framework that hands devices to userspace or VMs safely, using the IOMMU |
-| **vLLM** | High-throughput LLM inference server with an OpenAI-compatible API |
-| **Workload** | Something a customer launches: `vm`, `notebook`, or `endpoint` |
+| **Sharing level** | Per machine: **private** (default), **invite-only**, or **community** (ADR-0014) |
+| **Store** | Where business state lives: SQLite (Solo and small Labs) or Postgres |
+| **Tenant** | A user or organization account. In a datacenter its objects live in namespace `t-<slug>`. |
+| **Time-slicing** | Several processes sharing one GPU with no memory isolation. Never used between different users. |
+| **Trust level** | Owner, invited, or community. Decides which drivers may run a user's workloads (the trust matrix). |
+| **Unified memory** | On Apple Silicon, RAM shared by the CPU and GPU. macOS caps the GPU's share by default. |
+| **Usage accounting** | Recording who used how much compute, for quotas, fair share, and reports. Never billing. |
+| **VFIO** | Linux framework that hands devices to VMs safely, using the IOMMU |
+| **vLLM** | High-throughput LLM inference server for NVIDIA GPUs, with an OpenAI-compatible API |
+| **Workload** | Something a user launches: `vm`, `notebook`, or `endpoint` |
 | **XID error** | NVIDIA driver error code. 79 means the GPU fell off the bus; 48 means a double-bit ECC error. |

@@ -21,13 +21,13 @@ func at(minutes int) time.Time { return base.Add(time.Duration(minutes) * time.M
 
 func ev(minutes int, to domain.State) domain.Event { return domain.Event{To: to, At: at(minutes)} }
 
-func TestBillableIntervals(t *testing.T) {
+func TestMeteredIntervals(t *testing.T) {
 	events := []domain.Event{
 		ev(0, domain.StatePending), ev(1, domain.StateProvisioning), ev(2, domain.StateRunning),
 		ev(62, domain.StateStopping), ev(63, domain.StateStopped),
 		ev(100, domain.StatePending), ev(101, domain.StateProvisioning), ev(102, domain.StateRunning),
 	}
-	got := metering.BillableIntervals(events, at(130))
+	got := metering.MeteredIntervals(events, at(130))
 	want := []metering.Interval{{at(2), at(62)}, {at(102), at(130)}}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -40,7 +40,7 @@ func TestBillableIntervals(t *testing.T) {
 }
 
 func TestEventsAfterUntilAreIgnored(t *testing.T) {
-	got := metering.BillableIntervals([]domain.Event{ev(70, domain.StateRunning)}, at(60))
+	got := metering.MeteredIntervals([]domain.Event{ev(70, domain.StateRunning)}, at(60))
 	if len(got) != 0 {
 		t.Fatalf("got %v", got)
 	}

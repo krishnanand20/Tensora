@@ -9,7 +9,7 @@ import (
 )
 
 // Transition is the only way a workload changes state (AGENTS.md rule 7). It validates
-// the step, compare-and-swaps the row, and appends the event metering bills from.
+// the step, compare-and-swaps the row, and appends the event usage accounting depends on.
 // On success w reflects the new state.
 func Transition(ctx context.Context, q store.Queries, w *domain.Workload, to domain.State, reason string, at time.Time) error {
 	if !domain.CanTransition(w.State, to) {

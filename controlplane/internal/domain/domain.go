@@ -9,13 +9,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// WorkloadKind is what a customer launches.
+// WorkloadKind is what a user launches.
 type WorkloadKind string
 
 const (
-	KindVM       WorkloadKind = "vm"       // KubeVirt VM with whole-GPU passthrough
-	KindNotebook WorkloadKind = "notebook" // JupyterLab in a (Kata) container
-	KindEndpoint WorkloadKind = "endpoint" // KServe InferenceService running vLLM
+	KindVM       WorkloadKind = "vm"       // a full VM: KubeVirt, libvirt, or the macOS Virtualization framework
+	KindNotebook WorkloadKind = "notebook" // JupyterLab: in a container, a Kata sandbox, or natively on a Mac
+	KindEndpoint WorkloadKind = "endpoint" // OpenAI-compatible model server: vLLM, llama.cpp, or MLX
 )
 
 func (k WorkloadKind) Valid() bool {
@@ -30,9 +30,11 @@ func (k WorkloadKind) Valid() bool {
 type IsolationTier string
 
 const (
-	// TierTrusted is our own team: plain runc containers are allowed.
+	// TierTrusted is a machine's owner or the operator's own team: weak isolation (runc, native
+	// macOS) is allowed.
 	TierTrusted IsolationTier = "trusted"
-	// TierUntrusted is every external customer: KubeVirt VMs or Kata containers only.
+	// TierUntrusted is every invited or community user: strong isolation only (VMs, Kata, or
+	// Linux containers in their own VM), per the trust matrix in tenancy-and-isolation.md.
 	TierUntrusted IsolationTier = "untrusted"
 )
 
@@ -90,7 +92,7 @@ type Event struct {
 	At         time.Time
 }
 
-// UsageRecord is the billable time of one workload within one UTC clock hour.
+// UsageRecord is the metered time of one workload within one UTC clock hour (usage accounting, never money).
 type UsageRecord struct {
 	WorkloadID  uuid.UUID
 	PeriodStart time.Time
@@ -100,7 +102,7 @@ type UsageRecord struct {
 	Seconds     int64
 }
 
-// GPUSeconds is the quantity that gets priced.
+// GPUSeconds is the quantity used for quotas, fair share, and reports.
 func (u UsageRecord) GPUSeconds() int64 { return u.Seconds * int64(u.GPUCount) }
 
 // Principal is an authenticated caller.

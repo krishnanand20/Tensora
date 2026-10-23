@@ -23,7 +23,7 @@ cluster:
   untrustedRuntimeClass: kata-qemu-nvidia-gpu
   storageClass: tensora-block
   imagesNamespace: tensora-images
-  # Planned (ADR-0009): `region: in-mum-1`, passed to this cell's controller as TENSORA_REGION.
+  # Planned (ADR-0009): `region: dc-1`, passed to this cluster's controller as TENSORA_REGION.
 
 gateway:
   name: tensora
@@ -35,7 +35,7 @@ api:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { memory: 512Mi }
 
-# One replica: reconcile passes are idempotent but not yet leader-elected (Phase 4).
+# One replica: reconcile passes are idempotent but not yet leader-elected (Phase 3).
 controller:
   resources:
     requests: { cpu: 100m, memory: 128Mi }

@@ -2,32 +2,35 @@
 
 ## Reporting a vulnerability
 
-Email **security@tensora.example** (replace with a real address before launch). Do not open
-public issues for vulnerabilities. We aim to acknowledge reports within 2 business days.
+Email **security@tensora.example** (replace with a real address before the first release). Please don't
+open public issues for vulnerabilities. We aim to acknowledge reports within 2 business days.
 
 ## Threat model in one paragraph
 
-Tenants are untrusted and may be hostile. They run arbitrary code on our GPUs, upload
-arbitrary model files, and probe the network. We must prevent them from:
+Tensora runs code on machines that may belong to someone other than the person launching it. Users may
+be hostile to the machine's owner (the host), to the instance's operator, and to each other. Hosts can
+see what runs on their own machines. We must prevent users from:
 
-- reading or affecting another tenant's data, GPUs, or traffic
-- escaping to the host or the Kubernetes control plane
-- using our infrastructure to attack third parties
-- running compute that isn't billed
+- escaping to a host or reaching its files or home network
+- reading or affecting another user's data, GPUs, or traffic
+- using someone's machine or IP address to attack third parties
+- consuming more than their quota
 
-The full model and its controls are in
+We must also be **honest** that a host can, in principle, see guest data.
+
+The full model, including the trust matrix for each runtime, is in
 [docs/architecture/tenancy-and-isolation.md](docs/architecture/tenancy-and-isolation.md).
 
 ## Controls that must stay in place
 
-- Untrusted workloads run in KubeVirt VMs or Kata containers, never in shared-kernel containers.
-- Tenant namespaces have a default-deny NetworkPolicy that blocks private and link-local ranges.
-- Tenant pods don't mount a ServiceAccount token. Tenants never get Kubernetes API access.
-- Tenant models must be safetensors, and `trust_remote_code` is never enabled.
-- Workload data stays in its region. Cross-region, CPU, and other-class fallbacks happen only with the customer's explicit opt-in, and they're always visible.
-- Customers are screened against sanctions and export-control rules before they get GPU access.
-- The controller's ServiceAccount is the most powerful credential in the cluster. The API has no cluster access.
-- No secrets in git. Use Ansible Vault for node secrets and Kubernetes Secrets, created out of band, for cluster secrets.
+- Invited and community users run only behind strong isolation: VMs, Kata, or Linux containers in their own VM. Native macOS execution and plain runc are for owners only.
+- No GPU time-slicing between different users. On a Mac, an untrusted user gets the whole GPU or none of it.
+- Guest workloads can't reach the host's files or LAN. Community workloads have no internet by default.
+- Sharing a machine is opt-in by its owner, and the owner can reclaim it instantly.
+- Model weights must be code-free (safetensors, or GGUF once validated). `trust_remote_code` is never enabled.
+- In a datacenter, tenant pods don't mount a ServiceAccount token, and users never get Kubernetes API access.
+- The API has no runtime credentials. Agents use per-machine mTLS certificates that can be revoked.
+- No secrets in git.
 
 ## Supported versions
 

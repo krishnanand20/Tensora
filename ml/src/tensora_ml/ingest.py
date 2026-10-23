@@ -1,7 +1,7 @@
 """Model ingestion: download from Hugging Face, validate, upload to S3 with a checksum manifest.
 
-Runs as an operator CLI today. In Phase 3 the controller launches it as a Kubernetes Job
-for each new tenant model (docs/architecture/control-plane.md, "Models").
+Runs as an operator CLI today. Planned: node agents run it to fill a machine's model cache
+(Phases 1-2), and in a datacenter the controller launches it as a Kubernetes Job (Phase 3).
 S3 endpoint and credentials come from the standard AWS_* environment variables
 (AWS_ENDPOINT_URL for the in-cluster object store).
 """

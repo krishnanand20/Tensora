@@ -20,5 +20,6 @@ Don't write one for routine changes, library bumps, or anything easy to reverse.
 5. Add it to the index in `docs/adr/README.md`.
 6. If it changes an `AGENTS.md` rule, change the rule in the same PR and reference the ADR.
 
-To reverse a decision, write a new ADR that supersedes the old one, and mark the old one
-`Superseded by NNNN`. Never edit history away.
+To reverse a decision, write a new ADR that supersedes the old one. Mark the old one
+`Superseded by NNNN` in its status, and put a banner at the top of it saying what still applies
+(see ADR-0006 for an example). Never edit history away.

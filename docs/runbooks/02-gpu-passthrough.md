@@ -1,4 +1,4 @@
-# 02: GPU smoke test, burn-in, first passthrough VM
+# 02: GPU smoke test, burn-in, first passthrough VM (Datacenter profile)
 
 On a single node, you test container mode first and then switch the node to passthrough. Both
 modes can't run on one node at the same time ([gpu-sharing.md](../architecture/gpu-sharing.md)).
@@ -13,7 +13,7 @@ kubectl logs -f pod/gpu-smoke-test                                  # nvidia-smi
 kubectl delete -f deploy/examples/gpu-smoke-test.yaml
 ```
 
-### Burn-in (required before offering any GPU)
+### Burn-in (required before anyone else uses a GPU)
 
 Run `tensora-ml burnin` in a PyTorch CUDA image with all GPUs for at least 30 minutes:
 
@@ -65,7 +65,7 @@ nvidia-smi                                         # after reboot
 
 1. In the VM, fill GPU memory with a known pattern (a small CUDA or PyTorch script).
 2. Delete the VM. Create a new one on the same GPU, then allocate memory **without** initializing it and search for the pattern.
-3. If the pattern is found, a scrub step between tenants is mandatory before launch.
+3. If the pattern is found, a scrub step between users is mandatory before the GPU is shared.
 
 ## Troubleshooting
 

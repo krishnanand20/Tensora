@@ -1,7 +1,11 @@
-# deploy
+# deploy (Datacenter profile)
 
-Everything that runs on the cluster, as code. A node must first be bootstrapped with
-`infra/` (Ubuntu, IOMMU, and k3s without flannel, kube-proxy, traefik, or servicelb).
+Everything that runs on a Kubernetes cluster, as code. This is the **Datacenter profile**
+([ADR-0012](../docs/adr/0012-deployment-profiles.md)). For one Mac or Linux machine, or a small Lab, see
+[docs/runbooks/00-quickstart.md](../docs/runbooks/00-quickstart.md) instead; nothing here is needed.
+
+Before deploying, bootstrap each server with `infra/` (Ubuntu, IOMMU, and k3s without flannel,
+kube-proxy, traefik, or servicelb).
 
 ## Tools
 
@@ -16,21 +20,21 @@ helmfile -e single-node template | less                     # review the render
 helmfile -e single-node apply                               # first run takes 15–30 minutes
 ```
 
-The steps are walked through in [docs/runbooks/](../docs/runbooks/), including how to label nodes
-for container or passthrough mode.
+The steps are walked through in [docs/runbooks/](../docs/runbooks/README.md) (01–03), including how to
+label nodes for container or passthrough mode.
 
 ## Regions and environments
 
-Each region is its own cluster with its own environment file. Today `single-node` is the first
-region's cell, and it also hosts the global control plane. When the second region opens, add
-`environments/<region-id>.yaml` per cell plus a global environment, and split the two (ADR-0009).
+Each region is its own cluster with its own environment file. The `single-node` environment is a
+one-region deployment, and its cluster also hosts the control plane. For more regions, add
+`environments/<region-id>.yaml` per cluster, and run the control plane once (ADR-0009).
 
 Planned additions (ADR-0010):
 
 - CPU worker nodes
 - the `tensora-vllm-cpu` ClusterServingRuntime
 - the regional inference gateway
-- `region:` in every environment file
+- `TENSORA_REGION` passed to each region's controller
 
 ## Secrets created out of band
 
@@ -40,7 +44,7 @@ None of these live in git. Create them before the first apply:
 |---|---|---|---|
 | `tensora-db` | tensora-system | `DATABASE_URL` | tensora chart |
 | `grafana-admin` | observability | `admin-user`, `admin-password` | kube-prometheus-stack |
-| Keycloak DB credentials | keycloak | see platform/keycloak/README.md | Keycloak (Phase 3) |
+| Keycloak DB credentials | keycloak | see platform/keycloak/README.md | Keycloak |
 | Object store credentials | tensora-models | depends on choice | model ingestion and KServe |
 
 ## Versions
@@ -65,5 +69,5 @@ record what you verified here:
 | Loki / Alloy | 6.35.0 / 1.2.0 | — |
 | vLLM image | v0.10.0 | — |
 
-Check upgrade compatibility in pairs: Cilium with Gateway API, GPU Operator with the driver
+Check upgrade compatibility in pairs: Cilium with Gateway API, the GPU Operator with the driver
 and kernel, KubeVirt with CDI, and KServe with cert-manager.

@@ -1,37 +1,47 @@
 # Contributing
 
+Tensora is free and open for everyone ([ADR-0011](docs/adr/0011-free-for-everyone.md)), and contributions are welcome.
+
 ## Setup
+
+Works on macOS (Apple Silicon) and Linux.
 
 ```bash
 make setup        # Go modules, uv sync for ml/, npm install for web/, pre-commit hooks
 make dev          # local all-in-one stack (no GPU or cluster required)
 make lint test    # what CI runs
+make build-all    # cross-compile for linux/amd64, linux/arm64, darwin/arm64
 ```
 
 ## Workflow
 
 1. Branch from `main`: `feat/<short-name>`, `fix/<short-name>`, `docs/<short-name>`.
-2. Keep each PR to one concern. Infra changes (`deploy/`, `infra/`) go in separate PRs from application code.
-3. Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(api): add model resource`.
-4. Fill in the PR template, including the **tenant isolation** and **billing impact** sections.
-5. CI must pass. At least one human reviews every PR, including those written by an agent.
+2. Keep each PR to one concern. Datacenter infra changes (`deploy/`, `infra/`) go in separate PRs from application code.
+3. Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(agent): add macOS GPU inventory`.
+4. Fill in the PR template, including the **isolation**, **host safety**, and **usage accounting** sections.
+5. CI must pass on Linux and macOS. At least one human reviews every PR, including those written by an agent.
 
 ## Decisions
 
-Anything that changes an architecture rule in [AGENTS.md](AGENTS.md), adds a platform
-component, or replaces one needs an ADR. See [docs/playbooks/write-an-adr.md](docs/playbooks/write-an-adr.md).
+Anything that changes an architecture rule in [AGENTS.md](AGENTS.md), or adds, replaces, or removes a
+major component, needs an ADR. See [docs/playbooks/write-an-adr.md](docs/playbooks/write-an-adr.md).
 
 ## Changes that need extra care
 
-Changes to these paths need a reviewer who knows the isolation model:
+Changes to these need a reviewer who knows the trust model:
 
 - `controlplane/internal/{api,service,store,cluster}`: tenant scoping, lifecycle, and manifests
-- `controlplane/internal/metering`: billing correctness
-- `ml/src/tensora_ml/validate.py`: the rule that tenant models must be safetensors with no remote code
+- agent and driver code (planned): the trust matrix, host protections, sandbox profiles
+- `controlplane/internal/metering`: usage-accounting correctness (quotas and fairness depend on it)
+- `ml/src/tensora_ml/validate.py`: the code-free model format rule
 - `deploy/charts/cluster-config`, plus anything touching NetworkPolicy, RBAC, or RuntimeClass
-- region filtering, fallback placement, and the inference gateway: data residency and visible fallbacks (AGENTS.md rules 9 and 10)
+- region filtering, fallback placement, sharing levels, and the inference gateway (AGENTS.md rules 9, 10, and 13)
+
+## Never add
+
+Pricing, payments, paid tiers, or feature gates that make anything cost money (AGENTS.md rule 12).
 
 ## AI agents
 
-Agents follow [AGENTS.md](AGENTS.md). Review their changes as you would any contributor's,
-with extra attention to the paths listed above.
+Agents follow [AGENTS.md](AGENTS.md). Review their changes as you would any contributor's, with extra
+attention to the paths listed above.

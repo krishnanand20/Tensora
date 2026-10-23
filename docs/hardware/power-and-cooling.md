@@ -1,59 +1,80 @@
 # Power and cooling
 
-Power is often the real bottleneck, before GPUs or money. In the first region (India), and in
-many other markets, plan for grid instability, high ambient temperatures, and slow utility upgrades.
+## Hosting at home
 
-## Rough draw per node
+When you run Tensora on a personal machine, or share it ([ADR-0014](../adr/0014-sharing-idle-compute.md)),
+**you pay for its electricity**, and your room gets its heat.
+
+| Machine | Typical draw under GPU load | Notes |
+|---|---|---|
+| Mac mini (Apple Silicon) | Tens of watts | Very efficient; fine to leave on |
+| MacBook (Apple Silicon) | Up to the charger's rating | Shares only on AC power; heavy sustained load warms the battery |
+| Mac Studio (Max or Ultra) | Up to roughly 300 W | Check Apple's published figures for your model |
+| Desktop with an RTX 4090 or 5090 | 450–575 W for the GPU, ~600–800 W for the whole system | Loud and hot under sustained load |
+
+```
+monthly kWh ≈ average watts while busy × hours busy per month ÷ 1000
+```
+
+For example, a 600 W desktop shared 8 hours a night uses about 600 × 240 ÷ 1000 ≈ 144 kWh a month.
+Multiply by your electricity rate to see what sharing costs you. Then set caps and schedules in the
+dashboard to match (power caps are planned).
+
+- **Heat and noise:** set a schedule (for example, overnight only) for machines in living spaces.
+- **Laptops:** keep them on a hard surface, and let Tensora share only on AC power (the default).
+- **Power cuts:** a small UPS on the control plane machine protects its store.
+
+## Datacenter
+
+Power is often the real bottleneck, before GPUs or money. Plan for grid instability, high ambient
+temperatures, and slow utility upgrades.
+
+### Rough draw per node
 
 These are board-power (TDP) figures. Measure your real draw with the BMC under burn-in.
 
 | Config | GPUs | GPU power | Rest of system | Plan for |
 |---|---|---|---|---|
-| 2× RTX 4090 workstation | 2 × 450 W | 0.9 kW | ~0.4 kW | **1.5 kW** |
-| 4× L40S server | 4 × 350 W | 1.4 kW | ~0.8 kW (2 CPUs, RAM, NVMe, fans) | **2.5–3 kW** |
+| 4× L40S server | 4 × 350 W | 1.4 kW | ~0.8 kW | **2.5–3 kW** |
 | 8× RTX 4090/5090 server | 8 × 450–575 W | 3.6–4.6 kW | ~1 kW | **5–6 kW** |
 | 4× A100 80GB PCIe | 4 × 300 W | 1.2 kW | ~0.8 kW | **2.5 kW** |
-| HGX 8× H100 SXM | 8 × 700 W | 5.6 kW | ~3–4 kW (CPUs, NVSwitch, NICs, fans) | **~10.2 kW** max system |
+| HGX 8× H100 SXM | 8 × 700 W | 5.6 kW | ~3–4 kW | **~10.2 kW** max system |
 
 GPUs spike above their TDP for milliseconds, so PSUs and UPSes need headroom.
 
-## UPS sizing
+### UPS sizing
 
 ```
 UPS kVA ≥ (sum of planned kW) ÷ power factor (≈0.9) × 1.25 headroom
 ```
 
-For example, one 4× L40S node plus a switch and router comes to about 3.3 kW, which needs a UPS of
-about **4.6 kVA** or more. Use an **online double-conversion** UPS, never line-interactive, for GPU servers.
+One 4× L40S node plus a switch and router comes to about 3.3 kW, which needs a UPS of about **4.6 kVA** or more.
 
-- **Runtime:** batteries only need to cover the time until a generator takes over (5–10 minutes) plus a clean shutdown. Don't plan to ride out long outages on batteries.
-- **Generator (DG set):** needed for any service you sell. Size it for UPS input plus cooling. Test it under load monthly.
-- **Wiring:** three-phase supply for anything above about 5 kW. Use separate A and B feeds to the dual PSUs.
-- **Monitoring:** use the UPS's network card (SNMP) and BMC power readings. Trigger a graceful drain and shutdown at a battery threshold (Phase 2).
+- Use an **online double-conversion** UPS for GPU servers.
+- **Runtime:** batteries cover the time until a generator takes over, plus a clean shutdown.
+- **Generator:** needed for anything others depend on. Test it under load monthly.
+- **Wiring:** three-phase supply above about 5 kW, with separate A and B feeds to dual PSUs.
+- **Monitoring:** UPS network cards (SNMP) and BMC power readings, with a graceful drain at a battery threshold.
 
-## Cooling
+### Cooling
 
-- Each kW of IT load is about 3,412 BTU/h of heat. A 3 kW node needs roughly 1 ton of cooling by itself, and more with redundancy.
-- Keep server inlet air at or below 27 °C (the ASHRAE recommended range). GPUs throttle and fail early when inlet air is hot, and Indian summer ambient makes this a real risk in offices.
-- Passive datacenter GPUs (L40S, A100, H100) depend on server fans and front-to-back airflow, so use blanking panels and hot/cold aisle separation.
-- Watch GPU temperature and clock-throttle reasons through DCGM, and alert on sustained throttling.
+- Each kW of IT load is about 3,412 BTU/h of heat. A 3 kW node needs roughly 1 ton of cooling by itself.
+- Keep server inlet air at or below 27 °C (the ASHRAE recommended range). GPUs throttle and fail early when inlet air is hot.
+- Passive datacenter GPUs depend on server fans and front-to-back airflow, so use blanking panels and hot/cold aisle separation.
+- Watch GPU temperature and clock-throttle reasons through DCGM.
 
-## Colocation versus on-premises
+### Colocation versus on-premises
 
-If you're selling compute, **colocation in a Tier III datacenter** (major Indian metros all have them)
-is usually cheaper than building reliable power and cooling yourself. It gets you:
+For a datacenter deployment that others depend on, **colocation in a Tier III facility** is usually
+easier than building reliable power and cooling yourself. You get dual utility feeds, a generator,
+UPS, N+1 cooling, carrier-neutral connectivity, and remote hands. On-premises suits labs and internal
+setups with modest power needs.
 
-- dual utility feeds, a generator, UPS, and N+1 cooling
-- carrier-neutral connectivity with DDoS options
-- remote hands for disk and GPU swaps
-
-On-premises makes sense for a lab or internal-only setup.
-
-## Budgeting the electricity
+### Knowing your running cost
 
 ```
 monthly kWh ≈ average kW × 24 × 30 × PUE (colocation ~1.5, office ~2+)
 ```
 
-For example, a node averaging 2.5 kW uses about 2.5 × 720 × 1.5 ≈ 2,700 kWh a month. Multiply by your
-local electricity rate per kWh (or the colocation's per-kW rate), converted to USD, to find the floor price per GPU-hour before any margin.
+A node averaging 2.5 kW uses about 2.5 × 720 × 1.5 ≈ 2,700 kWh a month. This is a cost of running
+the hardware, not something Tensora charges for: Tensora is free.

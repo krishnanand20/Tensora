@@ -9,64 +9,73 @@ closest to the files you are changing. Rules here apply everywhere; nested files
 
 ## What Tensora is
 
-Tensora (a working name) is a global, multi-region GPU cloud: customers launch **GPU VMs**,
-**Jupyter notebooks**, and **model endpoints** on bare-metal GPU servers we operate, in the
-region they choose. It is assembled from open-source
-infrastructure (k3s/Kubernetes, KubeVirt, NVIDIA GPU Operator, KServe + vLLM, Cilium,
-MetalLB, Longhorn → Rook-Ceph, Keycloak, Prometheus/DCGM/Loki). The code we write is the
-product layer on top.
+Tensora (a working name) is a **free, open, self-hosted GPU cloud**. Anyone installs it on machines they
+have, from one Apple Silicon Mac or Linux PC up to a datacenter. They launch **GPU VMs**, **Jupyter notebooks**,
+and **OpenAI-compatible model endpoints**, and can share idle machines with others. It's for everyone:
+students, developers, startups, small companies, enterprises, and big tech.
 
-**Design assumption:** we sell compute to untrusted outside customers. Every change is
-judged against that bar. See [docs/architecture/tenancy-and-isolation.md](docs/architecture/tenancy-and-isolation.md).
+- **Profiles** ([ADR-0012](docs/adr/0012-deployment-profiles.md)): **Solo** (one machine, SQLite), **Lab** (mixed Mac and Linux machines running node agents), and **Datacenter** (Kubernetes: KubeVirt, KServe, GPU Operator, Ceph, Postgres, SSO).
+- **Node agent** ([ADR-0013](docs/adr/0013-node-agent-and-apple-silicon.md)): runs on Linux and macOS (Apple Silicon), with drivers for Metal, NVIDIA, VMs, and containers.
+- **Free** ([ADR-0011](docs/adr/0011-free-for-everyone.md)): there is no pricing or billing anywhere, only usage accounting for quotas and fairness.
+- **Sharing** ([ADR-0014](docs/adr/0014-sharing-idle-compute.md)): private by default, then invite-only, or community pools.
+
+**Design assumption:** the person using a machine may not be its owner. Protect hosts from guests and
+guests from each other, and be honest that hosts can see guest data. See
+[docs/architecture/tenancy-and-isolation.md](docs/architecture/tenancy-and-isolation.md).
 
 ## Repo map
 
 | Path | Owns | Language / tooling |
 |---|---|---|
-| `controlplane/` | Core platform: REST API, controller (reconciles Postgres ↔ Kubernetes), metering, and (planned) the inference gateway. One `tensora` binary with subcommands; one controller per region. | Go 1.27, stdlib `net/http`, pgx, client-go, goose, golangci-lint |
-| `ml/` | ML layer: model ingestion + validation, endpoint benchmarking, GPU burn-in. Runs as CLI and as in-cluster Jobs. | Python 3.12, uv, ruff, mypy, pytest |
-| `web/` | Customer dashboard | TypeScript, React, Vite, TanStack Query |
-| `deploy/` | Cluster add-ons (helmfile), `cluster-config` chart (our CRs), `tensora` chart | Helm, helmfile, Kustomize |
-| `infra/` | Bare-metal node bootstrap (OS, IOMMU/VFIO, k3s, WireGuard) | Ansible, bash |
-| `images/` | Launchable catalog (`catalog.yaml`), notebook/VM image definitions | Dockerfile, cloud-init |
-| `docs/` | Architecture, ADRs, runbooks, playbooks, roadmap, hardware | Markdown |
+| `controlplane/` | The `tensora` binary: REST API, controller, usage accounting (`metering`), and the planned node agent, drivers, `tensora up`, and inference gateway. Must build for linux/amd64, linux/arm64, and darwin/arm64. | Go 1.27, stdlib `net/http`, pgx, client-go, goose, golangci-lint |
+| `ml/` | ML layer: model validation (safetensors; GGUF planned), ingestion, endpoint benchmarking, GPU burn-in (CUDA; Metal planned) | Python 3.12, uv, ruff, mypy, pytest |
+| `web/` | Dashboard (to be embedded in the binary for Solo) | TypeScript, React, Vite, TanStack Query |
+| `deploy/` | **Datacenter profile:** cluster add-ons (helmfile), `cluster-config` chart, `tensora` chart | Helm, helmfile, Kustomize |
+| `infra/` | **Datacenter profile:** Linux server bootstrap (OS, IOMMU/VFIO, k3s, WireGuard) | Ansible, bash |
+| `images/` | Launch catalog (`catalog.yaml`); notebook and VM image definitions | Dockerfile, cloud-init |
+| `docs/` | Product spec, architecture, ADRs, roadmap, runbooks, playbooks, hardware | Markdown |
 
 ## Commands
 
 Run from the repo root (`make help` lists everything):
 
 - `make setup` — install dev dependencies for all components
-- `make dev` — **all-in-one local stack**: API + controller + metering in one process, in-memory store, fake cluster, seeded tenants. No GPU, Kubernetes, or Docker needed. API on `:8080`.
+- `make dev` — **all-in-one local stack**: API + controller + usage accounting in one process, in-memory store, fake backend, seeded tenants. No GPU, Kubernetes, or Docker needed. Runs on macOS and Linux. API on `:8080`.
 - `make web-dev` — dashboard on `:5173`, proxied to the local API
 - `make test` — all tests (`make test-cp`, `make test-ml`, `make test-web` for one component)
-- `make lint` — golangci-lint, ruff, mypy, tsc, yamllint
+- `make lint` — gofmt, go vet, golangci-lint, ruff, mypy, tsc, yamllint
+- `make build-all` — cross-compile `tensora` for linux/amd64, linux/arm64, and darwin/arm64
 - `make fmt` — auto-format everything
-- `make deploy-check` — render helm charts + kubeconform (no cluster needed)
+- `make deploy-check` — render the Datacenter charts and validate with kubeconform (no cluster needed)
 
 **Before saying a task is done:** run the lint and test targets for every component you
 touched and report the actual output. If a tool is missing, say so — do not claim success.
 
 ## Architecture rules (changing one requires an ADR)
 
-1. **Postgres owns business state** (tenants, quotas, catalog choices, workload intent, events, usage). **Kubernetes owns runtime state.** The controller reconciles between them. The API never talks to Kubernetes — it records intent and returns.
-2. **All cluster access goes through `cluster.Backend`** (`controlplane/internal/cluster`). Manifests are built by pure functions in `internal/cluster/manifests` and unit-tested as data. No ad-hoc client calls elsewhere.
-3. **Tenant resources live in the tenant's namespace** (`t-<slug>`) and carry the labels defined in `internal/cluster/labels.go`. Never place tenant workloads in shared namespaces.
-4. **Untrusted code runs in a KubeVirt VM or a Kata container**, never a plain runc container. GPU time-slicing is never shared across tenants.
-5. **Billing comes from allocation intervals** (workload lifecycle events), not GPU utilization. DCGM is for observability and idle detection only — passthrough GPUs are invisible to host DCGM anyway.
-6. **Tenant model weights must be safetensors; `trust_remote_code` is never enabled** for tenant models. The ML layer's validator (`ml/src/tensora_ml/validate.py`) is the enforcement point.
-7. **Every workload state change goes through `service.Transition`**, which validates against `domain` state rules and appends a `workload_events` row. Metering depends on those rows. Never write `state` directly.
+1. **The store owns business state; the runtime owns runtime state.** The store is SQLite or Postgres and holds tenants, quotas, machines, workload intent, events, and usage. The runtime is node agents or Kubernetes. The controller reconciles between them. The API never talks to the runtime: it records intent and returns ([ADR-0008](docs/adr/0008-postgres-intent-kubernetes-runtime.md), [ADR-0012](docs/adr/0012-deployment-profiles.md)).
+2. **All runtime access goes through `cluster.Backend`** (`controlplane/internal/cluster`): `fake`, `kubernetes`, and `agent` (planned). Manifests and driver specs are built by pure functions and unit-tested as data. No ad-hoc client calls elsewhere.
+3. **Tenant resources are isolated per tenant.** In a datacenter they live in the namespace `t-<slug>` with the labels in `internal/cluster/labels.go`. On agents, each workload gets its own sandbox or VM, data directory, and network rules. Never share them between tenants.
+4. **Untrusted code runs only behind strong isolation, per the trust matrix** in `docs/architecture/tenancy-and-isolation.md`. Invited and community users get VMs, Kata, or Linux-in-VM containers; native macOS execution and plain runc are for owners only. No GPU time-slicing between different users.
+5. **Usage accounting comes from allocation intervals** (workload lifecycle events), not utilization. It drives quotas, fair share, and reports. **There is no billing** ([ADR-0011](docs/adr/0011-free-for-everyone.md)).
+6. **Model weights must be in a code-free format:** safetensors, or GGUF once `tensora-ml validate` supports it ([ADR-0013](docs/adr/0013-node-agent-and-apple-silicon.md)). Never pickle, and never `trust_remote_code`. The validator (`ml/src/tensora_ml/validate.py`) is the enforcement point.
+7. **Every workload state change goes through `service.Transition`**, which validates against `domain` state rules and appends a `workload_events` row. Usage accounting depends on those rows. Never write `state` directly.
 8. **Every store query that touches tenant data is scoped by tenant ID.** A request from tenant B for tenant A's object returns 404, never 403 (don't leak existence).
-9. **Every workload belongs to exactly one region, and its data never leaves that region** unless the customer explicitly opts in ([ADR-0009](docs/adr/0009-regions-global-control-plane-regional-cells.md)). *This isn't in code yet (roadmap Phase 0). New code must not assume a single region.*
-10. **Fallbacks are opt-in and visible** ([ADR-0010](docs/adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). Never silently give a customer a different GPU class, CPU, model, or region. Record `placed_class`, say what served each response, and bill for what actually ran.
+9. **Every workload belongs to exactly one region, and its data never leaves that region** unless the user explicitly opts in. Solo has one region, `local` ([ADR-0009](docs/adr/0009-regions-global-control-plane-regional-cells.md)). *Not in code yet; new code must not assume a single region.*
+10. **Fallbacks are opt-in and visible** ([ADR-0010](docs/adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). Never silently give a user a different GPU class, CPU, model, machine, or region. Record `placed_class`, say what served each response, and account usage for what actually ran.
+11. **Cross-platform:** `controlplane/` must build and run on linux/amd64, linux/arm64, and darwin/arm64 (`make build-all`). OS-specific code lives only behind build tags in driver packages. No Linux-only assumptions anywhere else.
+12. **Free for everyone:** no pricing, payment, invoice, paid-tier, or paywall logic in code, UI, or docs ([ADR-0011](docs/adr/0011-free-for-everyone.md)).
+13. **Hosts are protected:** sharing is opt-in per machine. Guest workloads never get the host's files or LAN, and community workloads get no internet by default ([ADR-0014](docs/adr/0014-sharing-idle-compute.md)). *Not in code yet.*
 
 ## Conventions
 
-- **Go:** `gofmt`/`goimports`; `context.Context` first parameter; wrap errors with `fmt.Errorf("...: %w", err)`; domain errors from `internal/domain/errors.go`; table-driven tests; no package-level mutable state; everything under `internal/`.
-- **Python (ml/):** type hints everywhere (mypy strict), ruff, pytest. Heavy deps (`torch`) are optional extras and imported lazily.
+- **Go:** `gofmt`/`goimports`; `context.Context` first parameter; wrap errors with `fmt.Errorf("...: %w", err)`; domain errors from `internal/domain/errors.go`; table-driven tests; no package-level mutable state; everything under `internal/`. CGO-free, so cross-compiles stay trivial.
+- **Python (ml/):** type hints everywhere (mypy strict), ruff, pytest. Heavy deps (`torch`, `mlx`) are optional extras and imported lazily.
 - **TypeScript (web/):** strict mode; API types in `web/src/api/types.ts` mirror the Go JSON shapes — update both together.
-- **API:** JSON over HTTP, versioned under `/v1`. Errors are `{"error": {"code", "message"}}`. Responses never expose cluster internals (node names, object names, IPs).
+- **API:** JSON over HTTP, versioned under `/v1`. Errors are `{"error": {"code", "message"}}`. Responses never expose runtime internals (node names, object names, IPs, host paths).
 - **Config:** environment variables prefixed `TENSORA_` (see `.env.example`). No secrets in code, values files, tests, or docs.
-- **Kubernetes/Helm:** pin every chart and image version; never `latest`.
+- **Kubernetes/Helm (Datacenter):** pin every chart and image version; never `latest`.
+- **Words:** say *user*, not *customer*; *usage accounting*, not *billing*. There's nothing to buy.
 - **Commits:** Conventional Commits — `feat(api): ...`, `fix(deploy): ...`, `docs(adr): ...`.
 
 ## Workflows
@@ -74,21 +83,22 @@ touched and report the actual output. If a tool is missing, say so — do not cl
 Step-by-step playbooks live in `docs/playbooks/` (Claude Code exposes them as skills):
 
 - Add an API resource → [docs/playbooks/add-api-resource.md](docs/playbooks/add-api-resource.md)
-- Add a cluster add-on → [docs/playbooks/add-platform-component.md](docs/playbooks/add-platform-component.md)
+- Add a Datacenter add-on → [docs/playbooks/add-platform-component.md](docs/playbooks/add-platform-component.md)
 - Record a decision → [docs/playbooks/write-an-adr.md](docs/playbooks/write-an-adr.md)
 - Verify a change → [docs/playbooks/verify-changes.md](docs/playbooks/verify-changes.md)
 
 ## Safety rules for agents
 
 - **Never mutate real infrastructure** unless the user explicitly asks in the current session: no `kubectl apply|delete|patch|edit|drain`, `helm install|upgrade|uninstall`, `helmfile apply|sync|destroy`, or `ansible-playbook` without `--check`. Rendering, linting, and `--dry-run=client` are always fine.
-- **Never read or print secrets:** `.env`, kubeconfigs, `*.key`, `*.pem`, `secrets/`, Ansible vault files.
+- **Never change the developer's own machine configuration** (launchd or systemd services, `sysctl` values such as the GPU memory limit, firewall rules) unless they explicitly ask.
+- **Never read or print secrets:** `.env`, kubeconfigs, `*.key`, `*.pem`, `secrets/`, Ansible vault files, agent certificates.
 - Don't add a dependency without stating why; prefer the standard library or what is already in `go.mod` / `pyproject.toml` / `package.json`.
 - If a change contradicts an architecture rule, stop and propose an ADR instead.
 - Keep docs in sync: if you change behavior described in `docs/architecture/` or a runbook, update it in the same change.
 
 ## Where to find things
 
-- What we sell, to whom, and the milestone scope: [docs/product/product-spec.md](docs/product/product-spec.md). Check new features against its milestone tables before building.
-- Current phase, scope, and open decisions: [docs/roadmap.md](docs/roadmap.md)
-- Why things are the way they are: [docs/adr/](docs/adr/)
-- Terms (MIG, VFIO, RawDeployment, cohort, …): [docs/glossary.md](docs/glossary.md)
+- What we're building, for whom, and the milestone scope: [docs/product/product-spec.md](docs/product/product-spec.md). Check new features against its milestone tables before building.
+- Current phase, the next task breakdown, and open decisions: [docs/roadmap.md](docs/roadmap.md)
+- Why things are the way they are: [docs/adr/](docs/adr/README.md). Read ADRs 0011–0014 first.
+- Terms (Metal, MIG, VFIO, node agent, profile, pool, …): [docs/glossary.md](docs/glossary.md)

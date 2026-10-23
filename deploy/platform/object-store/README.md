@@ -1,19 +1,21 @@
-# Object store (models, datasets, backups)
+# Object store (Datacenter profile: models, datasets, backups)
 
-**Open decision for Phase 1 (ADR-0005).** Tensora needs S3-compatible storage for:
+**Open decision for the Datacenter profile (Phase 3, ADR-0005).** Solo and Lab installs don't need
+this; they keep models in each machine's local cache. A datacenter needs S3-compatible storage for:
 
-- tenant model weights, written by `tensora-ml ingest` and read by the KServe storage initializer
+- model weights, written by `tensora-ml ingest` and read by the KServe storage initializer
 - backups (Velero, Postgres WAL archives)
 
 | Option | Notes |
 |---|---|
-| **Rook-Ceph RGW** | The Phase 2+ answer. It comes with the Ceph cluster and needs ≥3 nodes to be worth it. |
+| **Rook-Ceph RGW** | The answer once there are ≥3 nodes; it comes with the Ceph cluster |
 | **SeaweedFS** | Light, Apache-2.0, and has a Helm chart. A reasonable single-node choice. |
 | **Garage** | Light and built for small self-hosted clusters. AGPL. |
 | **MinIO** | The community edition stopped shipping prebuilt binaries and images in late 2025 and moved to maintenance mode. Check its current status before choosing it. |
 
-The object store is **regional**: every region runs its own, and model weights and backups for a
-region stay in it (ADR-0009). `tensora-ml ingest` uploads to the store of the region where the model will be served.
+All of these are free to use. The object store is **regional**: every region runs its own, and a
+region's model weights and backups stay in it (ADR-0009). `tensora-ml ingest` uploads to the store of the
+region where the model will be served.
 
 Whichever you pick:
 

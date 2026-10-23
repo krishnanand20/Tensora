@@ -221,7 +221,7 @@ func (q *queries) WorkloadsForMetering(_ context.Context, since time.Time) ([]do
 	}
 	var out []domain.Workload
 	for _, w := range q.d.workloads {
-		if w.State.Billable() || recent[w.ID] {
+		if w.State.Metered() || recent[w.ID] {
 			out = append(out, cloneWorkload(w))
 		}
 	}

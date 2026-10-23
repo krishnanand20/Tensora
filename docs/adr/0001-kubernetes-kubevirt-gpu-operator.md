@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 
+> **Scope since 2026-10-23 ([ADR-0012](0012-deployment-profiles.md), [ADR-0013](0013-node-agent-and-apple-silicon.md)):** this decision covers the **Datacenter profile** only. Solo and Lab installs (including Macs) use the node agent instead of Kubernetes. Mentions of "customers" below mean users.
+
 ## Context
 
 We need GPU VMs (customers who want a whole machine), containers (notebooks), and model

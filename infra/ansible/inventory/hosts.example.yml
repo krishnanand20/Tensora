@@ -1,7 +1,7 @@
 # Copy to hosts.yml (gitignored) and fill in real addresses.
 # gpu_workload_config sets the GPU Operator mode at registration: container | vm-passthrough.
-# One inventory per region (ADR-0009); this one is the first region. CPU-only nodes (control plane,
-# CPU instances, and fallback, ADR-0010) get a planned cpu_nodes group in Phase 2.
+# Datacenter profile. One inventory per region (ADR-0009), for example dc-1. CPU-only nodes (control
+# plane, CPU instances, and fallback, ADR-0010) get a planned cpu_nodes group (Phase 3).
 all:
   children:
     gpu_nodes:

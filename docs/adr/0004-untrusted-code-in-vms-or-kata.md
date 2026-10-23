@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 
+> **Updated 2026-10-23 ([ADR-0011](0011-free-for-everyone.md), [ADR-0014](0014-sharing-idle-compute.md)):** Tensora is free and self-hosted, so nothing is "sold". *Untrusted* now means **invited and community users**, and "customers" below means users. The rule below still holds, and the per-driver trust matrix in [tenancy-and-isolation.md](../architecture/tenancy-and-isolation.md) applies it to Macs and node agents.
+
 ## Context
 
 We sell compute to strangers. Container escapes through kernel bugs are a recurring class of

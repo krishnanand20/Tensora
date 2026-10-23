@@ -1,4 +1,4 @@
-# Imports the base disk once; customer VMs clone it (manifests.virtualMachine → sourceRef).
+# Imports the base disk once; user VMs clone it (manifests.virtualMachine → sourceRef).
 # Replace "current" with a dated build (e.g. noble/20261015/) so images are reproducible.
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume

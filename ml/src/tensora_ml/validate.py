@@ -22,7 +22,7 @@ ALLOWED_SUFFIXES = frozenset(
 )
 ALLOWED_NAMES = frozenset({"LICENSE", "NOTICE", ".gitattributes"})
 
-#: Formats that can execute code, with a reason the customer can act on.
+#: Formats that can execute code, with a reason the user can act on.
 DANGEROUS_SUFFIXES = {
     ".bin": "pickle-based PyTorch weights can execute code on load; convert to safetensors",
     ".pt": "pickle-based PyTorch weights can execute code on load; convert to safetensors",

@@ -1,6 +1,18 @@
-# Add a node
+# Add a machine or node
 
-A node belongs to one region's cluster, so use that region's inventory and environment file (ADR-0009).
+Every machine belongs to one region (ADR-0009), so use that region's inventory and environment file.
+
+## Lab: add an agent machine (planned, Phase 2)
+
+1. Install Tensora on the machine (see [00-quickstart.md](00-quickstart.md), or [mac-host.md](mac-host.md) for a Mac).
+2. In the dashboard: Machines → Add machine → copy the enrolment token.
+3. On the new machine, run `tensora agent --join <token>`. The agent dials out, so no ports need opening.
+4. **Check:** the machine shows Online, with the right CPU, RAM, and accelerators (NVIDIA GPUs, or the Apple GPU and its unified memory).
+5. **Burn-in** if it has a GPU: `tensora-ml burnin` (CUDA today; Metal planned).
+6. **Sharing level:** new machines are **private**. Change this only if the owner wants to share (ADR-0014).
+
+## Datacenter: add a Kubernetes node
+
 **CPU worker nodes** (for CPU instances and fallback, ADR-0010) and control-plane CPU servers skip the
 `iommu` role, the GPU steps, and the GPU burn-in. Check that their CPU capacity shows up for the CPU classes instead.
 
@@ -16,15 +28,15 @@ A node belongs to one region's cluster, so use that region's inventory and envir
    ansible-playbook site.yml --limit <new-host> --ask-vault-pass -e iommu_allow_reboot=true
    ```
 5. **Join check:** `kubectl get nodes` shows the node Ready, with GPU Operator pods running on it.
-6. **Burn-in** on every GPU ([02, burn-in](02-gpu-passthrough.md#burn-in-required-before-offering-any-gpu)). A failing GPU means the node is not offered: cordon it and open an RMA.
+6. **Burn-in** on every GPU ([02, burn-in](02-gpu-passthrough.md#burn-in-required-before-anyone-else-uses-a-gpu)). If a GPU fails, keep the node out of service: cordon it and arrange a repair or replacement.
 7. **Capacity:** if the node has a new GPU model, add a GPU class to `images/catalog.yaml` and the device to `gpuPassthrough.devices`.
    The controller picks up capacity automatically. Verify that its next admission pass uses the new GPUs.
 8. **Storage:** with Longhorn, raise `storage.replicas` once there are at least 3 nodes, and check that existing volumes rebuild. With Ceph, check that new OSDs joined and wait for `HEALTH_OK`.
 9. **Watch the first week:** XID and ECC errors, temperatures under real load, and power draw against the circuit budget.
 
-## Removing a node
+## Removing a node or machine
 
-1. `kubectl cordon <node>`, then stop or migrate tenant workloads. Tell the affected customers first.
-2. `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`
-3. Ceph: mark its OSDs out and wait for rebalance. Longhorn: evict its replicas.
-4. `kubectl delete node <node>`, and remove the host from inventory.
+1. **Tell the affected users first**, then stop or move their workloads. Datacenter: `kubectl cordon <node>`. Lab: disable the machine in the dashboard.
+2. Datacenter: `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`.
+3. Datacenter storage: for Ceph, mark the node's OSDs out and wait for rebalance. For Longhorn, evict its replicas.
+4. Remove it: `kubectl delete node <node>` and remove the host from inventory, or revoke the agent's certificate in the dashboard.

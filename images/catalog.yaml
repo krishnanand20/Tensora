@@ -1,11 +1,13 @@
-# Tensora launch catalog: the GPU classes and images customers can choose from.
+# Tensora launch catalog: the GPU classes and images users can choose from.
 # Loaded by the control plane (TENSORA_CATALOG_PATH) and deployed as a ConfigMap by the
 # tensora chart. Field reference: controlplane/internal/catalog/catalog.go.
 # Control plane tests load this file, so `make test-cp` catches mistakes here.
 #
-# Planned (ADR-0009, ADR-0010): a top-level `regions:` list, `kind: gpu|cpu` and `regions: [...]`
-# on every class, and CPU classes for CPU instances and fallback. The loader rejects unknown
-# fields, so these arrive together with the code change (roadmap Phase 0 task breakdown).
+# The classes below are the Datacenter profile's NVIDIA GPUs. Planned (ADR-0009, 0010, 0013): a
+# top-level `regions:` list (Solo: `local`), an `accelerator` (nvidia | apple | amd | cpu) and
+# `regions: [...]` on every class, Apple Silicon classes (e.g. apple-m4-max-128gb), CPU classes, and
+# per-platform runtimes (vLLM, MLX, llama.cpp). The loader rejects unknown fields, so these arrive
+# together with the code change (roadmap Phase 1 task breakdown).
 
 gpu_classes:
   - id: l40s-48gb
@@ -33,9 +35,9 @@ gpu_classes:
     vcpus_per_gpu: 12
     memory_gib_per_gpu: 120
 
-  # Consumer card. NVIDIA's GeForce driver licence restricts datacenter deployment, so this
-  # class is internal-only (trusted tenants) until legal review says otherwise.
-  # See docs/architecture/gpu-sharing.md.
+  # Consumer card: a normal choice at home (Solo, Lab). In a datacenter, NVIDIA's GeForce driver
+  # licence has historically excluded datacenter deployment, so it's internal-only (trusted
+  # tenants) here. Operators decide for their own deployment. See docs/architecture/gpu-sharing.md.
   - id: rtx4090-24gb
     display_name: NVIDIA GeForce RTX 4090 24GB
     vram_gb: 24

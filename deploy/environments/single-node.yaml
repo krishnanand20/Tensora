@@ -1,8 +1,8 @@
-# Phase 1: one GPU node running everything. Edit for your hardware before use.
+# Datacenter profile, starting with one GPU node running everything. Edit for your hardware before use.
 # Consumed by helmfile (feature flags, templated values files) and by the cluster-config chart.
-# This is the first region's cell; it also hosts the global control plane until region 2 (ADR-0009).
+# A one-region deployment: this cluster also hosts the control plane (ADR-0009).
 
-region: in-mum-1 # read once regions land in code (roadmap Phase 0, task 12)
+region: dc-1 # read once regions land in code (roadmap)
 
 domain: tensora.example.com
 acmeEmail: ops@tensora.example.com
@@ -36,7 +36,7 @@ features:
   kserve: true
   keycloak: false
   observability: true
-  tensora: false  # Phase 3
+  tensora: false # enable once the Kubernetes backend is validated (Phase 3)
 
 tensora:
   version: "0.1.0"

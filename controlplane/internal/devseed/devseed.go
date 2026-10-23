@@ -18,8 +18,8 @@ type seedTenant struct {
 }
 
 var tenants = []seedTenant{
-	{"acme", "Acme Robotics (external customer)", domain.TierUntrusted, map[string]int{"l40s-48gb": 2, "a100-80gb": 1}},
-	{"globex", "Globex (external customer)", domain.TierUntrusted, map[string]int{"l40s-48gb": 1}},
+	{"acme", "Acme Robotics (invited team)", domain.TierUntrusted, map[string]int{"l40s-48gb": 2, "a100-80gb": 1}},
+	{"globex", "Globex (community users)", domain.TierUntrusted, map[string]int{"l40s-48gb": 1}},
 	{"internal", "Tensora internal", domain.TierTrusted, map[string]int{"l40s-48gb": 4, "a100-80gb": 2, "rtx4090-24gb": 2}},
 }
 

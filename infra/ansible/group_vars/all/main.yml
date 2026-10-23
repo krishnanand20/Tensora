@@ -1,7 +1,7 @@
 # Non-secret settings shared by every node. Secrets: vault.yml (see vault.yml.example).
 
 ansible_user: ubuntu
-timezone: Etc/UTC # the whole fleet runs on UTC so logs and billing events line up across regions
+timezone: Etc/UTC # the whole fleet runs on UTC so logs and usage-accounting events line up across regions
 
 # k3s — pin to a tested release; keep in step with the Kubernetes version the add-ons support.
 k3s_version: v1.33.4+k3s1

@@ -40,6 +40,26 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           working-directory: controlplane
+      - name: cross-compile (linux/amd64, linux/arm64, darwin/arm64)
+        working-directory: .
+        run: make build-all
+
+  # Apple Silicon Macs are first-class hosts (ADR-0013): run the Go and Python suites natively on macOS arm64.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: controlplane/go.mod
+          cache-dependency-path: controlplane/go.sum
+      - name: go test (darwin/arm64)
+        working-directory: controlplane
+        run: go vet ./... && go test ./...
+      - uses: astral-sh/setup-uv@v6
+      - name: ml tests (darwin/arm64)
+        working-directory: ml
+        run: uv sync --frozen && uv run pytest
 
   ml:
     runs-on: ubuntu-latest

@@ -1,12 +1,14 @@
 # 0009. Regions: one global control plane, independent regional cells
 
-- **Status:** Accepted (not yet implemented in code; see the roadmap, Phase 0)
+- **Status:** Accepted (not yet implemented in code; see the roadmap, Phase 1 task breakdown)
 - **Date:** 2026-10-23
+
+> **Reframed 2026-10-23 ([ADR-0011](0011-free-for-everyone.md), [ADR-0012](0012-deployment-profiles.md)):** Tensora is self-hosted software, not a cloud we operate or sell. Read "global control plane" as *the control plane of one deployment*, and "regional cell" as *one location within it* (a home, an office, a datacenter). Solo installs have one region, `local`. Statements below about selling worldwide or India as a first region **no longer apply**.
 
 ## Context
 
 Tensora sells worldwide and will run GPUs in several locations, starting with India
-([product spec](../product/product-spec.md#regions)). Customers need to choose where workloads
+([product spec](../product/product-spec.md#how-you-deploy-it)). Customers need to choose where workloads
 and data live, for latency, for law (GDPR, DPDP, and others), and for sovereign-AI contracts.
 A failure in one location must not take down the others. Today the data model has no notion of location.
 

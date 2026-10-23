@@ -1,45 +1,47 @@
 # Observability
 
-## Stack
+## Solo and Lab: built into the dashboard
+
+| Signal | Source | Status |
+|---|---|---|
+| Machine health: online, CPU, RAM, disk, temperature where available | Agent heartbeat | Planned (Phase 1–2) |
+| NVIDIA GPU use and memory | NVML, through the agent | Planned |
+| Apple GPU use and unified memory | macOS IOKit, through the agent (no root needed) | Planned (approach to validate) |
+| Workload logs | The agent streams the driver's logs to the dashboard, to the workload's owner only | Planned |
+| Alerts | Dashboard notifications: machine offline, disk nearly full, workload failed | Planned (Phase 2) |
+| Prometheus | `/metrics` on the control plane and agents, for people who already run Prometheus | Planned (Phase 3) |
+
+## Datacenter
 
 | Signal | Tool | Notes |
 |---|---|---|
 | Metrics | kube-prometheus-stack (Prometheus, Alertmanager, Grafana) | ServiceMonitors from every chart are picked up |
-| GPU metrics | NVIDIA DCGM exporter (via GPU Operator) | Container-mode nodes only. Passthrough GPUs are invisible to the host. |
-| Logs | Loki (single binary) + Grafana Alloy | Pod logs with `namespace`, `pod`, `container`, and `tenant` labels |
-| Network flows | Cilium Hubble | Useful for policy debugging and abuse detection |
-| Hardware | IPMI/BMC (power, temperature, fans, PSU) | Exporter or BMC SNMP, Phase 2 |
+| GPU metrics | NVIDIA DCGM exporter (through the GPU Operator) | Container-mode nodes only; passthrough GPUs are invisible to the host |
+| Logs | Loki (single binary) + Grafana Alloy | Pod logs labelled with `namespace`, `pod`, `container`, and `tenant` |
+| Network flows | Cilium Hubble | Policy debugging and abuse detection |
+| Hardware | IPMI/BMC | Exporter or SNMP |
 
-Each regional cell runs its own metrics and logs stack, so customer logs stay in-region (ADR-0009).
-A global Grafana can query every region read-only, and alerts route to one on-call channel.
+Each region runs its own stack, so logs stay in-region. A central Grafana can query every region read-only.
 
-## Alerts that matter
+### Alerts that matter
 
 | Alert | Source | Why |
 |---|---|---|
-| GPU XID errors (`DCGM_FI_DEV_XID_ERRORS` > 0) | DCGM | XID 79 (the GPU fell off the bus) or 48 (double-bit ECC) means draining the node and possibly an RMA |
-| ECC double-bit errors / retired pages | DCGM | Hardware degradation |
-| GPU temperature or power at its limit for 10 min or more | DCGM, IPMI | Cooling problems, which are common in hot climates and summer months |
+| GPU XID errors | DCGM | XID 79 (the GPU fell off the bus) or 48 (double-bit ECC) means draining the node, and possibly an RMA |
+| ECC double-bit errors, retired pages | DCGM | Hardware degradation |
+| GPU temperature or power at its limit for 10 min or more | DCGM, IPMI | Cooling problems, common in hot climates and summer months |
 | Node NotReady, or disk over 85% | kube-state-metrics, node-exporter | |
 | Longhorn or Ceph degraded | Their exporters | Data at risk |
-| Workloads in `provisioning` longer than 15 min, or queue depth growing | Control plane `/metrics` (Phase 3) | Stuck admission or capacity exhaustion |
-| Metering lag (last closed hour not metered after 30 min) | Control plane `/metrics` | Billing correctness |
+| Workloads stuck in `provisioning`, or queue depth growing | Control plane `/metrics` (planned) | Stuck admission or no capacity |
+| Usage accounting lag (last closed hour not recorded after 30 min) | Control plane `/metrics` (planned) | Quotas and fair share depend on it |
+| Fallback rate rising | Control plane and gateway metrics (planned) | A class is short of capacity |
+| Inference gateway errors after failover | Gateway metrics (planned) | Endpoints failing beyond what fallbacks absorb |
 | Certificate expiry within 14 days | cert-manager | |
-| Fallback rate rising (placements on fallback classes, gateway failovers) | Control plane and inference gateway metrics (planned) | Capacity is short in a region, so buy GPUs or adjust quotas (ADR-0010) |
-| Inference gateway errors after failover, or circuit breakers open | Inference gateway metrics (planned) | Endpoints failing beyond what fallbacks can absorb |
 | Postgres down or replication lag | Postgres exporter | |
 
-## Dashboards
+## User data in logs
 
-- NVIDIA DCGM exporter dashboard (Grafana.com dashboard 12239)
-- Cilium and Hubble, Longhorn or Ceph, and node exporter dashboards come from their charts
-- Tensora (Phase 3): workloads by state, queue depth by GPU class, GPUs allocated versus capacity, and revenue-hours per day
+Workload logs are **user data** in every profile.
 
-## Customer data in logs
-
-Tenant container logs are **customer data**:
-
-- Only on-call staff should have access to Loki, for operational reasons, and that access should be audited.
-- Retention is 14 days (`loki.yaml`).
-- Logs from inside VMs are never collected.
-- Tenant-facing logs and metrics are Phase 4: per-workload log streaming via the API, with tenant-filtered queries.
+- **Visibility:** only the workload's owner sees them in the dashboard. In a datacenter, Loki access is limited to on-call staff for operational reasons, and audited. Retention is 14 days (`loki.yaml`).
+- **Never collected:** logs from inside VMs, and anything from guest workloads on community hosts beyond the driver's own status lines.

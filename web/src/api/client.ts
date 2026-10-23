@@ -17,7 +17,7 @@ export function toApiError(status: number, body: unknown): ApiError {
 }
 
 function authHeaders(): Record<string, string> {
-  // Dev auth only. TODO(phase-3): replace with an OIDC bearer token from Keycloak (PKCE).
+  // Dev auth only. TODO(phase-1): local accounts and API tokens; OIDC with PKCE for the Datacenter profile (phase 3).
   const tenant = import.meta.env.VITE_DEV_TENANT ?? (import.meta.env.DEV ? "acme" : undefined);
   return tenant ? { "X-Dev-Tenant": tenant } : {};
 }

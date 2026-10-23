@@ -1,6 +1,10 @@
-# AGENTS.md: infra/ (bare-metal bootstrap)
+# AGENTS.md: infra/ (Datacenter profile: server bootstrap)
 
 These rules add to the root [AGENTS.md](../AGENTS.md); read that first.
+
+**`infra/` bootstraps Linux servers for the Datacenter profile** ([ADR-0012](../docs/adr/0012-deployment-profiles.md)).
+Macs and personal Linux machines don't use Ansible. They install the `tensora` binary and run `tensora up` or
+`tensora agent` (Phases 1–2).
 
 ## Layout
 
@@ -19,11 +23,11 @@ scripts/                       read-only diagnostics to run on a node (IOMMU gro
 - **Reboots are opt-in.** Kernel cmdline changes notify a handler that reboots only if `iommu_allow_reboot: true`.
 - **Secrets** (k3s token, WireGuard private keys) live only in `group_vars/all/vault.yml`, encrypted with `ansible-vault`. Reference them as `vault_*` variables.
 - Use fully qualified module names (`ansible.builtin.apt`, not `apt`).
-- **Scripts** in `scripts/` are diagnostics only. Read-only, `set -euo pipefail`, and they must pass shellcheck.
+- **Scripts** in `scripts/` are diagnostics only: read-only, `set -euo pipefail`, and they must pass shellcheck.
 - Keep k3s flags in sync with deploy/: Cilium needs flannel, network policy, and kube-proxy disabled, and MetalLB needs servicelb disabled.
 - **One inventory per region** (ADR-0009). Never mix regions' hosts in one inventory, because each region is its own cluster with its own network ranges.
 - **CPU worker nodes** (ADR-0010) and control-plane CPU servers use `base`, `wireguard`, and `k3s`, but not `iommu`. Put them in a separate group (planned: `cpu_nodes`).
-- The fleet runs on **UTC**, so logs and billing events line up across regions.
+- The fleet runs on **UTC**, so logs and usage-accounting events line up across regions.
 
 ## Commands
 

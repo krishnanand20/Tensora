@@ -1,5 +1,5 @@
 # Grafana Alloy ships pod logs to Loki (Promtail is end-of-life).
-# Tenant container logs are customer data: they are labeled with the tenant and must only
+# Tenant container logs are user data: they are labeled with the tenant and must only
 # be viewed for operational reasons (docs/architecture/observability.md). Logs from inside
 # VMs are never collected — only virt-launcher's.
 alloy:

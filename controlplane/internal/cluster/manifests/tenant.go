@@ -21,7 +21,7 @@ func Tenant(slug string, gpuQuota map[string]int, imagesNamespace string) []clus
 	lbl := map[string]any{cluster.LabelManagedBy: cluster.ManagedBy, cluster.LabelTenant: slug}
 
 	nsLabels := maps.Clone(lbl)
-	// TODO(phase-1): confirm virt-launcher runs under "baseline" with the installed KubeVirt version.
+	// TODO(phase-3): confirm virt-launcher runs under "baseline" with the installed KubeVirt version.
 	nsLabels["pod-security.kubernetes.io/enforce"] = "baseline"
 	nsLabels["pod-security.kubernetes.io/warn"] = "restricted"
 

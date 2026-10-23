@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-22
 
+> **Scope since 2026-10-23 ([ADR-0012](0012-deployment-profiles.md)):** k3s is the **Datacenter profile's** Kubernetes. Solo and Lab installs need no Kubernetes at all.
+
 ## Context
 
 Phase 1 is one GPU server. We want a path to an HA control plane without reinstalling, and
@@ -29,5 +31,5 @@ minimal moving parts while we learn.
 
 ## Update 2026-10-23
 
-Each region is its own k3s cluster (ADR-0009). Until the second region opens, the first region's
-cluster also hosts the global control plane.
+In the Datacenter profile, each region is its own k3s cluster (ADR-0009). While a deployment has one
+region, that cluster also hosts the control plane.

@@ -3,6 +3,8 @@
 - **Status:** Accepted (design; not yet implemented in code; see the roadmap)
 - **Date:** 2026-10-23
 
+> **Updated 2026-10-23 ([ADR-0011](0011-free-for-everyone.md)):** Tensora is free. Wherever this record says *billed*, *priced*, or *paid*, read **accounted**, and read *customer* as **user**. There are no prices or invoices. Fallbacks apply in every profile, including on Macs (Metal GPU, then CPU).
+
 ## Context
 
 GPUs will regularly be sold out in a region, and individual replicas will fail (OOM, XID errors,

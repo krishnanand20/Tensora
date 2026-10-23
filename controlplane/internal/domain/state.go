@@ -70,9 +70,9 @@ func (s State) HoldsCapacity() bool {
 	return false
 }
 
-// Billable reports whether the customer pays for GPU time in this state.
-// Provisioning time is not billed (ADR-0006).
-func (s State) Billable() bool { return s == StateRunning }
+// Metered reports whether time in this state counts toward usage accounting (quotas, fair
+// share, and reports; there is no billing, ADR-0011). Provisioning time doesn't count (ADR-0006).
+func (s State) Metered() bool { return s == StateRunning }
 
 // StatesWhere returns all states matching pred.
 func StatesWhere(pred func(State) bool) []State {

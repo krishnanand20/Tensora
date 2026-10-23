@@ -64,7 +64,7 @@ func (m *Meter) MeterOnce(ctx context.Context) (int, error) {
 			if err != nil {
 				return err
 			}
-			for hour, secs := range SplitHourly(BillableIntervals(events, closed)) {
+			for hour, secs := range SplitHourly(MeteredIntervals(events, closed)) {
 				if hour.Before(since) || secs == 0 {
 					continue
 				}

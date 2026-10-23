@@ -31,7 +31,7 @@ setup: ## Install dev dependencies for all components
 
 # ---------------------------------------------------------------- local dev
 .PHONY: dev dev-pg web-dev migrate
-dev: ## All-in-one local stack: API+controller+metering, in-memory store, fake cluster (:8080)
+dev: ## All-in-one local stack: API+controller+usage accounting, in-memory store, fake backend (:8080; macOS or Linux)
 	cd $(CP) && go run ./cmd/tensora dev
 
 dev-pg: ## Same as dev, but against Postgres in Docker
@@ -94,6 +94,17 @@ deploy-check: ## Lint + render charts and validate with kubeconform (no cluster 
 	  helm template cluster-config deploy/charts/cluster-config -f deploy/environments/$$env.yaml | $(KUBECONFORM) || exit 1; \
 	done
 	$(KUBECONFORM) deploy/examples
+
+# ---------------------------------------------------------------- cross-platform builds (AGENTS.md rule 11)
+PLATFORMS := linux/amd64 linux/arm64 darwin/arm64
+
+.PHONY: build-all
+build-all: ## Cross-compile tensora for linux/amd64, linux/arm64, darwin/arm64 into controlplane/bin/
+	cd $(CP) && for p in $(PLATFORMS); do \
+	  os=$${p%/*}; arch=$${p#*/}; \
+	  echo "building tensora for $$os/$$arch"; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -o bin/tensora-$$os-$$arch ./cmd/tensora || exit 1; \
+	done
 
 # ---------------------------------------------------------------- images
 .PHONY: images

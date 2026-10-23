@@ -62,11 +62,11 @@ func TestEveryStateCanReachDeleted(t *testing.T) {
 	}
 }
 
-func TestBillableStatesHoldCapacity(t *testing.T) {
-	// Billing for GPUs the scheduler thinks are free would be a correctness bug.
+func TestMeteredStatesHoldCapacity(t *testing.T) {
+	// Counting usage for GPUs the scheduler thinks are free would be a correctness bug.
 	for _, s := range AllStates() {
-		if s.Billable() && !s.HoldsCapacity() {
-			t.Errorf("%s is billable but does not hold capacity", s)
+		if s.Metered() && !s.HoldsCapacity() {
+			t.Errorf("%s is metered but does not hold capacity", s)
 		}
 	}
 }

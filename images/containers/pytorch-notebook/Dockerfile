@@ -12,5 +12,5 @@ USER 1000
 WORKDIR /home/jovyan/work
 EXPOSE 8888
 
-# Auth: JUPYTER_TOKEN is injected per workload (Phase 3); until then the Gateway must front it.
+# Auth: JUPYTER_TOKEN will be injected per workload (planned); until then, access goes through the control plane or Gateway.
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--ServerApp.root_dir=/home/jovyan/work"]

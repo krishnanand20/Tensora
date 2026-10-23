@@ -3,6 +3,8 @@
 - **Status:** Accepted (the Phase 1 object store is still open)
 - **Date:** 2026-10-22
 
+> **Scope since 2026-10-23 ([ADR-0012](0012-deployment-profiles.md)):** this covers the **Datacenter profile**. Solo and Lab installs use local disk on each machine and a SQLite or Postgres store. The "Phase 1" below refers to the old plan; it's now Phase 3 (Datacenter). Mentions of customers below mean users.
+
 ## Context
 
 We need block storage (VM disks, notebook volumes, Postgres) and S3 (models, backups), and later a shared
@@ -29,4 +31,4 @@ filesystem. Ceph does all three but wants at least 3 nodes and real operational 
 ## Update 2026-10-23
 
 Storage is per region (ADR-0009). Every regional cell runs its own block storage and object store, and
-the choices above apply to each region. Only the global Postgres is shared across regions.
+the choices above apply to each region. Only the control plane's store is shared across regions.

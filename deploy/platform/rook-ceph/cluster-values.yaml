@@ -1,4 +1,4 @@
-# Rook-Ceph cluster (Phase 2+, ≥3 nodes). Chart defaults also create an RBD pool
+# Rook-Ceph cluster (≥3 nodes). Chart defaults also create an RBD pool
 # (block), CephFS (shared filesystem) and an RGW object store (S3) — review those
 # sections of the upstream values before enabling.
 operatorNamespace: rook-ceph

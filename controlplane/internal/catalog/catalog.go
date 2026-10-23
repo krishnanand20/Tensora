@@ -1,4 +1,4 @@
-// Package catalog loads images/catalog.yaml: the GPU classes and images customers can launch.
+// Package catalog loads images/catalog.yaml: the GPU classes and images users can launch.
 package catalog
 
 import (
