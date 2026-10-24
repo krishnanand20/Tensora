@@ -29,6 +29,7 @@ import (
 	"github.com/tensora/tensora/controlplane/internal/store"
 	"github.com/tensora/tensora/controlplane/internal/store/memstore"
 	"github.com/tensora/tensora/controlplane/internal/store/pgstore"
+	"github.com/tensora/tensora/controlplane/internal/store/sqlitestore"
 )
 
 const usage = `tensora — free, self-hosted GPU cloud
@@ -39,21 +40,25 @@ Server commands:
   api         serve the REST API
   controller  reconcile workloads with the runtime (Kubernetes today; node agents planned)
   metering    usage accounting: turn workload events into hourly usage records (no money)
-  migrate     apply database migrations to TENSORA_DATABASE_URL
+  migrate     apply database migrations to TENSORA_DATABASE_URL (Postgres or a SQLite file;
+              a SQLite file is also migrated whenever it's opened)
   seed        create dev tenants and quotas (TENSORA_ENV=dev only)
-  dev         api + controller + metering in one process with seeded data;
-              uses an in-memory store unless TENSORA_DATABASE_URL is set
+  dev         api + controller + metering in one process with seeded data; uses an in-memory
+              store unless TENSORA_DATABASE_URL is set (postgres://… or sqlite:<path>)
 
 Client commands (talk to a running API):
-  workloads             list your workloads
-  events <id> [-json]   show a workload's complete timeline: every state change, when, and why
-  export <id> [-o file] download everything recorded about a workload as one JSON file
-                        (default file name comes from the server; -o - writes to stdout)
+  workloads [-all]      list your workloads (-all includes deleted ones)
+  events <id> [-json]   show a workload's complete timeline: every state change and note, when, and why
+  export <id> [-o file] [-f]
+                        save everything recorded about a workload as one JSON file, readable by
+                        you only (default tensora-<name>-<id>.json; -o - writes to stdout;
+                        -f replaces an existing file)
 
 Server configuration: TENSORA_* environment variables (see .env.example). Set TENSORA_LOG_LEVEL=debug
 for detailed logs and TENSORA_LOG_FILE=path to keep a complete copy on disk.
 Client configuration: TENSORA_API_URL (default http://127.0.0.1:8080), and TENSORA_TOKEN (bearer)
-or TENSORA_DEV_TENANT (dev mode).
+or TENSORA_DEV_TENANT (dev mode). A token is never sent over plain http:// to another machine
+unless TENSORA_INSECURE_HTTP=true.
 `
 
 func main() {
@@ -91,10 +96,20 @@ func run(ctx context.Context, cmd string) error {
 	defer closeLog()
 
 	if cmd == "migrate" {
-		if cfg.DatabaseURL == "" {
+		db, err := cfg.Database()
+		if err != nil {
+			return err
+		}
+		var n int
+		switch db.Driver {
+		case "postgres":
+			n, err = pgstore.Migrate(ctx, db.DSN)
+		case "sqlite":
+			log.Info("store: sqlite", "path", db.DSN)
+			n, err = sqlitestore.Migrate(ctx, db.DSN)
+		default:
 			return errors.New("TENSORA_DATABASE_URL is required")
 		}
-		n, err := pgstore.Migrate(ctx, cfg.DatabaseURL)
 		log.Info("migrations applied", "count", n)
 		return err
 	}
@@ -103,7 +118,7 @@ func run(ctx context.Context, cmd string) error {
 	if err != nil {
 		return err
 	}
-	st, err := openStore(ctx, cfg, cmd == "dev")
+	st, err := openStore(ctx, cfg, log, cmd == "dev")
 	if err != nil {
 		return err
 	}
@@ -198,9 +213,18 @@ func openLogFile(path string) (*os.File, error) {
 	return f, nil
 }
 
-func openStore(ctx context.Context, cfg config.Config, allowMemory bool) (store.Store, error) {
-	if cfg.DatabaseURL != "" {
-		return pgstore.Open(ctx, cfg.DatabaseURL)
+func openStore(ctx context.Context, cfg config.Config, log *slog.Logger, allowMemory bool) (store.Store, error) {
+	db, err := cfg.Database()
+	if err != nil {
+		return nil, err
+	}
+	switch db.Driver {
+	case "postgres":
+		log.Info("store: postgres") // never log the URL: it can hold a password
+		return pgstore.Open(ctx, db.DSN)
+	case "sqlite":
+		log.Info("store: sqlite", "path", db.DSN)
+		return sqlitestore.Open(ctx, db.DSN) // applies pending migrations itself
 	}
 	if !allowMemory {
 		return nil, errors.New("TENSORA_DATABASE_URL is required (only `tensora dev` can run in-memory)")

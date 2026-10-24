@@ -4,6 +4,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -20,6 +22,40 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("QuotaAndCapacityAccounting", func(t *testing.T) { testAccounting(t, newStore(t)) })
 	t.Run("RollbackOnError", func(t *testing.T) { testRollback(t, newStore(t)) })
 	t.Run("EventsAndUsage", func(t *testing.T) { testEventsAndUsage(t, newStore(t)) })
+	t.Run("ErrorsAndCrossTenantReads", func(t *testing.T) { testErrorsAndCrossTenant(t, newStore(t)) })
+}
+
+// SchemaColumns and SchemaIndexes are every table's columns and every named index that both
+// databases must have after all migrations (ADR-0012). sqlitestore and pgstore compare their
+// database with them (CheckSchema), so a migration written for only one database fails a test.
+var (
+	SchemaColumns = map[string][]string{
+		"tenants":         {"created_at", "id", "name", "slug", "tier"},
+		"quotas":          {"gpu_class", "max_gpus", "tenant_id"},
+		"workloads":       {"created_at", "created_by", "gpu_class", "gpu_count", "id", "image_id", "kind", "name", "params", "state", "tenant_id", "updated_at"},
+		"workload_events": {"at", "from_state", "id", "reason", "to_state", "workload_id"},
+		"usage_records":   {"created_at", "gpu_class", "gpu_count", "period_start", "seconds", "tenant_id", "workload_id"},
+	}
+	SchemaIndexes = []string{
+		"usage_records_tenant_idx", "workload_events_at_idx", "workload_events_workload_idx",
+		"workloads_active_state_idx", "workloads_tenant_idx",
+	}
+)
+
+// CheckSchema compares a database's tables and columns, and its named indexes (not the ones
+// backing primary keys or unique constraints), with SchemaColumns and SchemaIndexes.
+func CheckSchema(t *testing.T, columns map[string][]string, indexes []string) {
+	t.Helper()
+	for table := range columns {
+		slices.Sort(columns[table])
+	}
+	if !maps.EqualFunc(columns, SchemaColumns, slices.Equal) {
+		t.Errorf("tables and columns = %v,\nwant %v", columns, SchemaColumns)
+	}
+	slices.Sort(indexes)
+	if !slices.Equal(indexes, SchemaIndexes) {
+		t.Errorf("indexes = %v, want %v", indexes, SchemaIndexes)
+	}
 }
 
 var t0 = time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
@@ -206,6 +242,73 @@ func testEventsAndUsage(t *testing.T, st store.Store) {
 		}
 		if theirs, err := q.UsageForWorkload(ctx, other.ID, w.ID); err != nil || len(theirs) != 0 {
 			t.Errorf("UsageForWorkload(other tenant) = %+v, %v; want none", theirs, err)
+		}
+		return nil
+	})
+}
+
+func testErrorsAndCrossTenant(t *testing.T, st store.Store) {
+	ctx := context.Background()
+	a, b := tenant(t, st, "alpha"), tenant(t, st, "bravo")
+	w := workload(t, st, a, domain.StateRunning, 2)
+	tx(t, st, func(q store.Queries) error {
+		if err := q.SetQuota(ctx, domain.Quota{TenantID: a.ID, GPUClass: "l40s-48gb", MaxGPUs: 4}); err != nil {
+			return err
+		}
+		_, err := q.InsertUsageIfAbsent(ctx, domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0, TenantID: a.ID,
+			GPUClass: "l40s-48gb", GPUCount: 2, Seconds: 60})
+		return err
+	})
+
+	orphan := w
+	orphan.ID, orphan.TenantID = uuid.New(), uuid.New()
+	cases := []struct {
+		name string
+		fn   func(q store.Queries) error
+		want domain.Code
+	}{
+		{"duplicate tenant slug", func(q store.Queries) error {
+			return q.CreateTenant(ctx, domain.Tenant{ID: uuid.New(), Slug: "alpha", Name: "x", Tier: domain.TierTrusted, CreatedAt: t0})
+		}, domain.CodeConflict},
+		{"duplicate workload", func(q store.Queries) error { return q.CreateWorkload(ctx, w) }, domain.CodeConflict},
+		{"quota for a missing tenant", func(q store.Queries) error {
+			return q.SetQuota(ctx, domain.Quota{TenantID: uuid.New(), GPUClass: "l40s-48gb", MaxGPUs: 1})
+		}, domain.CodeNotFound},
+		{"workload for a missing tenant", func(q store.Queries) error { return q.CreateWorkload(ctx, orphan) }, domain.CodeNotFound},
+		{"event for a missing workload", func(q store.Queries) error {
+			return q.AppendEvent(ctx, domain.Event{WorkloadID: uuid.New(), To: domain.StatePending, Reason: "x", At: t0})
+		}, domain.CodeNotFound},
+	}
+	for _, c := range cases {
+		// Each in its own transaction: Postgres aborts a transaction after an error.
+		if code, _ := domain.CodeOf(st.InTx(ctx, c.fn)); code != c.want {
+			t.Errorf("%s: code = %q, want %q", c.name, code, c.want)
+		}
+	}
+
+	tx(t, st, func(q store.Queries) error {
+		// The owner sees its quota, holdings, and usage, so the empty results below mean scoping,
+		// not a broken query.
+		if qs, err := q.Quotas(ctx, a.ID); err != nil || len(qs) != 1 {
+			t.Errorf("owner quotas = %v, %v", qs, err)
+		}
+		if held, err := q.GPUsHeld(ctx, a.ID, "l40s-48gb"); err != nil || held != 2 {
+			t.Errorf("owner GPUsHeld = %d, %v", held, err)
+		}
+		if u, err := q.Usage(ctx, a.ID, t0.Add(-time.Hour), t0.Add(time.Hour)); err != nil || len(u) != 1 {
+			t.Errorf("owner usage = %v, %v", u, err)
+		}
+		if qs, err := q.Quotas(ctx, b.ID); err != nil || len(qs) != 0 {
+			t.Errorf("tenant B quotas = %v, %v; want none", qs, err)
+		}
+		if limit, err := q.LockQuota(ctx, b.ID, "l40s-48gb"); err != nil || limit != 0 {
+			t.Errorf("tenant B LockQuota = %d, %v; want 0", limit, err)
+		}
+		if held, err := q.GPUsHeld(ctx, b.ID, "l40s-48gb"); err != nil || held != 0 {
+			t.Errorf("tenant B GPUsHeld = %d, %v; want 0", held, err)
+		}
+		if u, err := q.Usage(ctx, b.ID, t0.Add(-time.Hour), t0.Add(time.Hour)); err != nil || len(u) != 0 {
+			t.Errorf("tenant B usage = %v, %v; want none", u, err)
 		}
 		return nil
 	})

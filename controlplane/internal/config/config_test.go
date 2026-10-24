@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,5 +58,47 @@ func TestValidProductionConfig(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDatabaseURL(t *testing.T) {
+	abs := func(p string) string {
+		a, err := filepath.Abs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	tests := []struct {
+		url, driver, dsn string
+		ok               bool
+	}{
+		{"", "", "", true},
+		{"postgres://tensora@db/tensora", "postgres", "postgres://tensora@db/tensora", true},
+		{"postgresql://tensora@db/tensora", "postgres", "postgresql://tensora@db/tensora", true},
+		{"sqlite:tensora.db", "sqlite", abs("tensora.db"), true},
+		{"sqlite:/var/lib/tensora/tensora.db", "sqlite", "/var/lib/tensora/tensora.db", true},
+		{"sqlite:///var/lib/tensora/tensora.db", "sqlite", "/var/lib/tensora/tensora.db", true},
+		{"sqlite:", "", "", false},
+		{"sqlite:x.db?mode=memory", "", "", false},
+		{"sqlite::memory:", "", "", false},
+		{"sqlite:file:x.db", "", "", false},
+		{"mysql://db", "", "", false},
+	}
+	for _, tt := range tests {
+		db, err := Config{DatabaseURL: tt.url}.Database()
+		if (err == nil) != tt.ok || db.Driver != tt.driver || db.DSN != tt.dsn {
+			t.Errorf("%q → %+v, %v", tt.url, db, err)
+		}
+	}
+	// A SQLite file is a valid store outside dev too (Solo and Lab).
+	if _, err := FromEnv(env(map[string]string{
+		"TENSORA_ENV": "production", "TENSORA_DATABASE_URL": "sqlite:/var/lib/tensora/tensora.db",
+		"TENSORA_AUTH_MODE": "oidc", "TENSORA_OIDC_ISSUER": "https://auth", "TENSORA_CLUSTER_BACKEND": "kubernetes",
+	})); err != nil {
+		t.Errorf("sqlite in production: %v", err)
+	}
+	if _, err := FromEnv(env(map[string]string{"TENSORA_DATABASE_URL": "mysql://db"})); err == nil {
+		t.Error("an unknown database URL must be rejected at startup")
 	}
 }

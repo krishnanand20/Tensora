@@ -5,10 +5,10 @@ The subcommand picks the role:
 
 | Command | Role | Needs | Status |
 |---|---|---|---|
-| `tensora api` | REST API under `/v1` | A store (Postgres today) | Built |
+| `tensora api` | REST API under `/v1` | A store: a SQLite file or Postgres | Built |
 | `tensora controller` | Reconciles workload intent with the runtime | A store, plus Kubernetes credentials or (planned) agents | Built |
 | `tensora metering` | Usage accounting: lifecycle events → hourly usage records, for quotas and fairness (no money) | A store | Built |
-| `tensora migrate` | Applies the SQL migrations embedded in the binary | Postgres | Built |
+| `tensora migrate` | Applies the SQL migrations embedded in the binary | Postgres, or a SQLite file (also migrated whenever it's opened) | Built |
 | `tensora dev` | API, controller, and usage accounting in one process with seeded tenants | Nothing | Built |
 | `tensora up` | Solo: everything in one process, with SQLite and the embedded dashboard | Nothing | Planned |
 | `tensora agent` | Node agent on each machine (Linux, macOS) | An enrolment token | Planned |
@@ -40,7 +40,12 @@ existing file that others can read, a symlink, or a device is refused, so put th
 the operator can write to.
 
 `dev` uses the in-memory store and the fake backend unless `TENSORA_DATABASE_URL` or
-`TENSORA_CLUSTER_BACKEND=kubernetes` is set. To point the controller at a real Kubernetes cluster from
+`TENSORA_CLUSTER_BACKEND=kubernetes` is set. To keep data between restarts without Postgres, use a SQLite
+file: `TENSORA_DATABASE_URL=sqlite:$PWD/tensora.db go run ./cmd/tensora dev`. It's created readable by you
+only and migrated when opened, and the path in use is logged at startup. The file and its `-wal` and `-shm`
+files must stay owner-only, in a directory other users can't write to; otherwise Tensora refuses to start
+and prints the `chmod` that fixes it. The fake backend still forgets its workloads on restart, so the controller
+marks those that were running as failed, and their timelines say why. To point the controller at a real Kubernetes cluster from
 your laptop, use `TENSORA_CLUSTER_BACKEND=kubernetes`. It reads `KUBECONFIG`. Never point it at production.
 
 ## API

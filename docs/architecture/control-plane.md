@@ -10,7 +10,7 @@ One Go binary (`controlplane/`), `tensora`, whose subcommand picks the role.
 | `tensora metering` | Usage accounting: turns lifecycle events into hourly usage records (no money, ADR-0011) | Lab, Datacenter | Built |
 | `tensora agent` | Node agent on each machine; runs workloads through OS drivers (ADR-0013) | Lab | Planned (Phase 1–2) |
 | `tensora migrate` | Applies the embedded SQL migrations | Lab (Postgres), Datacenter | Built |
-| `tensora dev` | Development all-in-one: in-memory store, fake backend, seeded users | Development | Built; runs on macOS and Linux |
+| `tensora dev` | Development all-in-one: in-memory store (or SQLite or Postgres via `TENSORA_DATABASE_URL`), fake backend, seeded users | Development | Built; runs on macOS and Linux |
 | `tensora workloads [-all]`, `events <id>`, `export <id>` | CLI client for a running API: list, full timeline, complete log export ([logs](logs-and-transparency.md)) | Every profile | Built (launch, stop, and `logs --follow` planned) |
 
 ## Sources of truth ([ADR-0008](../adr/0008-postgres-intent-kubernetes-runtime.md), [ADR-0012](../adr/0012-deployment-profiles.md))

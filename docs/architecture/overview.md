@@ -96,8 +96,8 @@ flowchart TB
   gw --> mac & lin & k8s
 ```
 
-Today's code implements the control plane, the fake backend, and the Kubernetes backend. The agent,
-its drivers, SQLite, the gateway, regions, and fallbacks are designed but not built yet
+Today's code implements the control plane with its SQLite and Postgres stores, the fake backend, and the
+Kubernetes backend. The agent, its drivers, the gateway, regions, and fallbacks are designed but not built yet
 ([roadmap](../roadmap.md)).
 
 ## Request flow: a model endpoint on a Mac (Solo)

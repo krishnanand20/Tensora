@@ -39,7 +39,7 @@ Each step keeps `make lint test deploy-check build-all` green. Do the data-model
 
 | # | Area | Task |
 |---|---|---|
-| 1 | Store | `sqlitestore`, using a pure-Go SQLite driver so builds stay CGO-free. It must pass `storetest`. Run goose migrations for both SQLite and Postgres. |
+| 1 | Store | ✅ **Done.** `sqlitestore` with `modernc.org/sqlite` (pure Go, CGO-free). It passes `storetest`, and migrations live in `migrations/postgres` and `migrations/sqlite`. Select it with `TENSORA_DATABASE_URL=sqlite:<path>`. |
 | 2 | Data model | Amend `00001_init.sql` (never applied anywhere). Add a `machines` table: owner, region, OS, architecture, accelerators (JSON), sharing level, last seen. `workloads` gains `region`, `machine_id`, `requested_class`, `placed_class`, `fallback`, and `fallback_after_s`. `usage_records` gains `region`, `machine_id`, and `compute_class`. Add an `idempotency_keys` table. |
 | 3 | Domain | Accelerator kinds (`nvidia`, `apple`, `amd`, `cpu`), `Region`, and placement fields. Tests: a metered workload must have a `placed_class`, and a machine must belong to one region. |
 | 4 | Catalog | A `regions:` list (Solo has one, `local`). Classes gain `accelerator` and `regions`. Add Apple Silicon and CPU classes. Each image lists a runtime per platform: vLLM (NVIDIA), MLX (Apple), llama.cpp (any). |
@@ -114,7 +114,6 @@ community pool with fair share and abuse tools.
 |---|---|---|
 | **Final product name** | "Tensora" is a working name; several companies already use it | Before the first release |
 | **Open-source licence** | Apache-2.0 recommended | Before the first release |
-| SQLite driver | A pure-Go driver, to keep cross-compiles CGO-free | Phase 1 |
 | Agent protocol | gRPC streams, or HTTPS with WebSocket. Either way the agent connects outbound with mTLS. | Phase 1 |
 | Sandbox for native macOS workloads | A macOS sandbox profile per workload, for trusted users only | Phase 1 |
 | Linux containers on Mac | Apple's containerization framework, or Lima | Phase 2 |

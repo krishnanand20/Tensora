@@ -28,7 +28,7 @@ guests from each other, and be honest that hosts can see guest data. See
 
 | Path | Owns | Language / tooling |
 |---|---|---|
-| `controlplane/` | The `tensora` binary: REST API, controller, usage accounting (`metering`), and the planned node agent, drivers, `tensora up`, and inference gateway. Must build for linux/amd64, linux/arm64, and darwin/arm64. | Go 1.27, stdlib `net/http`, pgx, client-go, goose, golangci-lint |
+| `controlplane/` | The `tensora` binary: REST API, controller, usage accounting (`metering`), and the planned node agent, drivers, `tensora up`, and inference gateway. Must build for linux/amd64, linux/arm64, and darwin/arm64. | Go 1.27, stdlib `net/http`, pgx, modernc.org/sqlite (pure Go), client-go, goose, golangci-lint |
 | `ml/` | ML layer: model validation (safetensors; GGUF planned), ingestion, endpoint benchmarking, GPU burn-in (CUDA; Metal planned) | Python 3.12, uv, ruff, mypy, pytest |
 | `web/` | Dashboard (to be embedded in the binary for Solo) | TypeScript, React, Vite, TanStack Query |
 | `deploy/` | **Datacenter profile:** cluster add-ons (helmfile), `cluster-config` chart, `tensora` chart | Helm, helmfile, Kustomize |

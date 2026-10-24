@@ -52,7 +52,7 @@ func Migrate(ctx context.Context, url string) (applied int, err error) {
 			err = fmt.Errorf("close migration connection: %w", cerr)
 		}
 	}()
-	p, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+	p, err := goose.NewProvider(goose.DialectPostgres, db, migrations.Postgres)
 	if err != nil {
 		return 0, fmt.Errorf("load migrations: %w", err)
 	}

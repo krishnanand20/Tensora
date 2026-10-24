@@ -15,9 +15,13 @@ Used by humans, Codex, and the Claude Code `/add-api-resource` skill. Example: a
 
 ## 1. Schema
 
-Add `controlplane/migrations/NNNNN_<name>.sql` with `-- +goose Up` and `-- +goose Down` sections.
-Include a `tenant_id` column referencing `tenants(id)`, an index on `(tenant_id, created_at)`, and CHECK
-constraints for enums. Keep the SQL portable between Postgres and SQLite once `sqlitestore` exists (ADR-0012).
+Add `controlplane/migrations/postgres/NNNNN_<name>.sql` and the same change in
+`controlplane/migrations/sqlite/NNNNN_<name>.sql`, each with `-- +goose Up` and `-- +goose Down` sections
+(`TestDialectsMatch` fails if one is missing). Include a `tenant_id` column referencing `tenants(id)`, an index
+on `(tenant_id, created_at)`, and CHECK constraints for enums. In SQLite, use `STRICT` tables, text UUIDs, and
+fixed-width UTC text times, as `00001_init.sql` does (ADR-0012). Add the new table, columns, and indexes to
+`SchemaColumns` and `SchemaIndexes` in `internal/store/storetest`: both stores' tests compare their database
+with that list, so a migration written for only one database fails.
 
 ## 2. Domain
 
@@ -26,7 +30,7 @@ Add types to `internal/domain/`. If there's a lifecycle, add a state table and a
 ## 3. Store
 
 1. Add the methods to `store.Queries`. Tenant-scoped methods take `tenantID` and filter by it.
-2. Implement them in **every** store: `memstore`, `pgstore`, and `sqlitestore` once it exists.
+2. Implement them in **every** store: `memstore`, `pgstore`, and `sqlitestore`.
 3. Add a case to `storetest` (including tenant scoping), so every implementation is tested the same way.
 
 ## 4. Service

@@ -15,7 +15,7 @@ trust matrix. Do not edit files. Report findings only.
 ## Checklist
 
 **Data isolation (controlplane)**
-- Every tenant-scoped `store.Queries` method filters by `tenantID`, in **every** store implementation (memstore, pgstore, and sqlitestore when it exists).
+- Every tenant-scoped `store.Queries` method filters by `tenantID`, in **every** store implementation (memstore, pgstore, and sqlitestore).
 - System-wide methods (`WorkloadsInStates`, `GPUsAllocated`, `WorkloadsForMetering`) are called only from the controller or usage accounting, never from request paths.
 - Cross-tenant access returns **404**, and new endpoints have a cross-tenant test.
 - Responses don't leak internals: node or machine hostnames, object names, IPs, host paths, `tenant_id`, or other users' data. Workload views don't return `params`. The export is the one place they appear, to their owner, after `redactParams`.
@@ -55,6 +55,7 @@ trust matrix. Do not edit files. Report findings only.
 - Redaction fails closed: anything unparseable where credentials could hide is redacted and listed, including passwords that a URL parser reads as a port, path, query, or fragment. Errors written to logs go through `service.RedactSecrets`.
 - A runtime that can't be reached (Observe or Capacity errors) leaves one note per workload, and a provisioning workload still times out. Metering ignores notes (`from == to`).
 - 500s return only a generic message and `request_id`, and the full error goes to the server log. The server always generates request IDs; a caller's `X-Request-ID` is only logged as `client_request_id`. Request log lines carry tenant and subject.
+- The SQLite store's file and its `-wal`, `-shm`, and `-journal` files are `0600` regular files in a directory others can't write to, opened by absolute path (never `:memory:` or a `file:` URI). Its schema matches Postgres (`storetest.CheckSchema`), and `workload_events` stays append-only there too (triggers, with `recursive_triggers` on).
 - Files the CLI writes are `0600`: exports never replace an existing file without `-f` and never use a server-chosen name of an unexpected shape. `TENSORA_LOG_FILE` is never chmodded; a file others can read, a symlink, or a file swapped during open is refused. The CLI never sends a token over plain HTTP to another machine unless explicitly allowed, never follows redirects, and makes server error text printable.
 
 **Free** (rule 12)

@@ -10,7 +10,7 @@ define today's product.
 | # | Decision | Status |
 |---|---|---|
 | [0011](0011-free-for-everyone.md) | **Free for everyone:** no pricing, no billing, open source | Accepted |
-| [0012](0012-deployment-profiles.md) | **Deployment profiles:** Solo, Lab, Datacenter | Accepted (not yet in code) |
+| [0012](0012-deployment-profiles.md) | **Deployment profiles:** Solo, Lab, Datacenter | Accepted (SQLite store built; the rest planned) |
 | [0013](0013-node-agent-and-apple-silicon.md) | **Node agent and drivers; Apple Silicon Macs as first-class hosts** | Accepted (not yet in code) |
 | [0014](0014-sharing-idle-compute.md) | **Sharing idle compute:** private, invite-only, community pools | Accepted (not yet in code) |
 | [0015](0015-logs-and-transparency.md) | **Logs and transparency:** complete, exportable, nothing hidden except secrets | Accepted (timeline, export, CLI built; output and activity logs planned) |

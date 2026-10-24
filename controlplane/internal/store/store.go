@@ -1,5 +1,6 @@
-// Package store defines persistence for business state. Implementations: memstore
-// (dev/tests) and pgstore (Postgres). Both must pass the storetest conformance suite.
+// Package store defines persistence for business state. Implementations: memstore (dev and
+// tests), sqlitestore (Solo and Lab), and pgstore (Postgres). All must pass the storetest
+// conformance suite.
 package store
 
 import (
@@ -30,8 +31,9 @@ type Queries interface {
 	TenantByID(ctx context.Context, id uuid.UUID) (domain.Tenant, error)
 	SetQuota(ctx context.Context, q domain.Quota) error
 	Quotas(ctx context.Context, tenantID uuid.UUID) ([]domain.Quota, error)
-	// LockQuota returns the tenant's limit for a GPU class (0 if unset). In Postgres it
-	// locks the quota row until the transaction ends, so concurrent creates serialize.
+	// LockQuota returns the tenant's limit for a GPU class (0 if unset). Concurrent creates must
+	// serialize: Postgres locks the quota row until the transaction ends, and SQLite and memstore
+	// run one transaction at a time.
 	LockQuota(ctx context.Context, tenantID uuid.UUID, gpuClass string) (int, error)
 	// GPUsHeld sums gpu_count over the tenant's workloads whose state HoldsQuota.
 	GPUsHeld(ctx context.Context, tenantID uuid.UUID, gpuClass string) (int, error)

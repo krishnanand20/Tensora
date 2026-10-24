@@ -6,7 +6,7 @@ macOS (Apple Silicon) and Linux.
 
 | Paths changed | Run (from repo root) |
 |---|---|
-| `controlplane/**` | `make lint-cp test-cp build-all` (`make test-cp-pg` too if `store/` or `migrations/` changed) |
+| `controlplane/**` | `make lint-cp test-cp build-all` (`make test-cp-pg` too if `store/` or `migrations/` changed; the SQLite store's tests always run) |
 | `images/catalog.yaml` | `make test-cp` (the tests load the real catalog) |
 | `ml/**` | `make lint-ml test-ml` |
 | `web/**` | `make lint-web test-web` and `cd web && npm run build` |

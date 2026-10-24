@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,9 @@ type Config struct {
 	// LogFile, if set, receives a complete copy of every log line (in addition to stderr).
 	LogFile string
 
-	DatabaseURL string // empty → in-memory store (dev only)
+	// DatabaseURL selects the store: postgres://… or postgresql://… for Postgres, sqlite:<path> for a
+	// SQLite file (Solo and Lab, ADR-0012), or empty for the in-memory store (dev only).
+	DatabaseURL string
 	CatalogPath string
 
 	AuthMode        string // dev | oidc
@@ -119,7 +122,42 @@ func (c Config) validate() error {
 	if c.Env != "dev" && c.DatabaseURL == "" {
 		errs = append(errs, errors.New("TENSORA_DATABASE_URL is required outside dev"))
 	}
+	if _, err := c.Database(); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// Database is the store TENSORA_DATABASE_URL selects.
+type Database struct {
+	Driver string // "postgres", "sqlite", or "" for the in-memory store (dev only)
+	DSN    string // the Postgres URL, or the SQLite file path
+}
+
+// Database parses DatabaseURL: postgres://… or postgresql://…, sqlite:<path> (sqlite:///abs/path
+// also works), or empty.
+func (c Config) Database() (Database, error) {
+	u := c.DatabaseURL
+	switch {
+	case u == "":
+		return Database{}, nil
+	case strings.HasPrefix(u, "postgres://"), strings.HasPrefix(u, "postgresql://"):
+		return Database{Driver: "postgres", DSN: u}, nil
+	case strings.HasPrefix(u, "sqlite:"):
+		// sqlite:///var/lib/x.db and sqlite:/var/lib/x.db are the same file.
+		path := strings.TrimPrefix(strings.TrimPrefix(u, "sqlite:"), "//")
+		if path == "" || strings.ContainsRune(path, '?') || path == ":memory:" || strings.HasPrefix(path, "file:") {
+			return Database{}, errors.New("TENSORA_DATABASE_URL=sqlite:<path> needs a file path with no '?' (not :memory: or a file: URI)")
+		}
+		// Resolved once, so every part of the process, and its log, names the same file. Under
+		// launchd or systemd the working directory is usually /, so prefer an absolute path.
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return Database{}, fmt.Errorf("TENSORA_DATABASE_URL: %w", err)
+		}
+		return Database{Driver: "sqlite", DSN: abs}, nil
+	}
+	return Database{}, errors.New("TENSORA_DATABASE_URL must be a postgres:// or postgresql:// URL, or sqlite:<path>")
 }
 
 // parseCapacity parses "l40s-48gb=4,a100-80gb=2".

@@ -1,6 +1,6 @@
 # 0012. Deployment profiles: Solo, Lab, and Datacenter
 
-- **Status:** Accepted (design; not yet implemented, see the roadmap)
+- **Status:** Accepted (the SQLite store is built; the rest is planned, see the roadmap)
 - **Date:** 2026-10-23
 - **Amends:** ADR-0001, ADR-0002, ADR-0008
 

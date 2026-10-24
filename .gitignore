@@ -10,6 +10,11 @@ infra/ansible/group_vars/all/vault.yml
 .claude/settings.local.json
 CLAUDE.local.md
 
+# Local SQLite stores (TENSORA_DATABASE_URL=sqlite:...)
+*.db
+*.db-wal
+*.db-shm
+
 # Go
 controlplane/bin/
 *.test

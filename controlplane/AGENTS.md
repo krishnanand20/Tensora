@@ -17,8 +17,8 @@ internal/catalog/       loads images/catalog.yaml
 internal/store/         Store/Queries interfaces
   memstore/             in-memory implementation (dev and tests)
   pgstore/              Postgres implementation (pgx), plus Migrate()
+  sqlitestore/          SQLite implementation for Solo and Lab (modernc.org/sqlite: pure Go, no CGO)
   storetest/            conformance suite every implementation must pass
-                        (planned: sqlitestore/ for Solo and Lab, pure Go, no CGO)
 internal/service/       business operations, tenant-scoped; Transition() is the single path for state changes
 internal/api/           HTTP handlers (stdlib net/http); thin, and calls the service only
 internal/auth/          Dev (header) and OIDC (JWT) authenticators (planned: local accounts and API tokens)
@@ -32,7 +32,7 @@ internal/controller/    reconcile loop: admit → observe → park → remove
 internal/metering/      usage accounting: events → metered intervals → hourly usage records (no money)
 internal/devseed/       dev tenants (acme and globex untrusted, internal trusted)
 internal/testutil/      fixtures: real catalog, seeded store, manual clock
-migrations/             goose SQL files embedded into the binary
+migrations/             goose SQL files embedded into the binary: postgres/ and sqlite/, one file per version in each
 (planned) internal/agent/            the node agent: enrolment, heartbeat, inventory, desired-state sync
 (planned) internal/agent/drivers/    macosnative, macosvz, macoscontainer, docker, libvirt (OS code behind build tags)
 ```
@@ -42,8 +42,10 @@ Allowed imports flow downward: `api → service → store, domain`; `controller 
 
 ## Rules specific to this module
 
-- **New store method:** add it to `store.Queries`, implement it in **every** store (memstore, pgstore, and sqlitestore once it exists), and add a case to `storetest`. Tenant-scoped methods take `tenantID` and filter by it.
-- **Schema change:** add a new `migrations/NNNNN_*.sql` file. Never edit an applied migration. Keep SQL portable between Postgres and SQLite (ADR-0012). Keep `workload_events` append-only (a trigger enforces this).
+- **New store method:** add it to `store.Queries`, implement it in **every** store (memstore, pgstore, and sqlitestore), and add a case to `storetest`. Tenant-scoped methods take `tenantID` and filter by it.
+- **Schema change:** add `migrations/postgres/NNNNN_*.sql` and the same change in `migrations/sqlite/NNNNN_*.sql` (`TestDialectsMatch` checks both exist), and update `storetest.SchemaColumns` and `SchemaIndexes` (both stores' tests compare their schema with them). Never edit an applied migration. SQLite tables are `STRICT`, UUIDs are text, and times are fixed-width UTC text, so text order is time order (ADR-0012).
+- **SQLite runs one transaction at a time** (one connection, `BEGIN IMMEDIATE`). That replaces Postgres's row locks, so never hold a transaction open while waiting on something else, never start one inside another, and keep transactions short: another process sharing the file waits at most 15 seconds.
+- **The SQLite file is private:** it and its `-wal`, `-shm`, and `-journal` files must be `0600` regular files, in a directory others can't write to. Paths are resolved to absolute file paths; `:memory:` and `file:` URIs are refused, because SQLite would read them as something other than the file that was checked. Keep `workload_events` append-only (a trigger enforces this).
 - **New cluster kind:** add the builder in `manifests/`, add the GVK to `kube.allowed`, and add the RBAC rule in `deploy/charts/tensora/templates/controller.yaml`. `TestBuildersOnlyEmitAllowedKinds` fails if the allowlist is missing an entry.
 - **Unstructured types:** builders may use only `map[string]any`, `[]any`, `string`, `bool`, `int64`, and `float64`. Quantities are strings (`"64Gi"`, `"2"`). `cluster.CheckJSONTypes` enforces this in tests and in the fake backend.
 - **OS-specific code** (agents and drivers): only in driver packages, behind build tags (`//go:build darwin`, `//go:build linux`), with a stub for other platforms so `make build-all` stays green.
