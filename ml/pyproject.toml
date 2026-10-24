@@ -54,5 +54,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Import from src/ directly, so tests don't depend on the editable-install .pth file
+# (macOS can mark it hidden, and Python 3.12+ then ignores it).
+pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

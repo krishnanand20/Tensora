@@ -9,6 +9,10 @@ CP  := controlplane
 ML  := ml
 WEB := web
 
+# macOS can mark ml/.venv hidden (seen with repos in iCloud-synced folders), and Python 3.12+ then
+# ignores its .pth files, so `import tensora_ml` fails. Clear the flag before running Python tools.
+UNHIDE_VENV   = if [ "$$(uname)" = Darwin ] && [ -d $(ML)/.venv ]; then chflags -R nohidden $(ML)/.venv; fi
+
 PG_URL        ?= postgres://tensora:tensora@localhost:5432/tensora?sslmode=disable
 GOLANGCI_LINT ?= golangci-lint
 # CRD schemas (KubeVirt, KServe, Gateway API, cert-manager, ...) from the community catalog.
@@ -22,10 +26,31 @@ help: ## List targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # ---------------------------------------------------------------- setup
-.PHONY: setup
-setup: ## Install dev dependencies for all components
+REQUIRED_TOOLS := go uv node npm
+OPTIONAL_TOOLS := pre-commit docker helm kubeconform golangci-lint
+
+.PHONY: doctor setup
+doctor: ## Check that the tools Tensora needs are installed (macOS or Linux)
+	@missing=""; \
+	for t in $(REQUIRED_TOOLS); do \
+	  if command -v $$t >/dev/null 2>&1; then printf '  ok        %s\n' "$$t"; \
+	  else printf '  MISSING   %s\n' "$$t"; missing="$$missing $$t"; fi; \
+	done; \
+	for t in $(OPTIONAL_TOOLS); do \
+	  if command -v $$t >/dev/null 2>&1; then printf '  ok        %s (optional)\n' "$$t"; \
+	  else printf '  -         %s (optional: hooks and Datacenter checks)\n' "$$t"; fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo; echo "Missing required tools:$$missing"; \
+	  if [ "$$(uname)" = Darwin ]; then echo "Install them with:  brew install go uv node"; \
+	  else echo "Go: https://go.dev/dl   uv: curl -LsSf https://astral.sh/uv/install.sh | sh   Node 22+: https://nodejs.org"; fi; \
+	  echo "Then re-run:        make setup"; exit 1; \
+	fi
+
+setup: doctor ## Install dev dependencies for all components
 	cd $(CP) && go mod download
 	cd $(ML) && uv sync
+	@$(UNHIDE_VENV)
 	cd $(WEB) && npm install
 	-pre-commit install
 
@@ -57,6 +82,7 @@ test-cp-pg: ## Go tests including Postgres store tests
 	cd $(CP) && TENSORA_TEST_DATABASE_URL='$(PG_URL)' go test ./...
 
 test-ml: ## Python ML layer tests
+	@$(UNHIDE_VENV)
 	cd $(ML) && uv run pytest
 
 test-web: ## Dashboard tests
@@ -72,6 +98,7 @@ lint-cp:
 	cd $(CP) && $(GOLANGCI_LINT) run
 
 lint-ml:
+	@$(UNHIDE_VENV)
 	cd $(ML) && uv run ruff check . && uv run ruff format --check . && uv run mypy
 
 lint-web:
@@ -82,6 +109,7 @@ lint-yaml:
 
 fmt: ## Format all code
 	cd $(CP) && gofmt -w .
+	@$(UNHIDE_VENV)
 	cd $(ML) && uv run ruff format . && uv run ruff check --fix .
 
 # ---------------------------------------------------------------- deploy (render only, never applies)

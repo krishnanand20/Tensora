@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"sigs.k8s.io/yaml"
 
@@ -52,7 +53,8 @@ type Catalog struct {
 
 // Load reads and validates a catalog file. Unknown fields are errors.
 func Load(path string) (*Catalog, error) {
-	raw, err := os.ReadFile(path)
+	// The path comes from operator config (TENSORA_CATALOG_PATH), never from a request.
+	raw, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("read catalog: %w", err)
 	}

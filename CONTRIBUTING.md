@@ -4,14 +4,21 @@ Tensora is free and open for everyone ([ADR-0011](docs/adr/0011-free-for-everyon
 
 ## Setup
 
-Works on macOS (Apple Silicon) and Linux.
+Works on macOS (Apple Silicon) and Linux. You need Go 1.27+, uv, and Node 22+; on a Mac,
+`brew install go uv node`.
 
 ```bash
+make doctor       # checks the prerequisites and tells you what's missing
 make setup        # Go modules, uv sync for ml/, npm install for web/, pre-commit hooks
 make dev          # local all-in-one stack (no GPU or cluster required)
 make lint test    # what CI runs
 make build-all    # cross-compile for linux/amd64, linux/arm64, darwin/arm64
 ```
+
+**macOS tip:** avoid keeping the repo in an iCloud-synced folder (`~/Documents` or `~/Desktop` with
+"Desktop & Documents Folders" turned on). iCloud can mark `ml/.venv` hidden, which makes Python 3.12+ ignore
+its files, and syncing `.git`, `node_modules`, and `.venv` is slow and risky. The Makefile clears the hidden
+flag automatically, but a folder like `~/Code` avoids the problem entirely.
 
 ## Workflow
 
