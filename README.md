@@ -101,7 +101,7 @@ For full server logs, run `make dev TENSORA_LOG_LEVEL=debug TENSORA_LOG_FILE=$PW
 
 | | Built | Planned |
 |---|---|---|
-| Control plane | API, lifecycle, quotas, controller, usage accounting, SQLite, Postgres, and in-memory stores, Kubernetes backend, timeline and log export, CLI client | Node agent and drivers, `tensora up`, local accounts, regions, fallbacks, sharing, workload output logs, activity log |
+| Control plane | API, lifecycle, quotas, controller, usage accounting, SQLite, Postgres, and in-memory stores, Kubernetes backend, regions, machines, and placement in the data model, timeline and log export, CLI client | Node agent and drivers, `tensora up`, local accounts, choosing a region, fallback placement, sharing, workload output logs, activity log |
 | ML layer | Model validator (safetensors), ingestion, benchmarking, CUDA burn-in | GGUF validation, Metal burn-in |
 | Dashboard | Workload list, launch form, workload timeline and full-log download | Machines, sharing, usage reports, embedded in the binary |
 | Datacenter | Charts, add-ons, Ansible, runbooks (rendered and linted, not yet run on hardware) | Production validation |

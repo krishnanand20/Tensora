@@ -99,15 +99,17 @@ func Printable(s string) string {
 }
 
 type Workload struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	State     string    `json:"state"`
-	ImageID   string    `json:"image_id"`
-	GPUClass  string    `json:"gpu_class"`
-	GPUCount  int       `json:"gpu_count"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Kind        string    `json:"kind"`
+	State       string    `json:"state"`
+	ImageID     string    `json:"image_id"`
+	GPUClass    string    `json:"gpu_class"`
+	PlacedClass string    `json:"placed_class"`
+	Region      string    `json:"region"`
+	GPUCount    int       `json:"gpu_count"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Event struct {

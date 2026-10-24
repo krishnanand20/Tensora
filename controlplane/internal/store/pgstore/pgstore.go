@@ -155,16 +155,78 @@ func (q *queries) GPUsHeld(ctx context.Context, tenantID uuid.UUID, gpuClass str
 	return n, err
 }
 
+// nullID stores uuid.Nil as NULL, for optional references such as a workload's machine.
+func nullID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
+}
+
+// nilUUID reads a NULL reference back as uuid.Nil.
+const nilUUID = `'00000000-0000-0000-0000-000000000000'`
+
+// ---- machines
+
+const machineCols = `id, tenant_id, name, region, os, arch, accelerators, sharing, last_seen_at, created_at`
+
+func scanMachine(row pgx.Row) (domain.Machine, error) {
+	var m domain.Machine
+	var region, sharing string
+	var lastSeen *time.Time
+	err := row.Scan(&m.ID, &m.TenantID, &m.Name, &region, &m.OS, &m.Arch, &m.Accelerators, &sharing, &lastSeen, &m.CreatedAt)
+	m.Region, m.Sharing = domain.Region(region), domain.SharingLevel(sharing)
+	if lastSeen != nil {
+		m.LastSeenAt = *lastSeen
+	}
+	return m, err
+}
+
+func (q *queries) CreateMachine(ctx context.Context, m domain.Machine) error {
+	accelerators := m.Accelerators
+	if accelerators == nil {
+		accelerators = []domain.Accelerator{}
+	}
+	var lastSeen any
+	if !m.LastSeenAt.IsZero() {
+		lastSeen = m.LastSeenAt
+	}
+	_, err := q.db.Exec(ctx, `INSERT INTO machines (`+machineCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		m.ID, m.TenantID, m.Name, string(m.Region), m.OS, m.Arch, accelerators, string(m.Sharing), lastSeen, m.CreatedAt)
+	return mapErr(err, "machine")
+}
+
+func (q *queries) GetMachine(ctx context.Context, tenantID, id uuid.UUID) (domain.Machine, error) {
+	m, err := scanMachine(q.db.QueryRow(ctx, `SELECT `+machineCols+` FROM machines WHERE id = $1 AND tenant_id = $2`, id, tenantID))
+	return m, mapErr(err, "machine")
+}
+
+func (q *queries) ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domain.Machine, error) {
+	rows, err := q.db.Query(ctx, `SELECT `+machineCols+` FROM machines WHERE tenant_id = $1 ORDER BY name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.Machine, error) { return scanMachine(r) })
+}
+
 // ---- workloads
 
-const workloadCols = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at`
+const workloadCols = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
+	region, machine_id, placed_class, fallback, fallback_after_s`
+
+// workloadSelect reads workloadCols, with NULL placement read back as "not placed".
+const workloadSelect = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
+	region, COALESCE(machine_id, ` + nilUUID + `), COALESCE(placed_class, ''), fallback, fallback_after_s`
 
 func scanWorkload(row pgx.Row) (domain.Workload, error) {
 	var w domain.Workload
-	var kind, state string
+	var kind, state, region string
+	var fallbackAfter int64
 	err := row.Scan(&w.ID, &w.TenantID, &w.Name, &kind, &state, &w.ImageID, &w.GPUClass,
-		&w.GPUCount, &w.Params, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt)
-	w.Kind, w.State = domain.WorkloadKind(kind), domain.State(state)
+		&w.GPUCount, &w.Params, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
+		&region, &w.MachineID, &w.PlacedClass, &w.Fallback, &fallbackAfter)
+	w.Kind, w.State, w.Region = domain.WorkloadKind(kind), domain.State(state), domain.Region(region)
+	w.FallbackAfter = time.Duration(fallbackAfter) * time.Second
 	return w, err
 }
 
@@ -177,36 +239,40 @@ func (q *queries) collectWorkloads(ctx context.Context, sql string, args ...any)
 }
 
 func (q *queries) CreateWorkload(ctx context.Context, w domain.Workload) error {
-	params := w.Params
+	params, fallback := w.Params, w.Fallback
 	if params == nil {
 		params = map[string]string{}
 	}
+	if fallback == nil {
+		fallback = []string{}
+	}
 	_, err := q.db.Exec(ctx, `INSERT INTO workloads (`+workloadCols+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, ''), $16, $17)`,
 		w.ID, w.TenantID, w.Name, string(w.Kind), string(w.State), w.ImageID, w.GPUClass,
-		w.GPUCount, params, w.CreatedBy, w.CreatedAt, w.UpdatedAt)
+		w.GPUCount, params, w.CreatedBy, w.CreatedAt, w.UpdatedAt,
+		string(w.Region), nullID(w.MachineID), w.PlacedClass, fallback, int64(w.FallbackAfter/time.Second))
 	return mapErr(err, "workload")
 }
 
 func (q *queries) GetWorkload(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error) {
-	w, err := scanWorkload(q.db.QueryRow(ctx, `SELECT `+workloadCols+` FROM workloads
+	w, err := scanWorkload(q.db.QueryRow(ctx, `SELECT `+workloadSelect+` FROM workloads
 		WHERE id = $1 AND tenant_id = $2 AND state <> 'deleted'`, id, tenantID))
 	return w, mapErr(err, "workload")
 }
 
 func (q *queries) GetWorkloadHistory(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error) {
-	w, err := scanWorkload(q.db.QueryRow(ctx, `SELECT `+workloadCols+` FROM workloads
+	w, err := scanWorkload(q.db.QueryRow(ctx, `SELECT `+workloadSelect+` FROM workloads
 		WHERE id = $1 AND tenant_id = $2`, id, tenantID))
 	return w, mapErr(err, "workload")
 }
 
 func (q *queries) ListWorkloads(ctx context.Context, tenantID uuid.UUID) ([]domain.Workload, error) {
-	return q.collectWorkloads(ctx, `SELECT `+workloadCols+` FROM workloads
+	return q.collectWorkloads(ctx, `SELECT `+workloadSelect+` FROM workloads
 		WHERE tenant_id = $1 AND state <> 'deleted' ORDER BY created_at, id`, tenantID)
 }
 
 func (q *queries) ListWorkloadHistory(ctx context.Context, tenantID uuid.UUID) ([]domain.Workload, error) {
-	return q.collectWorkloads(ctx, `SELECT `+workloadCols+` FROM workloads
+	return q.collectWorkloads(ctx, `SELECT `+workloadSelect+` FROM workloads
 		WHERE tenant_id = $1 ORDER BY created_at, id`, tenantID)
 }
 
@@ -223,13 +289,25 @@ func (q *queries) UpdateWorkloadState(ctx context.Context, id uuid.UUID, from, t
 }
 
 func (q *queries) WorkloadsInStates(ctx context.Context, states ...domain.State) ([]domain.Workload, error) {
-	return q.collectWorkloads(ctx, `SELECT `+workloadCols+` FROM workloads
+	return q.collectWorkloads(ctx, `SELECT `+workloadSelect+` FROM workloads
 		WHERE state = ANY($1) ORDER BY created_at, id`, store.StatesAsStrings(states))
 }
 
+func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error {
+	tag, err := q.db.Exec(ctx, `UPDATE workloads SET placed_class = NULLIF($2, ''), machine_id = $3 WHERE id = $1`,
+		id, placedClass, nullID(machineID))
+	if err != nil {
+		return mapErr(err, "machine")
+	}
+	if tag.RowsAffected() == 0 {
+		return store.NotFound("workload")
+	}
+	return nil
+}
+
 func (q *queries) GPUsAllocated(ctx context.Context) (map[string]int, error) {
-	rows, err := q.db.Query(ctx, `SELECT gpu_class, SUM(gpu_count) FROM workloads
-		WHERE state = ANY($1) GROUP BY gpu_class`,
+	rows, err := q.db.Query(ctx, `SELECT placed_class, SUM(gpu_count) FROM workloads
+		WHERE state = ANY($1) AND placed_class IS NOT NULL GROUP BY placed_class`,
 		store.StatesAsStrings(domain.StatesWhere(domain.State.HoldsCapacity)))
 	if err != nil {
 		return nil, err
@@ -248,7 +326,7 @@ func (q *queries) GPUsAllocated(ctx context.Context) (map[string]int, error) {
 }
 
 func (q *queries) WorkloadsForMetering(ctx context.Context, since time.Time) ([]domain.Workload, error) {
-	return q.collectWorkloads(ctx, `SELECT `+workloadCols+` FROM workloads w
+	return q.collectWorkloads(ctx, `SELECT `+workloadSelect+` FROM workloads w
 		WHERE state = ANY($1)
 		   OR EXISTS (SELECT 1 FROM workload_events e WHERE e.workload_id = w.id AND e.at >= $2)
 		ORDER BY created_at, id`,
@@ -290,17 +368,18 @@ func (q *queries) collectEvents(ctx context.Context, sql string, args ...any) ([
 }
 
 func (q *queries) InsertUsageIfAbsent(ctx context.Context, r domain.UsageRecord) (bool, error) {
-	tag, err := q.db.Exec(ctx, `INSERT INTO usage_records
-		(workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds)
-		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workload_id, period_start) DO NOTHING`,
-		r.WorkloadID, r.PeriodStart, r.TenantID, r.GPUClass, r.GPUCount, r.Seconds)
+	tag, err := q.db.Exec(ctx, `INSERT INTO usage_records (`+usageCols+`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (workload_id, period_start) DO NOTHING`,
+		r.WorkloadID, r.PeriodStart, r.TenantID, r.GPUClass, r.GPUCount, r.Seconds, string(r.Region), nullID(r.MachineID))
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
 }
 
-const usageCols = `workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds`
+const usageCols = `workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds, region, machine_id`
+
+const usageSelect = `workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds, region, COALESCE(machine_id, ` + nilUUID + `)`
 
 func (q *queries) collectUsage(ctx context.Context, sql string, args ...any) ([]domain.UsageRecord, error) {
 	rows, err := q.db.Query(ctx, sql, args...)
@@ -309,18 +388,20 @@ func (q *queries) collectUsage(ctx context.Context, sql string, args ...any) ([]
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.UsageRecord, error) {
 		var u domain.UsageRecord
-		err := r.Scan(&u.WorkloadID, &u.PeriodStart, &u.TenantID, &u.GPUClass, &u.GPUCount, &u.Seconds)
+		var region string
+		err := r.Scan(&u.WorkloadID, &u.PeriodStart, &u.TenantID, &u.GPUClass, &u.GPUCount, &u.Seconds, &region, &u.MachineID)
+		u.Region = domain.Region(region)
 		return u, err
 	})
 }
 
 func (q *queries) Usage(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.UsageRecord, error) {
-	return q.collectUsage(ctx, `SELECT `+usageCols+` FROM usage_records
+	return q.collectUsage(ctx, `SELECT `+usageSelect+` FROM usage_records
 		WHERE tenant_id = $1 AND period_start >= $2 AND period_start < $3
 		ORDER BY period_start, workload_id`, tenantID, from, to)
 }
 
 func (q *queries) UsageForWorkload(ctx context.Context, tenantID, workloadID uuid.UUID) ([]domain.UsageRecord, error) {
-	return q.collectUsage(ctx, `SELECT `+usageCols+` FROM usage_records
+	return q.collectUsage(ctx, `SELECT `+usageSelect+` FROM usage_records
 		WHERE tenant_id = $1 AND workload_id = $2 ORDER BY period_start`, tenantID, workloadID)
 }

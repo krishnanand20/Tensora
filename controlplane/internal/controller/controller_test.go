@@ -283,3 +283,18 @@ func TestCapacityErrorsAreNotedForWaitingWorkloads(t *testing.T) {
 	h.reconcile()
 	h.expect(testutil.Acme, w.ID, domain.StateRunning)
 }
+
+// Admission records the placement in the same step as the transition, so nothing ever runs (or
+// is accounted) without saying what it runs on.
+func TestAdmissionRecordsPlacement(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	w := h.create(testutil.Acme, "nb", 1)
+	if w.Region != domain.RegionLocal || w.PlacedClass != "" {
+		t.Fatalf("new workload: region %q, placed %q; want local and not yet placed", w.Region, w.PlacedClass)
+	}
+	h.reconcile()
+	got, err := h.svc.GetWorkload(context.Background(), testutil.Acme, w.ID)
+	if err != nil || got.State != domain.StateRunning || got.PlacedClass != "l40s-48gb" || got.MachineID != uuid.Nil {
+		t.Fatalf("admitted workload = %+v, %v", got, err)
+	}
+}

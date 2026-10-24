@@ -30,11 +30,12 @@ type eventView struct {
 }
 
 type usageView struct {
-	PeriodStart time.Time `json:"period_start"`
-	GPUClass    string    `json:"gpu_class"`
-	GPUCount    int       `json:"gpu_count"`
-	Seconds     int64     `json:"seconds"`
-	GPUSeconds  int64     `json:"gpu_seconds"`
+	PeriodStart time.Time     `json:"period_start"`
+	GPUClass    string        `json:"gpu_class"` // the class that actually ran
+	GPUCount    int           `json:"gpu_count"`
+	Seconds     int64         `json:"seconds"`
+	GPUSeconds  int64         `json:"gpu_seconds"`
+	Region      domain.Region `json:"region"`
 }
 
 type redactionView struct {
@@ -104,7 +105,8 @@ func (s *Server) exportWorkload(w http.ResponseWriter, r *http.Request, p domain
 		Redactions: make([]redactionView, len(exp.Redactions)),
 	}
 	for i, u := range exp.Usage {
-		view.Usage[i] = usageView{PeriodStart: u.PeriodStart, GPUClass: u.GPUClass, GPUCount: u.GPUCount, Seconds: u.Seconds, GPUSeconds: u.GPUSeconds()}
+		view.Usage[i] = usageView{PeriodStart: u.PeriodStart, GPUClass: u.GPUClass, GPUCount: u.GPUCount,
+			Seconds: u.Seconds, GPUSeconds: u.GPUSeconds(), Region: u.Region}
 	}
 	for i, rd := range exp.Redactions {
 		view.Redactions[i] = redactionView{Field: rd.Field, Reason: rd.Reason}

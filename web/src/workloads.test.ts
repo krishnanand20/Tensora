@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { filenameFromDisposition, toApiError, workloadPath } from "./api/client";
-import { availableActions, describeChange, isSettling } from "./workloads";
+import { availableActions, classShown, describeChange, isSettling } from "./workloads";
 
 describe("availableActions", () => {
   it("matches the control plane's lifecycle rules", () => {
@@ -72,5 +72,15 @@ describe("describeChange", () => {
 describe("filenameFromDisposition with bad encoding", () => {
   it("falls back instead of throwing", () => {
     expect(filenameFromDisposition("attachment; filename*=UTF-8''%E0%A4%A", "x.json")).toBe("x.json");
+  });
+});
+
+describe("classShown", () => {
+  it("shows what actually runs, and never hides a fallback", () => {
+    expect(classShown({ gpu_class: "l40s-48gb", gpu_count: 2 })).toBe("2 × l40s-48gb");
+    expect(classShown({ gpu_class: "l40s-48gb", gpu_count: 2, placed_class: "l40s-48gb" })).toBe("2 × l40s-48gb");
+    expect(classShown({ gpu_class: "l40s-48gb", gpu_count: 1, placed_class: "cpu-16c-64g" })).toBe(
+      "1 × cpu-16c-64g (requested l40s-48gb)",
+    );
   });
 });

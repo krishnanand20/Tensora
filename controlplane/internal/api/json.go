@@ -22,10 +22,14 @@ type workloadView struct {
 	Kind      domain.WorkloadKind `json:"kind"`
 	State     domain.State        `json:"state"`
 	ImageID   string              `json:"image_id"`
-	GPUClass  string              `json:"gpu_class"`
+	GPUClass  string              `json:"gpu_class"` // the class requested
 	GPUCount  int                 `json:"gpu_count"`
 	CreatedAt time.Time           `json:"created_at"`
 	UpdatedAt time.Time           `json:"updated_at"`
+	// Where it runs and on what (ADR-0009, ADR-0010). placed_class is absent until it's admitted,
+	// and differs from gpu_class only after an opt-in fallback.
+	Region      domain.Region `json:"region"`
+	PlacedClass string        `json:"placed_class,omitempty"`
 }
 
 type listView[T any] struct {
@@ -66,6 +70,7 @@ func toWorkloadView(w domain.Workload) workloadView {
 	return workloadView{
 		ID: w.ID, Name: w.Name, Kind: w.Kind, State: w.State, ImageID: w.ImageID,
 		GPUClass: w.GPUClass, GPUCount: w.GPUCount, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
+		Region: w.Region, PlacedClass: w.PlacedClass,
 	}
 }
 

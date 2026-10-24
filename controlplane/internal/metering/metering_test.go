@@ -86,13 +86,15 @@ func TestSplitHourly(t *testing.T) {
 	}
 }
 
-func TestMeterOnceBillsClosedHoursExactlyOnce(t *testing.T) {
+// Closed hours are accounted once, for the class that actually ran and where (ADR-0010, rule 9).
+func TestMeterOnceAccountsClosedHoursExactlyOnce(t *testing.T) {
 	st := testutil.SeededStore(t)
 	ctx := context.Background()
 	var tenantID uuid.UUID
 	w := domain.Workload{
 		ID: uuid.New(), Name: "w", Kind: domain.KindNotebook, State: domain.StatePending, ImageID: "pytorch-notebook",
 		GPUClass: "l40s-48gb", GPUCount: 2, Params: map[string]string{}, CreatedBy: "t", CreatedAt: at(0), UpdatedAt: at(0),
+		Region: "eu-fra-1",
 	}
 	err := st.InTx(ctx, func(q store.Queries) error {
 		tn, err := q.TenantBySlug(ctx, "acme")
@@ -103,6 +105,11 @@ func TestMeterOnceBillsClosedHoursExactlyOnce(t *testing.T) {
 		if err := q.CreateWorkload(ctx, w); err != nil {
 			return err
 		}
+		// Admitted on an opt-in fallback class, not the one requested.
+		if err := q.SetPlacement(ctx, w.ID, "a100-80gb", uuid.Nil); err != nil {
+			return err
+		}
+		w.PlacedClass = "a100-80gb"
 		steps := []struct {
 			min int
 			to  domain.State
@@ -130,6 +137,11 @@ func TestMeterOnceBillsClosedHoursExactlyOnce(t *testing.T) {
 		recs, _ := q.Usage(ctx, tenantID, base, base.Add(24*time.Hour))
 		if len(recs) != 2 || recs[0].Seconds != 58*60 || recs[1].Seconds != 2*60 || recs[0].GPUSeconds() != 2*58*60 {
 			t.Errorf("records = %+v", recs)
+		}
+		for _, r := range recs {
+			if r.GPUClass != "a100-80gb" || r.Region != "eu-fra-1" {
+				t.Errorf("record %+v: want the class and region that actually ran", r)
+			}
 		}
 		return nil
 	})

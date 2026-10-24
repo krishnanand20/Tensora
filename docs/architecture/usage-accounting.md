@@ -42,7 +42,7 @@ flowchart LR
 - **Idempotent:** rows are insert-if-absent on `(workload_id, period_start)` and never updated, so re-running is safe.
 - **Lookback:** each pass re-examines the last 48 h. Older hours are final.
 - **Immutable inputs:** `workload_events` rejects `UPDATE` and `DELETE` with a trigger.
-- **Account for what ran** (ADR-0010): usage is recorded against the class a workload actually ran on (`placed_class`), so a CPU fallback counts as CPU time. *Not yet in code: `usage_records.gpu_class` currently holds the requested class.*
+- **Account for what ran** (ADR-0010, rule 9): each usage record holds the class the workload actually ran on (its `placed_class`, stored in `usage_records.gpu_class`), its region, and its machine, so a CPU fallback counts as CPU time. A workload can't reach `running` before it's placed. *Known gap (Phase 2):* metering reads the workload's current placement, so if a restart re-places it on another class, hours not yet recorded are accounted on the new one. The fix is to take each interval's class from its admission event.
 
 ## Known gaps
 

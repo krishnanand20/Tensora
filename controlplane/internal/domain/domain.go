@@ -68,12 +68,19 @@ type Workload struct {
 	Kind      WorkloadKind
 	State     State
 	ImageID   string
-	GPUClass  string
+	GPUClass  string // the class the user requested; PlacedClass is what it was admitted on
 	GPUCount  int
 	Params    map[string]string // kind-specific inputs, keys below
 	CreatedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time // also when the current state was entered
+
+	// Placement (ADR-0009, ADR-0010).
+	Region        Region        // fixed at creation; the workload's data never leaves it (rule 9)
+	PlacedClass   string        // the class it was admitted on; empty until first admitted
+	MachineID     uuid.UUID     // the agent machine it runs on; uuid.Nil until placed on one
+	Fallback      []string      // other classes, or "cpu", the user accepts, in order; empty means wait
+	FallbackAfter time.Duration // how long to wait for GPUClass before trying Fallback
 }
 
 // Keys used in Workload.Params.
@@ -97,9 +104,11 @@ type UsageRecord struct {
 	WorkloadID  uuid.UUID
 	PeriodStart time.Time
 	TenantID    uuid.UUID
-	GPUClass    string
+	GPUClass    string // the class that actually ran (the workload's placed class, ADR-0010)
 	GPUCount    int
 	Seconds     int64
+	Region      Region
+	MachineID   uuid.UUID // uuid.Nil when it didn't run on an agent machine
 }
 
 // GPUSeconds is the quantity used for quotas, fair share, and reports.

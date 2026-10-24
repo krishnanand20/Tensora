@@ -1,6 +1,6 @@
 # 0014. Sharing idle compute: private by default, invite-only, and community pools
 
-- **Status:** Accepted (design; not yet implemented, see the roadmap)
+- **Status:** Accepted (each machine's sharing level is stored, defaulting to private; enforcement is planned, see the roadmap)
 - **Date:** 2026-10-23
 
 ## Context

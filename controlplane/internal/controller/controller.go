@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/tensora/tensora/controlplane/internal/catalog"
 	"github.com/tensora/tensora/controlplane/internal/cluster"
 	"github.com/tensora/tensora/controlplane/internal/cluster/manifests"
@@ -113,8 +115,11 @@ func (c *Controller) admit(ctx context.Context) error {
 			c.retryLater(ctx, w, "start it on the runtime", err)
 			continue
 		}
-		if c.transition(ctx, w, domain.StateProvisioning, fmt.Sprintf("admitted: %d × %s", w.GPUCount, w.GPUClass)) {
-			allocated[w.GPUClass] += w.GPUCount
+		// Placed on the requested class. Fallback placement (ADR-0010) and agent machines will choose
+		// here, in one place, as admission grows (ADR-0014's sharing rules too).
+		placed, machine := w.GPUClass, uuid.Nil
+		if c.place(ctx, w, placed, machine) {
+			allocated[placed] += w.GPUCount
 		}
 	}
 	return nil
@@ -306,10 +311,35 @@ func (c *Controller) logError(msg string, w domain.Workload, err error) {
 	c.log.Error(msg, "workload", w.ID, "tenant", w.TenantID, "err", service.RedactSecrets(err.Error()))
 }
 
+// place records where the workload was placed and moves it to provisioning, in one transaction,
+// so a workload is never provisioning without a placement.
+func (c *Controller) place(ctx context.Context, w domain.Workload, placedClass string, machineID uuid.UUID) bool {
+	return c.transitionWith(ctx, w, domain.StateProvisioning, fmt.Sprintf("admitted: %d × %s", w.GPUCount, placedClass),
+		func(q store.Queries, w *domain.Workload) error {
+			if err := q.SetPlacement(ctx, w.ID, placedClass, machineID); err != nil {
+				return err
+			}
+			w.PlacedClass, w.MachineID = placedClass, machineID
+			return nil
+		})
+}
+
 func (c *Controller) transition(ctx context.Context, w domain.Workload, to domain.State, reason string) bool {
+	return c.transitionWith(ctx, w, to, reason, nil)
+}
+
+// transitionWith runs before (if any) and the transition in one transaction.
+func (c *Controller) transitionWith(ctx context.Context, w domain.Workload, to domain.State, reason string,
+	before func(store.Queries, *domain.Workload) error,
+) bool {
 	reason = service.CleanReason(reason)
 	from := w.State
 	err := c.store.InTx(ctx, func(q store.Queries) error {
+		if before != nil {
+			if err := before(q, &w); err != nil {
+				return err
+			}
+		}
 		return service.Transition(ctx, q, &w, to, reason, c.now())
 	})
 	if err != nil {

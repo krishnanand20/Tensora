@@ -1,4 +1,4 @@
-import type { WorkloadEvent, WorkloadState } from "./api/types";
+import type { Workload, WorkloadEvent, WorkloadState } from "./api/types";
 
 export type Action = "stop" | "start" | "delete";
 
@@ -20,4 +20,14 @@ export function isSettling(state: WorkloadState): boolean {
 export function describeChange(e: WorkloadEvent): string {
   if (e.from === e.to) return `still ${e.to}`;
   return `${e.from ?? "∅"} → ${e.to}`;
+}
+
+/**
+ * What a workload runs on (ADR-0010): the placed class, saying so when it differs from the class
+ * requested (an opt-in fallback), or the requested class before it's admitted. Never hide a fallback.
+ */
+export function classShown(w: Pick<Workload, "gpu_class" | "gpu_count" | "placed_class">): string {
+  const placed = w.placed_class ?? w.gpu_class;
+  const shown = `${w.gpu_count} × ${placed}`;
+  return placed === w.gpu_class ? shown : `${shown} (requested ${w.gpu_class})`;
 }

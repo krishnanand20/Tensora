@@ -47,7 +47,7 @@ browser, with whatever permissions it uses.
 | `workload` | The workload as the API shows it, including its state (even `deleted`) |
 | `created_by`, `params` | Who created it, and every input it was created with |
 | `events` | The complete timeline, oldest first |
-| `usage` | Every hourly usage record: seconds, GPU-seconds, class (usage accounting; never money) |
+| `usage` | Every hourly usage record: seconds, GPU-seconds, the class that actually ran, and region (usage accounting; never money) |
 | `output_logs` | Workload output once the pipeline exists. Until then, `available: false` with a note saying so. |
 | `redactions` | Every value that was removed, and why. Empty when nothing was redacted. |
 

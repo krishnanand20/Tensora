@@ -135,10 +135,11 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 - Async actions return **202** and the current state.
 - Another tenant's object is always **404**.
 - IDs are UUIDv7. Runtime object names derive from IDs, never from user input.
+- Workload responses include `region` and, once admitted, `placed_class`. `gpu_class` is the class requested; the two differ only after an opt-in fallback.
 - *Planned:*
-  - Create takes `region`, `fallback`, and `fallback_after`.
-  - Responses include `region`, `machine`, `requested_class`, and `placed_class`.
-  - `POST` accepts `Idempotency-Key`, and every 503 carries `Retry-After`.
+  - Create takes `region` (checked against the catalog's regions), `fallback`, and `fallback_after`. Until then every workload is in `local`.
+  - Responses include `machine` once agents place workloads on machines.
+  - `POST` accepts `Idempotency-Key` (the `idempotency_keys` table exists), and every 503 carries `Retry-After`.
 
 ## Failure modes
 
@@ -156,15 +157,15 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 
 ## Regions and fallback placement
 
-*Designed, not yet built* (roadmap Phase 1 task breakdown).
+*The data model is built* (migration `00002`): every workload, machine, and usage record has a `region`; workloads record `placed_class` and `machine_id` at admission, in the same transaction as the move to provisioning; capacity is counted and usage accounted by placed class. *Region selection, fallback placement, and per-region controllers are planned* (roadmap).
 
 - **Regions** ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)): every workload gets an immutable `region`, and Solo has one region, `local`. In a datacenter, one controller runs per region (`TENSORA_REGION`).
-- **Fallback placement** ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)): `fallback` is an ordered list of other classes or `cpu`, tried after `fallback_after`. The workload records `requested_class` and `placed_class`. Freed GPUs go to requested-class waiters first.
+- **Fallback placement** ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)): `fallback` is an ordered list of other classes or `cpu`, tried after `fallback_after`. The workload records the requested class (`gpu_class`) and `placed_class`. Freed GPUs go to requested-class waiters first. Placement happens in one place, the controller's `place` step.
 - **Inference failover** happens per request in the inference gateway, not in the controller.
 
 ## Next resources
 
-- **Machines** (agents): enrolment, inventory, health, sharing level (Phases 1–2, 4)
+- **Machines** (agents): enrolment, inventory, health, sharing level (Phases 1–2, 4). The `machines` table and its store methods exist; nothing creates machines yet.
 - **Users, teams, invites**: local accounts and quotas (Phase 2)
 - **Models:** `tensora-ml ingest` validates, then caches per machine or region (Phases 2–3)
 - **Access:** a relay through the control plane to notebooks, endpoints, and VM SSH (Phase 2)

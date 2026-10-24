@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
 
 import { api } from "../api/client";
-import { describeChange, isSettling } from "../workloads";
+import { classShown, describeChange, isSettling } from "../workloads";
 
 /**
  * One workload: its complete timeline, and a download of everything recorded about it (ADR-0015).
@@ -49,7 +49,8 @@ export function WorkloadDetailPage() {
       </div>
       {download.isError && <p className="error">{download.error.message}</p>}
       <p className="muted">
-        {w.kind} · <span className={`state state-${w.state}`}>{w.state}</span> · {w.gpu_count} × {w.gpu_class} · id {w.id}
+        {w.kind} · <span className={`state state-${w.state}`}>{w.state}</span> · {classShown(w)} · region {w.region} · id{" "}
+        {w.id}
       </p>
       {w.state === "deleted" && (
         <p className="muted">This workload is deleted. Its timeline and full log stay available here.</p>

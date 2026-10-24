@@ -68,9 +68,14 @@ func (m *Meter) MeterOnce(ctx context.Context) (int, error) {
 				if hour.Before(since) || secs == 0 {
 					continue
 				}
+				// Accounted for what actually ran and where (ADR-0010, rule 9). Metered time always
+				// follows admission, which records the placement.
+				// TODO(phase-2): with fallback, a workload can be re-placed on another class after a
+				// restart; take each interval's class from its admission event instead.
 				ok, err := q.InsertUsageIfAbsent(ctx, domain.UsageRecord{
 					WorkloadID: w.ID, PeriodStart: hour, TenantID: w.TenantID,
-					GPUClass: w.GPUClass, GPUCount: w.GPUCount, Seconds: secs,
+					GPUClass: w.PlacedClass, GPUCount: w.GPUCount, Seconds: secs,
+					Region: w.Region, MachineID: w.MachineID,
 				})
 				if err != nil {
 					return err

@@ -33,6 +33,7 @@ type usageKey struct {
 
 type data struct {
 	tenants     map[uuid.UUID]domain.Tenant
+	machines    map[uuid.UUID]domain.Machine
 	quotas      map[quotaKey]domain.Quota
 	workloads   map[uuid.UUID]domain.Workload
 	events      []domain.Event
@@ -43,6 +44,7 @@ type data struct {
 func New() *Store {
 	return &Store{d: data{
 		tenants:   map[uuid.UUID]domain.Tenant{},
+		machines:  map[uuid.UUID]domain.Machine{},
 		quotas:    map[quotaKey]domain.Quota{},
 		workloads: map[uuid.UUID]domain.Workload{},
 		usage:     map[usageKey]domain.UsageRecord{},
@@ -66,6 +68,10 @@ func (s *Store) Close()                     {}
 func (d *data) clone() data {
 	c := *d
 	c.tenants = maps.Clone(d.tenants)
+	c.machines = make(map[uuid.UUID]domain.Machine, len(d.machines))
+	for id, m := range d.machines {
+		c.machines[id] = cloneMachine(m)
+	}
 	c.quotas = maps.Clone(d.quotas)
 	c.workloads = make(map[uuid.UUID]domain.Workload, len(d.workloads))
 	for id, w := range d.workloads {
@@ -78,7 +84,13 @@ func (d *data) clone() data {
 
 func cloneWorkload(w domain.Workload) domain.Workload {
 	w.Params = maps.Clone(w.Params)
+	w.Fallback = slices.Clone(w.Fallback)
 	return w
+}
+
+func cloneMachine(m domain.Machine) domain.Machine {
+	m.Accelerators = slices.Clone(m.Accelerators)
+	return m
 }
 
 func sortWorkloads(ws []domain.Workload) {
@@ -148,12 +160,47 @@ func (q *queries) GPUsHeld(_ context.Context, tenantID uuid.UUID, gpuClass strin
 	return n, nil
 }
 
+func (q *queries) CreateMachine(_ context.Context, m domain.Machine) error {
+	if _, ok := q.d.tenants[m.TenantID]; !ok {
+		return store.NotFound("machine")
+	}
+	for id, existing := range q.d.machines {
+		if id == m.ID || (existing.TenantID == m.TenantID && existing.Name == m.Name) {
+			return domain.Errorf(domain.CodeConflict, "machine already exists")
+		}
+	}
+	q.d.machines[m.ID] = cloneMachine(m)
+	return nil
+}
+
+func (q *queries) GetMachine(_ context.Context, tenantID, id uuid.UUID) (domain.Machine, error) {
+	m, ok := q.d.machines[id]
+	if !ok || m.TenantID != tenantID {
+		return domain.Machine{}, store.NotFound("machine")
+	}
+	return cloneMachine(m), nil
+}
+
+func (q *queries) ListMachines(_ context.Context, tenantID uuid.UUID) ([]domain.Machine, error) {
+	var out []domain.Machine
+	for _, m := range q.d.machines {
+		if m.TenantID == tenantID {
+			out = append(out, cloneMachine(m))
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.Machine) int { return cmp.Compare(a.Name, b.Name) })
+	return out, nil
+}
+
 func (q *queries) CreateWorkload(_ context.Context, w domain.Workload) error {
 	if _, ok := q.d.tenants[w.TenantID]; !ok {
 		return store.NotFound("tenant")
 	}
 	if _, ok := q.d.workloads[w.ID]; ok {
 		return domain.Errorf(domain.CodeConflict, "workload %s already exists", w.ID)
+	}
+	if _, ok := q.d.machines[w.MachineID]; w.MachineID != uuid.Nil && !ok {
+		return store.NotFound("machine")
 	}
 	q.d.workloads[w.ID] = cloneWorkload(w)
 	return nil
@@ -221,11 +268,24 @@ func (q *queries) WorkloadsInStates(_ context.Context, states ...domain.State) (
 func (q *queries) GPUsAllocated(context.Context) (map[string]int, error) {
 	out := map[string]int{}
 	for _, w := range q.d.workloads {
-		if w.State.HoldsCapacity() {
-			out[w.GPUClass] += w.GPUCount
+		if w.State.HoldsCapacity() && w.PlacedClass != "" {
+			out[w.PlacedClass] += w.GPUCount
 		}
 	}
 	return out, nil
+}
+
+func (q *queries) SetPlacement(_ context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error {
+	w, ok := q.d.workloads[id]
+	if !ok {
+		return store.NotFound("workload")
+	}
+	if _, ok := q.d.machines[machineID]; machineID != uuid.Nil && !ok {
+		return store.NotFound("machine")
+	}
+	w.PlacedClass, w.MachineID = placedClass, machineID
+	q.d.workloads[id] = w
+	return nil
 }
 
 func (q *queries) WorkloadsForMetering(_ context.Context, since time.Time) ([]domain.Workload, error) {

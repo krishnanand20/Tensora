@@ -69,9 +69,9 @@ lifecycle, admission, and usage accounting is in [docs/architecture/control-plan
 
 **Planned** (ADR-0009, 0010, 0012, 0013, 0014; see the roadmap):
 
-- create takes `region`, `fallback`, and `fallback_after`
-- responses include `region`, `machine`, `requested_class`, and `placed_class`
-- new resources: machines, users and teams, API tokens, and sharing settings
+- create takes `region`, `fallback`, and `fallback_after` (today every workload is in `local`)
+- responses include `machine` (they already include `region` and, once admitted, `placed_class`)
+- new resources: machines (stored, not yet exposed), users and teams, API tokens, and sharing settings
 - `POST` accepts `Idempotency-Key`, and 503s carry `Retry-After`
 
 ## Build

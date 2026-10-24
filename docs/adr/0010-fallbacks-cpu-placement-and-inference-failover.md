@@ -1,6 +1,6 @@
 # 0010. Fallbacks: CPU placement when GPUs are unavailable, and inference failover
 
-- **Status:** Accepted (design; not yet implemented in code; see the roadmap)
+- **Status:** Accepted (data model in code: `placed_class` is recorded at admission, and capacity and usage accounting use it. Fallback placement, CPU classes, and gateway failover are planned; see the roadmap)
 - **Date:** 2026-10-23
 
 > **Updated 2026-10-23 ([ADR-0011](0011-free-for-everyone.md)):** Tensora is free. Wherever this record says *billed*, *priced*, or *paid*, read **accounted**, and read *customer* as **user**. There are no prices or invoices. Fallbacks apply in every profile, including on Macs (Metal GPU, then CPU).
@@ -69,7 +69,7 @@ Rules:
 
 ## Consequences
 
-- **Data model:** workloads gain `fallback`, `fallback_after`, `requested_class`, and `placed_class`, and metering prices by `placed_class`. Add these in the same change as `region` (ADR-0009), before real data exists.
+- **Data model:** workloads gain `fallback`, `fallback_after`, `requested_class`, and `placed_class`, and metering prices by `placed_class`. *(As built: the requested class keeps its API name, `gpu_class`; `fallback_after` is stored as `fallback_after_s`.)* Add these in the same change as `region` (ADR-0009), before real data exists.
 - **Catalog:** classes gain a `kind` (`gpu` or `cpu`). CPU capacity comes from CPU-node allocatable.
 - **New components:** CPU worker nodes in each region; the `tensora-vllm-cpu` ClusterServingRuntime; the regional inference gateway (Envoy-based or a small Go proxy, decided in Phase 3).
 - **Admission gets more complex:** fallback placement must not starve customers waiting for the requested class. A GPU freed up goes to queued GPU-requesters first, before promoting CPU-fallback endpoints.

@@ -16,6 +16,9 @@ func Transition(ctx context.Context, q store.Queries, w *domain.Workload, to dom
 	if !domain.CanTransition(w.State, to) {
 		return domain.Errorf(domain.CodeInvalidTransition, "cannot go from %s to %s", w.State, to)
 	}
+	if err := w.CheckPlaced(to); err != nil {
+		return err
+	}
 	at = at.UTC()
 	if err := q.UpdateWorkloadState(ctx, w.ID, w.State, to, at); err != nil {
 		return err

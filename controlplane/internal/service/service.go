@@ -72,6 +72,9 @@ func (s *Service) CreateWorkload(ctx context.Context, p domain.Principal, in Cre
 			State: domain.StatePending, ImageID: in.ImageID, GPUClass: in.GPUClass,
 			GPUCount: in.GPUCount, Params: in.params(), CreatedBy: p.Subject,
 			CreatedAt: now, UpdatedAt: now,
+			// TODO(roadmap step 4): take the region from the request, checked against the catalog's
+			// regions. Until then every workload is in the one region a Solo install has.
+			Region: domain.RegionLocal,
 		}
 		if err := q.CreateWorkload(ctx, w); err != nil {
 			return err

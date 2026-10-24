@@ -38,6 +38,11 @@ type Queries interface {
 	// GPUsHeld sums gpu_count over the tenant's workloads whose state HoldsQuota.
 	GPUsHeld(ctx context.Context, tenantID uuid.UUID, gpuClass string) (int, error)
 
+	// Machines, tenant-scoped: the owner's view (ADR-0013).
+	CreateMachine(ctx context.Context, m domain.Machine) error
+	GetMachine(ctx context.Context, tenantID, id uuid.UUID) (domain.Machine, error)
+	ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domain.Machine, error)
+
 	// Workloads, tenant-scoped. Deleted workloads are invisible.
 	CreateWorkload(ctx context.Context, w domain.Workload) error
 	GetWorkload(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error)
@@ -56,8 +61,11 @@ type Queries interface {
 
 	// Workloads, system-wide (controller / metering only).
 	WorkloadsInStates(ctx context.Context, states ...domain.State) ([]domain.Workload, error)
-	// GPUsAllocated sums gpu_count by GPU class over workloads whose state HoldsCapacity.
+	// GPUsAllocated sums gpu_count by placed class over placed workloads whose state HoldsCapacity.
 	GPUsAllocated(ctx context.Context) (map[string]int, error)
+	// SetPlacement records what a workload was admitted on: its class and, on agents, its machine
+	// (uuid.Nil for none). Call it in the transaction that moves the workload to provisioning.
+	SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error
 	// WorkloadsForMetering returns workloads that are metered now or had an event at or after since.
 	WorkloadsForMetering(ctx context.Context, since time.Time) ([]domain.Workload, error)
 

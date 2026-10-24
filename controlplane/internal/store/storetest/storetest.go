@@ -23,6 +23,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("RollbackOnError", func(t *testing.T) { testRollback(t, newStore(t)) })
 	t.Run("EventsAndUsage", func(t *testing.T) { testEventsAndUsage(t, newStore(t)) })
 	t.Run("ErrorsAndCrossTenantReads", func(t *testing.T) { testErrorsAndCrossTenant(t, newStore(t)) })
+	t.Run("MachinesAndPlacement", func(t *testing.T) { testMachinesAndPlacement(t, newStore(t)) })
 }
 
 // SchemaColumns and SchemaIndexes are every table's columns and every named index that both
@@ -30,15 +31,21 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 // database with them (CheckSchema), so a migration written for only one database fails a test.
 var (
 	SchemaColumns = map[string][]string{
-		"tenants":         {"created_at", "id", "name", "slug", "tier"},
-		"quotas":          {"gpu_class", "max_gpus", "tenant_id"},
-		"workloads":       {"created_at", "created_by", "gpu_class", "gpu_count", "id", "image_id", "kind", "name", "params", "state", "tenant_id", "updated_at"},
-		"workload_events": {"at", "from_state", "id", "reason", "to_state", "workload_id"},
-		"usage_records":   {"created_at", "gpu_class", "gpu_count", "period_start", "seconds", "tenant_id", "workload_id"},
+		"tenants":  {"created_at", "id", "name", "slug", "tier"},
+		"quotas":   {"gpu_class", "max_gpus", "tenant_id"},
+		"machines": {"accelerators", "arch", "created_at", "id", "last_seen_at", "name", "os", "region", "sharing", "tenant_id"},
+		"workloads": {
+			"created_at", "created_by", "fallback", "fallback_after_s", "gpu_class", "gpu_count", "id", "image_id",
+			"kind", "machine_id", "name", "params", "placed_class", "region", "state", "tenant_id", "updated_at",
+		},
+		"workload_events":  {"at", "from_state", "id", "reason", "to_state", "workload_id"},
+		"usage_records":    {"created_at", "gpu_class", "gpu_count", "machine_id", "period_start", "region", "seconds", "tenant_id", "workload_id"},
+		"idempotency_keys": {"created_at", "idempotency_key", "request_hash", "response_body", "response_status", "tenant_id"},
 	}
 	SchemaIndexes = []string{
+		"idempotency_keys_created_idx", "machines_region_idx",
 		"usage_records_tenant_idx", "workload_events_at_idx", "workload_events_workload_idx",
-		"workloads_active_state_idx", "workloads_tenant_idx",
+		"workloads_active_state_idx", "workloads_region_state_idx", "workloads_tenant_idx",
 	}
 )
 
@@ -79,7 +86,10 @@ func workload(t *testing.T, st store.Store, tn domain.Tenant, state domain.State
 	w := domain.Workload{
 		ID: uuid.New(), TenantID: tn.ID, Name: "w", Kind: domain.KindNotebook, State: state,
 		ImageID: "img", GPUClass: "l40s-48gb", GPUCount: gpus, Params: map[string]string{},
-		CreatedBy: "test", CreatedAt: t0, UpdatedAt: t0,
+		CreatedBy: "test", CreatedAt: t0, UpdatedAt: t0, Region: domain.RegionLocal,
+	}
+	if state.HoldsCapacity() {
+		w.PlacedClass = w.GPUClass // as the controller records at admission
 	}
 	tx(t, st, func(q store.Queries) error { return q.CreateWorkload(context.Background(), w) })
 	return w
@@ -312,4 +322,114 @@ func testErrorsAndCrossTenant(t *testing.T, st store.Store) {
 		}
 		return nil
 	})
+}
+
+func testMachinesAndPlacement(t *testing.T, st store.Store) {
+	ctx := context.Background()
+	a, b := tenant(t, st, "alpha"), tenant(t, st, "bravo")
+	m := domain.Machine{
+		ID: uuid.New(), TenantID: a.ID, Name: "studio-mac", Region: "eu-fra-1", OS: "darwin", Arch: "arm64",
+		Accelerators: []domain.Accelerator{{Kind: domain.AcceleratorApple, Model: "Apple M3 Max", Count: 1, MemoryMiB: 131072}},
+		Sharing:      domain.SharingInvite, LastSeenAt: t0.Add(time.Minute), CreatedAt: t0,
+	}
+	quiet := m
+	quiet.ID, quiet.Name, quiet.LastSeenAt, quiet.Accelerators = uuid.New(), "linux-box", time.Time{}, nil
+	tx(t, st, func(q store.Queries) error {
+		if err := q.CreateMachine(ctx, m); err != nil {
+			return err
+		}
+		return q.CreateMachine(ctx, quiet)
+	})
+
+	cases := []struct {
+		name string
+		fn   func(q store.Queries) error
+		want domain.Code
+	}{
+		{"duplicate machine name in a tenant", func(q store.Queries) error {
+			dup := m
+			dup.ID = uuid.New()
+			return q.CreateMachine(ctx, dup)
+		}, domain.CodeConflict},
+		{"machine for a missing tenant", func(q store.Queries) error {
+			orphan := m
+			orphan.ID, orphan.TenantID = uuid.New(), uuid.New()
+			return q.CreateMachine(ctx, orphan)
+		}, domain.CodeNotFound},
+		{"same name in another tenant is fine", func(q store.Queries) error {
+			other := m
+			other.ID, other.TenantID = uuid.New(), b.ID
+			return q.CreateMachine(ctx, other)
+		}, ""},
+		{"tenant B reads tenant A's machine", func(q store.Queries) error {
+			_, err := q.GetMachine(ctx, b.ID, m.ID)
+			return err
+		}, domain.CodeNotFound},
+	}
+	for _, c := range cases {
+		if code, _ := domain.CodeOf(st.InTx(ctx, c.fn)); code != c.want {
+			t.Errorf("%s: code = %q, want %q", c.name, code, c.want)
+		}
+	}
+
+	w := domain.Workload{
+		ID: uuid.New(), TenantID: a.ID, Name: "w", Kind: domain.KindEndpoint, State: domain.StatePending,
+		ImageID: "img", GPUClass: "l40s-48gb", GPUCount: 1, Params: map[string]string{}, CreatedBy: "test",
+		CreatedAt: t0, UpdatedAt: t0, Region: "eu-fra-1", Fallback: []string{"a100-80gb", "cpu"}, FallbackAfter: 10 * time.Minute,
+	}
+	tx(t, st, func(q store.Queries) error {
+		got, err := q.GetMachine(ctx, a.ID, m.ID)
+		if err != nil || got.Region != m.Region || got.Sharing != m.Sharing || !got.LastSeenAt.Equal(m.LastSeenAt) ||
+			len(got.Accelerators) != 1 || got.Accelerators[0] != m.Accelerators[0] {
+			t.Errorf("machine round trip = %+v, %v", got, err)
+		}
+		list, err := q.ListMachines(ctx, a.ID)
+		if err != nil || len(list) != 2 || list[0].Name != "linux-box" || !list[0].LastSeenAt.IsZero() || len(list[0].Accelerators) != 0 {
+			t.Errorf("owner machines = %+v, %v; want both, by name, with a never-seen machine's time zero", list, err)
+		}
+		if list, err := q.ListMachines(ctx, b.ID); err != nil || len(list) != 1 {
+			t.Errorf("tenant B machines = %+v, %v; want only its own", list, err)
+		}
+		return q.CreateWorkload(ctx, w)
+	})
+
+	// Placement: recorded at admission, and capacity is counted by the class that runs.
+	tx(t, st, func(q store.Queries) error {
+		got, err := q.GetWorkload(ctx, a.ID, w.ID)
+		if err != nil || got.Region != "eu-fra-1" || got.PlacedClass != "" || got.MachineID != uuid.Nil ||
+			!slices.Equal(got.Fallback, w.Fallback) || got.FallbackAfter != 10*time.Minute {
+			t.Errorf("unplaced workload round trip = %+v, %v", got, err)
+		}
+		if err := q.SetPlacement(ctx, w.ID, "a100-80gb", m.ID); err != nil {
+			return err
+		}
+		return q.UpdateWorkloadState(ctx, w.ID, domain.StatePending, domain.StateProvisioning, t0)
+	})
+	tx(t, st, func(q store.Queries) error {
+		got, err := q.GetWorkload(ctx, a.ID, w.ID)
+		if err != nil || got.PlacedClass != "a100-80gb" || got.MachineID != m.ID {
+			t.Errorf("placed workload = %+v, %v", got, err)
+		}
+		if alloc, err := q.GPUsAllocated(ctx); err != nil || alloc["a100-80gb"] != 1 || alloc["l40s-48gb"] != 0 {
+			t.Errorf("GPUsAllocated = %v, %v; want the placed class counted, not the requested one", alloc, err)
+		}
+		rec := domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0, TenantID: a.ID, GPUClass: "a100-80gb",
+			GPUCount: 1, Seconds: 60, Region: "eu-fra-1", MachineID: m.ID}
+		if _, err := q.InsertUsageIfAbsent(ctx, rec); err != nil {
+			return err
+		}
+		usage, err := q.UsageForWorkload(ctx, a.ID, w.ID)
+		if err != nil || len(usage) != 1 || usage[0].Region != "eu-fra-1" || usage[0].MachineID != m.ID {
+			t.Errorf("usage with location = %+v, %v", usage, err)
+		}
+		return nil
+	})
+	for name, fn := range map[string]func(q store.Queries) error{
+		"unknown machine":  func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "a100-80gb", uuid.New()) },
+		"unknown workload": func(q store.Queries) error { return q.SetPlacement(ctx, uuid.New(), "a100-80gb", uuid.Nil) },
+	} {
+		if !domain.IsNotFound(st.InTx(ctx, fn)) {
+			t.Errorf("SetPlacement with an %s must be not found", name)
+		}
+	}
 }

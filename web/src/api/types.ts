@@ -19,10 +19,15 @@ export interface Workload {
   kind: WorkloadKind;
   state: WorkloadState;
   image_id: string;
+  /** The class requested. */
   gpu_class: string;
   gpu_count: number;
   created_at: string;
   updated_at: string;
+  /** Where it runs (ADR-0009). */
+  region: string;
+  /** What it was admitted on; absent until admitted, and different from gpu_class only after an opt-in fallback (ADR-0010). */
+  placed_class?: string;
 }
 
 export interface CreateWorkload {

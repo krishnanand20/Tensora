@@ -131,7 +131,7 @@ sequenceDiagram
   participant K as Kubernetes (region)
   participant G as Inference gateway (region)
   U->>A: POST /v1/workloads {kind: endpoint, region, gpu_class, fallback: [cpu]}
-  A->>DB: lock quota row, check GPUs held, insert workload (pending, requested_class) + event
+  A->>DB: lock quota row, check GPUs held, insert workload (pending, region, gpu_class) + event
   A-->>U: 201 {state: pending}
   loop every 5s
     C->>DB: pending/queued workloads in my region, GPUs allocated
@@ -141,7 +141,7 @@ sequenceDiagram
     else busy past fallback_after (opted in)
       C->>K: apply tenant bundle + InferenceService on CPU
     end
-    C->>DB: pending → provisioning, placed_class recorded (+event)
+    C->>DB: placed_class recorded, pending → provisioning (+event), one transaction
     C->>K: observe InferenceService Ready?
     C->>DB: provisioning → running (+event); usage accounting starts
   end

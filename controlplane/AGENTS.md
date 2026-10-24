@@ -71,9 +71,9 @@ The [roadmap's Phase 1 task breakdown](../docs/roadmap.md#task-breakdown-the-sol
 has the full list. Until it lands:
 
 - **Profiles and agents (ADR-0012, ADR-0013):** don't assume Kubernetes, Postgres, or Linux outside their own packages. Everything above `cluster.Backend` and `store.Store` must work with the agent backend and SQLite.
-- **Regions (ADR-0009):** don't write code that assumes one region. New regional queries take a `region` parameter.
-- **Fallbacks (ADR-0010):** don't treat the requested class as the class that runs. Capacity, usage accounting, and display will use `placed_class`.
-- **Sharing (ADR-0014):** admission will need the machine's sharing level and the user's trust level, so keep placement logic in one place (the controller's admit step).
+- **Regions (ADR-0009):** don't write code that assumes one region. Every workload, machine, and usage record carries one; new regional queries take a `region` parameter.
+- **Fallbacks (ADR-0010):** don't treat the requested class (`gpu_class`) as the class that runs. Capacity, usage accounting, and display use `placed_class`, which the controller's `place` step records at admission. `service.Transition` refuses a metered state for an unplaced workload.
+- **Sharing (ADR-0014):** admission will need the machine's sharing level and the user's trust level, so keep placement logic in one place (the controller's admit step, which calls `place`).
 
 ## Commands
 

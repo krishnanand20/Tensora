@@ -40,10 +40,10 @@ func runClient(ctx context.Context, cmd string, args []string, stdout io.Writer)
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 		// tabwriter buffers: write errors surface from Flush below.
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tKIND\tSTATE\tGPUS\tUPDATED")
+		_, _ = fmt.Fprintln(tw, "ID\tNAME\tKIND\tSTATE\tGPUS\tREGION\tUPDATED")
 		for _, w := range ws {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d × %s\t%s\n", printable(w.ID), printable(w.Name), printable(w.Kind),
-				printable(w.State), w.GPUCount, printable(w.GPUClass), w.UpdatedAt.Format(time.RFC3339))
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d × %s\t%s\t%s\n", printable(w.ID), printable(w.Name), printable(w.Kind),
+				printable(w.State), w.GPUCount, printable(classShown(w)), printable(w.Region), w.UpdatedAt.Format(time.RFC3339))
 		}
 		return tw.Flush()
 
@@ -132,6 +132,15 @@ func writePrivate(path string, data []byte, replace bool) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// classShown is what a workload runs on: the placed class, saying so when it differs from the
+// class requested (an opt-in fallback, ADR-0010), or the requested class before it's admitted.
+func classShown(w client.Workload) string {
+	if w.PlacedClass == "" || w.PlacedClass == w.GPUClass {
+		return w.GPUClass
+	}
+	return w.PlacedClass + " (requested " + w.GPUClass + ")"
 }
 
 // printable is client.Printable, for the tables printed here.

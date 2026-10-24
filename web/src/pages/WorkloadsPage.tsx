@@ -4,7 +4,7 @@ import { Link } from "react-router";
 
 import { api } from "../api/client";
 import type { Workload } from "../api/types";
-import { type Action, availableActions, isSettling } from "../workloads";
+import { type Action, availableActions, classShown, isSettling } from "../workloads";
 
 const run: Record<Action, (id: string) => Promise<Workload>> = {
   stop: api.stopWorkload,
@@ -57,7 +57,8 @@ export function WorkloadsPage() {
                 <th>Name</th>
                 <th>Kind</th>
                 <th>State</th>
-                <th>GPUs</th>
+                <th>Runs on</th>
+                <th>Region</th>
                 <th>Created</th>
                 <th />
               </tr>
@@ -72,9 +73,8 @@ export function WorkloadsPage() {
                   <td>
                     <span className={`state state-${w.state}`}>{w.state}</span>
                   </td>
-                  <td>
-                    {w.gpu_count} × {w.gpu_class}
-                  </td>
+                  <td>{classShown(w)}</td>
+                  <td>{w.region}</td>
                   <td>{new Date(w.created_at).toLocaleString()}</td>
                   <td className="actions">
                     {availableActions(w.state).map((act) => (
