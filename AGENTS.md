@@ -18,6 +18,7 @@ students, developers, startups, small companies, enterprises, and big tech.
 - **Node agent** ([ADR-0013](docs/adr/0013-node-agent-and-apple-silicon.md)): runs on Linux and macOS (Apple Silicon), with drivers for Metal, NVIDIA, VMs, and containers.
 - **Free** ([ADR-0011](docs/adr/0011-free-for-everyone.md)): there is no pricing or billing anywhere, only usage accounting for quotas and fairness.
 - **Sharing** ([ADR-0014](docs/adr/0014-sharing-idle-compute.md)): private by default, then invite-only, or community pools.
+- **Transparent** ([ADR-0015](docs/adr/0015-logs-and-transparency.md)): detailed logs anyone can read and export in full, from the CLI, dashboard, or API. Nothing is hidden except secrets.
 
 **Design assumption:** the person using a machine may not be its owner. Protect hosts from guests and
 guests from each other, and be honest that hosts can see guest data. See
@@ -39,6 +40,7 @@ guests from each other, and be honest that hosts can see guest data. See
 
 Run from the repo root (`make help` lists everything):
 
+- `make doctor` — check that the required tools (Go, uv, Node) are installed; `make setup` runs it first
 - `make setup` — install dev dependencies for all components
 - `make dev` — **all-in-one local stack**: API + controller + usage accounting in one process, in-memory store, fake backend, seeded tenants. No GPU, Kubernetes, or Docker needed. Runs on macOS and Linux. API on `:8080`.
 - `make web-dev` — dashboard on `:5173`, proxied to the local API
@@ -47,6 +49,10 @@ Run from the repo root (`make help` lists everything):
 - `make build-all` — cross-compile `tensora` for linux/amd64, linux/arm64, and darwin/arm64
 - `make fmt` — auto-format everything
 - `make deploy-check` — render the Datacenter charts and validate with kubeconform (no cluster needed)
+
+The `tensora` binary is also a CLI client for a running API: `tensora workloads [-all]`, `tensora events <id>`,
+`tensora export <id>` ([logs and transparency](docs/architecture/logs-and-transparency.md)). For full
+server logs, set `TENSORA_LOG_LEVEL=debug` and `TENSORA_LOG_FILE=<path>`.
 
 **Before saying a task is done:** run the lint and test targets for every component you
 touched and report the actual output. If a tool is missing, say so — do not claim success.
@@ -66,13 +72,14 @@ touched and report the actual output. If a tool is missing, say so — do not cl
 11. **Cross-platform:** `controlplane/` must build and run on linux/amd64, linux/arm64, and darwin/arm64 (`make build-all`). OS-specific code lives only behind build tags in driver packages. No Linux-only assumptions anywhere else.
 12. **Free for everyone:** no pricing, payment, invoice, paid-tier, or paywall logic in code, UI, or docs ([ADR-0011](docs/adr/0011-free-for-everyone.md)).
 13. **Hosts are protected:** sharing is opt-in per machine. Guest workloads never get the host's files or LAN, and community workloads get no internet by default ([ADR-0014](docs/adr/0014-sharing-idle-compute.md)). *Not in code yet.*
+14. **Nothing is hidden from its owner** ([ADR-0015](docs/adr/0015-logs-and-transparency.md)). Every decision about a workload (admission, queueing, placement, fallback, failure, retry) is recorded in its timeline with a human-readable reason from a fixed vocabulary, never raw runtime text. Exports are complete. Only secrets are redacted, and every redaction is listed in the export. Logs never cross tenants.
 
 ## Conventions
 
 - **Go:** `gofmt`/`goimports`; `context.Context` first parameter; wrap errors with `fmt.Errorf("...: %w", err)`; domain errors from `internal/domain/errors.go`; table-driven tests; no package-level mutable state; everything under `internal/`. CGO-free, so cross-compiles stay trivial.
 - **Python (ml/):** type hints everywhere (mypy strict), ruff, pytest. Heavy deps (`torch`, `mlx`) are optional extras and imported lazily.
 - **TypeScript (web/):** strict mode; API types in `web/src/api/types.ts` mirror the Go JSON shapes — update both together.
-- **API:** JSON over HTTP, versioned under `/v1`. Errors are `{"error": {"code", "message"}}`. Responses never expose runtime internals (node names, object names, IPs, host paths).
+- **API:** JSON over HTTP, versioned under `/v1`. Errors are `{"error": {"code", "message", "request_id"}}`, and every response carries a server-generated `X-Request-ID`; log it with every request-scoped line. Responses never expose runtime internals (node names, object names, IPs, host paths).
 - **Config:** environment variables prefixed `TENSORA_` (see `.env.example`). No secrets in code, values files, tests, or docs.
 - **Kubernetes/Helm (Datacenter):** pin every chart and image version; never `latest`.
 - **Words:** say *user*, not *customer*; *usage accounting*, not *billing*. There's nothing to buy.
@@ -100,5 +107,6 @@ Step-by-step playbooks live in `docs/playbooks/` (Claude Code exposes them as sk
 
 - What we're building, for whom, and the milestone scope: [docs/product/product-spec.md](docs/product/product-spec.md). Check new features against its milestone tables before building.
 - Current phase, the next task breakdown, and open decisions: [docs/roadmap.md](docs/roadmap.md)
-- Why things are the way they are: [docs/adr/](docs/adr/README.md). Read ADRs 0011–0014 first.
+- Why things are the way they are: [docs/adr/](docs/adr/README.md). Read ADRs 0011–0015 first.
+- Logs: what's recorded, who can see it, and how to export it: [docs/architecture/logs-and-transparency.md](docs/architecture/logs-and-transparency.md)
 - Terms (Metal, MIG, VFIO, node agent, profile, pool, …): [docs/glossary.md](docs/glossary.md)

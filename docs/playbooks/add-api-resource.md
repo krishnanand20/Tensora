@@ -36,6 +36,7 @@ Add `internal/service/<resource>.go`:
 - an input struct with JSON tags and a `validate()` method: lengths, character sets, URI schemes, no control characters
 - methods that take `domain.Principal` and use `withTenant` or `withWorkload`-style helpers
 - expected failures returned as `domain.Errorf(code, …)`
+- a specific, human-readable reason for every state change or decision (rule 14), written by you, never copied from a runtime message or error. If the resource takes inputs that can hold secrets, redact them wherever they're exported, and list each redaction.
 
 ## 5. API
 
@@ -53,7 +54,9 @@ Add `internal/service/<resource>.go`:
 ## 7. Dashboard and docs
 
 - Update `web/src/api/types.ts` and `web/src/api/client.ts`, plus a page or component if the resource is user-facing.
-- Update [control-plane.md](../architecture/control-plane.md) (lifecycle, API table) and `controlplane/README.md` (endpoint list).
+- Update [control-plane.md](../architecture/control-plane.md) (lifecycle, API conventions) and `controlplane/README.md` (endpoint list).
+- If users need it from a terminal, add a method to `internal/client` and a command to `cmd/tensora/client.go`, with a test against the real API.
+- If it has history users should see, make it readable and exportable ([logs and transparency](../architecture/logs-and-transparency.md)).
 
 ## 8. Verify
 

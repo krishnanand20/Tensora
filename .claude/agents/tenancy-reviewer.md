@@ -1,6 +1,6 @@
 ---
 name: tenancy-reviewer
-description: Reviews changes for multi-tenant isolation, host safety, cross-tenant data leaks, usage-accounting bugs, region leaks, hidden fallbacks, and anything that adds pricing. Use proactively after any change to controlplane/internal/{api,service,store,cluster,controller,metering}, agent or driver code, ml/src/tensora_ml/validate.py, or isolation-sensitive files in deploy/.
+description: Reviews changes for multi-tenant isolation, host safety, cross-tenant data leaks, usage-accounting bugs, region leaks, hidden fallbacks, log and export leaks or silent omissions, and anything that adds pricing. Use proactively after any change to controlplane/internal/{api,service,store,cluster,controller,metering}, agent or driver code, ml/src/tensora_ml/validate.py, or isolation-sensitive files in deploy/.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -18,7 +18,7 @@ trust matrix. Do not edit files. Report findings only.
 - Every tenant-scoped `store.Queries` method filters by `tenantID`, in **every** store implementation (memstore, pgstore, and sqlitestore when it exists).
 - System-wide methods (`WorkloadsInStates`, `GPUsAllocated`, `WorkloadsForMetering`) are called only from the controller or usage accounting, never from request paths.
 - Cross-tenant access returns **404**, and new endpoints have a cross-tenant test.
-- Responses don't leak internals: node or machine hostnames, object names, IPs, host paths, `tenant_id`, `params`, or other users' data.
+- Responses don't leak internals: node or machine hostnames, object names, IPs, host paths, `tenant_id`, or other users' data. Workload views don't return `params`. The export is the one place they appear, to their owner, after `redactParams`.
 - Input is validated (lengths, control characters, URI schemes). JSON decoding rejects unknown fields.
 
 **Trust matrix and host safety**
@@ -45,6 +45,17 @@ trust matrix. Do not edit files. Report findings only.
 - Regional code filters by region. Data never leaves its region without explicit opt-in.
 - Every fallback is opt-in, recorded (`placed_class`, response headers), and accounted as what actually ran.
 - Gateway failover only goes to the same tenant's resources or to shared pools, never to another tenant's.
+
+**Logs and transparency** (rule 14, ADR-0015)
+- Timelines, exports, and (planned) output and activity logs are tenant-scoped (404 across tenants), including for deleted workloads (`GetWorkloadHistory`).
+- Secrets never reach an export, a log line, or an error body. Every redaction is listed in `redactions`, and nothing else is dropped silently.
+- Controller decisions record a specific reason, not a bare state name, and retried failures get a note (`service.Note`), not just an operator log line. A new field a user supplied appears in the export.
+- Reasons come from a fixed vocabulary. Raw runtime messages and errors (Kubernetes, KServe, agents) never reach a reason: they name internal objects, show other tenants' activity, or echo credentials. Only trusted tenants see free-capacity counts.
+- Request paths read events through tenant-scoped store methods (`EventsForWorkload`), never the system-wide `Events`.
+- Redaction fails closed: anything unparseable where credentials could hide is redacted and listed, including passwords that a URL parser reads as a port, path, query, or fragment. Errors written to logs go through `service.RedactSecrets`.
+- A runtime that can't be reached (Observe or Capacity errors) leaves one note per workload, and a provisioning workload still times out. Metering ignores notes (`from == to`).
+- 500s return only a generic message and `request_id`, and the full error goes to the server log. The server always generates request IDs; a caller's `X-Request-ID` is only logged as `client_request_id`. Request log lines carry tenant and subject.
+- Files the CLI writes are `0600`: exports never replace an existing file without `-f` and never use a server-chosen name of an unexpected shape. `TENSORA_LOG_FILE` is never chmodded; a file others can read, a symlink, or a file swapped during open is refused. The CLI never sends a token over plain HTTP to another machine unless explicitly allowed, never follows redirects, and makes server error text printable.
 
 **Free** (rule 12)
 - Nothing introduces pricing, payments, paid tiers, or feature gates.

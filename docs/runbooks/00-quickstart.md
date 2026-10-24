@@ -47,6 +47,20 @@ tensora up
 
 3. **VM** (Phase 2): Launch → GPU VM.
 
+## See what happened
+
+Every workload keeps a full timeline: each state change, when, why, and by whom. Open the workload in
+the dashboard and click **Download full log** to save everything about it, or use the CLI:
+
+```bash
+tensora events <id>      # the timeline
+tensora export <id>      # a complete copy, as JSON
+tensora workloads -all   # deleted workloads too: their history stays available
+```
+
+If something fails, the error shows a request ID. It points to the exact lines in the log
+(`TENSORA_LOG_LEVEL=debug` for more detail). See [logs and transparency](../architecture/logs-and-transparency.md).
+
 ## Keep it private
 
 `tensora up` listens only on localhost, and your machine is **private** until you choose otherwise.
@@ -59,6 +73,16 @@ The development stack runs on macOS (Apple Silicon) and Linux. It uses a fake ba
 actually runs on your GPU yet:
 
 ```bash
+brew install go uv node       # on a Mac, if `make doctor` reports them missing
 make setup && make dev        # API on :8080
 make web-dev                  # dashboard on :5173
+```
+
+The CLI's read commands work today against `make dev`:
+
+```bash
+cd controlplane && go build -o bin/tensora ./cmd/tensora
+TENSORA_DEV_TENANT=acme bin/tensora workloads
+TENSORA_DEV_TENANT=acme bin/tensora events <id>
+TENSORA_DEV_TENANT=acme bin/tensora export <id>
 ```

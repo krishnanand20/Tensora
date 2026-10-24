@@ -2,6 +2,7 @@
 
 | Term | Meaning |
 |---|---|
+| **Activity log** | (Planned) per tenant: every API action by every user, with its request ID. An audit log. Tenant admins can read and export it (ADR-0015). |
 | **Admission** | The controller's decision to place a pending or queued workload onto free capacity |
 | **Agent (node agent)** | `tensora agent`: runs on each machine (Linux or macOS), dials out to the control plane, reports inventory, and runs workloads through drivers (ADR-0013) |
 | **Allocation (usage accounting)** | Time a resource is reserved for a workload in a metered state, whatever its utilization. Used for quotas and fairness, never money (ADR-0011). |
@@ -13,6 +14,7 @@
 | **DataSource** | A CDI object naming a "golden" disk that VM disks are cloned from (Datacenter) |
 | **DCGM** | NVIDIA Data Center GPU Manager. Its exporter publishes GPU metrics. |
 | **Driver** | The part of the agent that runs one kind of workload on one OS, for example `macos-native`, `macos-vz`, `docker`, or `libvirt` |
+| **Export (workload export)** | One JSON file (`tensora.workload-export/v1`) with everything recorded about a workload: inputs, timeline, usage, and redactions. `tensora export <id>`, or **Download full log** in the dashboard (ADR-0015). |
 | **Fallback** | An opt-in substitute (another GPU class, CPU, machine, replica, model, or region) used when the requested one is unavailable (ADR-0010) |
 | **Gateway API** | The Kubernetes ingress API that succeeds Ingress (Datacenter) |
 | **GGUF** | A code-free model file format used by llama.cpp. Allowed once the validator checks it (ADR-0013). |
@@ -28,8 +30,8 @@
 | **KubeVirt** | Runs VMs as Kubernetes objects (`VirtualMachine`) (Datacenter) |
 | **Managed inference** | A host runs a catalog model server with validated weights, and users only send prompts. The safe way for untrusted users to use a Mac. |
 | **Metal** | Apple's GPU API, used by MLX, llama.cpp, and PyTorch's MPS backend |
-| **Metered** | The workload states whose time is counted by usage accounting (`running`) |
 | **MetalLB** | Gives bare-metal clusters LoadBalancer IPs (Datacenter) |
+| **Metered** | The workload states whose time is counted by usage accounting (`running`) |
 | **MIG** | Multi-Instance GPU: hardware partitioning of A100, H100, and later cards |
 | **MLX** | Apple's array framework for machine learning on Apple Silicon. Uses safetensors weights. |
 | **Operator** | Whoever runs a Tensora control plane: an individual, a team, a company, or a pool operator |
@@ -40,12 +42,15 @@
 | **Profile** | One of three ways to deploy the same product: **Solo**, **Lab**, or **Datacenter** (ADR-0012) |
 | **PSA** | Pod Security Admission: per-namespace `privileged`, `baseline`, or `restricted` enforcement (Datacenter) |
 | **Reconcile** | One controller pass that makes the runtime match intent: admit, observe, park, remove |
+| **Redaction** | Replacing a secret (a password or token, for example inside a model URI) with `REDACTED` in an export. Every redaction is listed in the export, so nothing is removed silently. |
 | **Region** | One location (a home, an office, a datacenter) within a deployment. Every workload lives in exactly one, and Solo has one called `local` (ADR-0009). |
+| **Request ID** | An ID the server generates for every request, returned in `X-Request-ID` and in error bodies (`request_id`). The same ID is on every log line for that request, with the tenant and subject, so an operator can find exactly what happened and check whose request it was. |
 | **safetensors** | A tensor file format that can't execute code when loaded, unlike pickle-based `.bin` and `.pt` files |
 | **Sharing level** | Per machine: **private** (default), **invite-only**, or **community** (ADR-0014) |
 | **Store** | Where business state lives: SQLite (Solo and small Labs) or Postgres |
 | **Tenant** | A user or organization account. In a datacenter its objects live in namespace `t-<slug>`. |
 | **Time-slicing** | Several processes sharing one GPU with no memory isolation. Never used between different users. |
+| **Timeline** | A workload's complete list of state changes and notes, each with a time and a human-readable reason (`workload_events`). A **note** records a decision that leaves the state as it was, such as a retry. `tensora events <id>` (ADR-0015). |
 | **Trust level** | Owner, invited, or community. Decides which drivers may run a user's workloads (the trust matrix). |
 | **Unified memory** | On Apple Silicon, RAM shared by the CPU and GPU. macOS caps the GPU's share by default. |
 | **Usage accounting** | Recording who used how much compute, for quotas, fair share, and reports. Never billing. |

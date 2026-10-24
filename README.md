@@ -19,6 +19,10 @@ students, developers, startups, small companies, enterprises, and big tech.
 
 If the GPU you want is busy, opt-in fallbacks run your workload on another GPU, on CPU, or on another machine.
 
+**Nothing is hidden.** Every workload keeps a detailed timeline of what happened and why. You can read it in
+the CLI or dashboard and download a complete copy. Only secrets are redacted, and the export lists each one
+([logs and transparency](docs/architecture/logs-and-transparency.md)).
+
 ## Three ways to deploy, one product
 
 | Profile | For | Install |
@@ -62,9 +66,10 @@ docs/           Product spec, architecture, ADRs, roadmap, runbooks, playbooks, 
 
 ## Try it today (no GPU needed; runs on macOS and Linux)
 
-Prerequisites: Go 1.27+, [uv](https://docs.astral.sh/uv/), and Node 22+.
+Prerequisites: Go 1.27+, [uv](https://docs.astral.sh/uv/), and Node 22+. On a Mac: `brew install go uv node`.
 
 ```bash
+make doctor     # checks the prerequisites and tells you what to install
 make setup      # install dev dependencies for all components
 make dev        # API, controller, and usage accounting in one process, with an in-memory store and a fake backend
 make web-dev    # dashboard on http://localhost:5173 (in a second terminal)
@@ -78,15 +83,27 @@ curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' -H 'Content-Type: ap
 curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' | jq   # pending → provisioning → running
 ```
 
+The same binary is a CLI client. In a third terminal:
+
+```bash
+cd controlplane && go build -o bin/tensora ./cmd/tensora
+export TENSORA_DEV_TENANT=acme              # dev mode; TENSORA_API_URL defaults to http://127.0.0.1:8080
+bin/tensora workloads                      # your workloads (-all includes deleted ones)
+bin/tensora events <id>                    # full timeline: every state change and note, when, why, and by whom
+bin/tensora export <id>                    # download everything recorded about it to a JSON file
+```
+
+For full server logs, run `make dev TENSORA_LOG_LEVEL=debug TENSORA_LOG_FILE=$PWD/tensora.log`.
+
 `make build-all` cross-compiles the binary for macOS (Apple Silicon), Linux amd64, and Linux arm64.
 
 ## Status
 
 | | Built | Planned |
 |---|---|---|
-| Control plane | API, lifecycle, quotas, controller, usage accounting, Postgres and in-memory stores, Kubernetes backend | SQLite store, node agent and drivers, `tensora up`, local accounts, regions, fallbacks, sharing |
+| Control plane | API, lifecycle, quotas, controller, usage accounting, Postgres and in-memory stores, Kubernetes backend, timeline and log export, CLI client | SQLite store, node agent and drivers, `tensora up`, local accounts, regions, fallbacks, sharing, workload output logs, activity log |
 | ML layer | Model validator (safetensors), ingestion, benchmarking, CUDA burn-in | GGUF validation, Metal burn-in |
-| Dashboard | Workload list, launch form | Machines, sharing, usage reports, embedded in the binary |
+| Dashboard | Workload list, launch form, workload timeline and full-log download | Machines, sharing, usage reports, embedded in the binary |
 | Datacenter | Charts, add-ons, Ansible, runbooks (rendered and linted, not yet run on hardware) | Production validation |
 
 The full plan is in the [roadmap](docs/roadmap.md). Your Mac is enough hardware for Phases 1–2.

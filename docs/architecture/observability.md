@@ -7,7 +7,9 @@
 | Machine health: online, CPU, RAM, disk, temperature where available | Agent heartbeat | Planned (Phase 1–2) |
 | NVIDIA GPU use and memory | NVML, through the agent | Planned |
 | Apple GPU use and unified memory | macOS IOKit, through the agent (no root needed) | Planned (approach to validate) |
-| Workload logs | The agent streams the driver's logs to the dashboard, to the workload's owner only | Planned |
+| Workload timeline | Every state change and note with its reason; readable and exportable by the owner ([logs and transparency](logs-and-transparency.md)) | **Built** |
+| Workload output logs | The agent ships the driver's stdout and stderr to the control plane, for the workload's owner only | Planned (Phase 1) |
+| Control plane logs | `slog` to stderr; `TENSORA_LOG_LEVEL=debug` for detail and `TENSORA_LOG_FILE` for a complete copy on disk; `request_id` on every request line | **Built** |
 | Alerts | Dashboard notifications: machine offline, disk nearly full, workload failed | Planned (Phase 2) |
 | Prometheus | `/metrics` on the control plane and agents, for people who already run Prometheus | Planned (Phase 3) |
 
@@ -43,5 +45,5 @@ Each region runs its own stack, so logs stay in-region. A central Grafana can qu
 
 Workload logs are **user data** in every profile.
 
-- **Visibility:** only the workload's owner sees them in the dashboard. In a datacenter, Loki access is limited to on-call staff for operational reasons, and audited. Retention is 14 days (`loki.yaml`).
+- **Visibility:** only the workload's owner sees them in the dashboard, CLI, and export ([logs and transparency](logs-and-transparency.md)). Another tenant gets 404. In a datacenter, Loki access is limited to on-call staff for operational reasons, and audited. Retention is 14 days (`loki.yaml`).
 - **Never collected:** logs from inside VMs, and anything from guest workloads on community hosts beyond the driver's own status lines.

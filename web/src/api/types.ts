@@ -58,6 +58,16 @@ export interface List<T> {
   items: T[];
 }
 
+/** One entry in a workload's timeline: a state change, or a note when `from` equals `to` (ADR-0015). */
+export interface WorkloadEvent {
+  id: number;
+  from?: WorkloadState;
+  to: WorkloadState;
+  reason: string;
+  at: string;
+}
+
 export interface ApiErrorBody {
-  error: { code: string; message: string };
+  /** request_id matches the X-Request-ID header and the operator's log lines. */
+  error: { code: string; message: string; request_id?: string };
 }

@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -29,30 +31,49 @@ import (
 	"github.com/tensora/tensora/controlplane/internal/store/pgstore"
 )
 
-const usage = `tensora — Tensora control plane
+const usage = `tensora — free, self-hosted GPU cloud
 
-Usage: tensora <command>
+Usage: tensora <command> [arguments]
 
-Commands:
+Server commands:
   api         serve the REST API
-  controller  reconcile workloads between Postgres and Kubernetes
-  metering    turn workload events into hourly usage records
+  controller  reconcile workloads with the runtime (Kubernetes today; node agents planned)
+  metering    usage accounting: turn workload events into hourly usage records (no money)
   migrate     apply database migrations to TENSORA_DATABASE_URL
   seed        create dev tenants and quotas (TENSORA_ENV=dev only)
   dev         api + controller + metering in one process with seeded data;
               uses an in-memory store unless TENSORA_DATABASE_URL is set
 
-Configuration is read from TENSORA_* environment variables (see .env.example).
+Client commands (talk to a running API):
+  workloads             list your workloads
+  events <id> [-json]   show a workload's complete timeline: every state change, when, and why
+  export <id> [-o file] download everything recorded about a workload as one JSON file
+                        (default file name comes from the server; -o - writes to stdout)
+
+Server configuration: TENSORA_* environment variables (see .env.example). Set TENSORA_LOG_LEVEL=debug
+for detailed logs and TENSORA_LOG_FILE=path to keep a complete copy on disk.
+Client configuration: TENSORA_API_URL (default http://127.0.0.1:8080), and TENSORA_TOKEN (bearer)
+or TENSORA_DEV_TENANT (dev mode).
 `
 
 func main() {
-	if len(os.Args) != 2 || os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help" {
+	if len(os.Args) < 2 || os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help" {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	cmd, args := os.Args[1], os.Args[2:]
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, os.Args[1]); err != nil {
+	var err error
+	switch {
+	case isClientCommand(cmd):
+		err = runClient(ctx, cmd, args, os.Stdout)
+	case len(args) > 0:
+		err = fmt.Errorf("%s takes no arguments (see tensora help)", cmd)
+	default:
+		err = run(ctx, cmd)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "tensora:", err)
 		os.Exit(1)
 	}
@@ -63,7 +84,11 @@ func run(ctx context.Context, cmd string) error {
 	if err != nil {
 		return err
 	}
-	log := newLogger(cfg)
+	log, closeLog, err := newLogger(cfg)
+	if err != nil {
+		return err
+	}
+	defer closeLog()
 
 	if cmd == "migrate" {
 		if cfg.DatabaseURL == "" {
@@ -121,12 +146,56 @@ func run(ctx context.Context, cmd string) error {
 	return fmt.Errorf("unknown command %q (see tensora help)", cmd)
 }
 
-func newLogger(cfg config.Config) *slog.Logger {
+// newLogger writes to stderr and, if TENSORA_LOG_FILE is set, a complete copy to that file
+// (appended, readable by the owner only). Nothing is sampled or dropped.
+func newLogger(cfg config.Config) (*slog.Logger, func(), error) {
+	var out io.Writer = os.Stderr
+	closeFn := func() {}
+	if cfg.LogFile != "" {
+		f, err := openLogFile(cfg.LogFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open TENSORA_LOG_FILE: %w", err)
+		}
+		out = io.MultiWriter(os.Stderr, f)
+		closeFn = func() { _ = f.Close() }
+	}
 	opts := &slog.HandlerOptions{Level: cfg.LogLevel}
 	if cfg.Env == "dev" {
-		return slog.New(slog.NewTextHandler(os.Stderr, opts))
+		return slog.New(slog.NewTextHandler(out, opts)), closeFn, nil
 	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	return slog.New(slog.NewJSONHandler(out, opts)), closeFn, nil
+}
+
+// openLogFile appends to path, which must be readable by its owner only. It never changes a file's
+// permissions, so a link swapped in by someone else can't redirect a chmod. A new file is created
+// 0600; an existing file that others can read is refused with the fix. Symlinks, devices, and a
+// file replaced while it was being opened are refused too.
+func openLogFile(path string) (*os.File, error) {
+	path = filepath.Clean(path)
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file, not a symlink or device", path)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err == nil {
+		var now os.FileInfo
+		now, err = os.Lstat(path)
+		switch {
+		case err != nil:
+		case !now.Mode().IsRegular() || !os.SameFile(opened, now):
+			err = fmt.Errorf("%s changed while it was being opened", path)
+		case opened.Mode().Perm()&0o077 != 0:
+			err = fmt.Errorf("%s can be read by other users (mode %v); run: chmod 600 %s", path, opened.Mode().Perm(), path)
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 func openStore(ctx context.Context, cfg config.Config, allowMemory bool) (store.Store, error) {

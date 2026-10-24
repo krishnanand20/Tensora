@@ -21,6 +21,9 @@ func MeteredIntervals(events []domain.Event, until time.Time) []Interval {
 		if !e.At.Before(until) {
 			break
 		}
+		if e.From == e.To {
+			continue // a note: never a state change, even if it was written against a stale state
+		}
 		switch metered := e.To.Metered(); {
 		case metered && !open:
 			start, open = e.At, true

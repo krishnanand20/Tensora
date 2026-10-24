@@ -16,6 +16,8 @@ type Config struct {
 	Env      string // dev | staging | production
 	HTTPAddr string
 	LogLevel slog.Level
+	// LogFile, if set, receives a complete copy of every log line (in addition to stderr).
+	LogFile string
 
 	DatabaseURL string // empty → in-memory store (dev only)
 	CatalogPath string
@@ -49,6 +51,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	c := Config{
 		Env:                   get("ENV", "dev"),
 		HTTPAddr:              get("HTTP_ADDR", "127.0.0.1:8080"),
+		LogFile:               get("LOG_FILE", ""),
 		DatabaseURL:           get("DATABASE_URL", ""),
 		CatalogPath:           get("CATALOG_PATH", "../images/catalog.yaml"),
 		AuthMode:              get("AUTH_MODE", "dev"),

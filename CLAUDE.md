@@ -13,6 +13,7 @@
     - usage-accounting bugs
     - data leaving its region (rule 9) and hidden fallbacks (rule 10)
     - anything that adds pricing or paywalls (rule 12)
+    - logs or exports that leak across tenants, leak secrets, or silently drop data (rule 14)
   - `platform-reviewer` — run after changes to `deploy/` or `infra/` (the Datacenter profile), or to packaging and service files. Checks pinning, secrets, ordering, cross-platform builds, and blast radius.
 - **Permissions** (`.claude/settings.json`): secret files are denied, and cluster-mutating commands
   require explicit approval. Personal overrides go in `.claude/settings.local.json` (gitignored).

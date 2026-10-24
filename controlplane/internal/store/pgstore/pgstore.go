@@ -42,12 +42,16 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 func (s *Store) Close()                         { s.pool.Close() }
 
 // Migrate applies pending migrations and returns how many ran.
-func Migrate(ctx context.Context, url string) (int, error) {
+func Migrate(ctx context.Context, url string) (applied int, err error) {
 	db, err := sql.Open("pgx", url)
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+	defer func() {
+		if cerr := db.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close migration connection: %w", cerr)
+		}
+	}()
 	p, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
 	if err != nil {
 		return 0, fmt.Errorf("load migrations: %w", err)
@@ -190,9 +194,20 @@ func (q *queries) GetWorkload(ctx context.Context, tenantID, id uuid.UUID) (doma
 	return w, mapErr(err, "workload")
 }
 
+func (q *queries) GetWorkloadHistory(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error) {
+	w, err := scanWorkload(q.db.QueryRow(ctx, `SELECT `+workloadCols+` FROM workloads
+		WHERE id = $1 AND tenant_id = $2`, id, tenantID))
+	return w, mapErr(err, "workload")
+}
+
 func (q *queries) ListWorkloads(ctx context.Context, tenantID uuid.UUID) ([]domain.Workload, error) {
 	return q.collectWorkloads(ctx, `SELECT `+workloadCols+` FROM workloads
 		WHERE tenant_id = $1 AND state <> 'deleted' ORDER BY created_at, id`, tenantID)
+}
+
+func (q *queries) ListWorkloadHistory(ctx context.Context, tenantID uuid.UUID) ([]domain.Workload, error) {
+	return q.collectWorkloads(ctx, `SELECT `+workloadCols+` FROM workloads
+		WHERE tenant_id = $1 ORDER BY created_at, id`, tenantID)
 }
 
 func (q *queries) UpdateWorkloadState(ctx context.Context, id uuid.UUID, from, to domain.State, at time.Time) error {
@@ -250,8 +265,18 @@ func (q *queries) AppendEvent(ctx context.Context, e domain.Event) error {
 }
 
 func (q *queries) Events(ctx context.Context, workloadID uuid.UUID) ([]domain.Event, error) {
-	rows, err := q.db.Query(ctx, `SELECT id, workload_id, COALESCE(from_state, ''), to_state, reason, at
+	return q.collectEvents(ctx, `SELECT id, workload_id, COALESCE(from_state, ''), to_state, reason, at
 		FROM workload_events WHERE workload_id = $1 ORDER BY at, id`, workloadID)
+}
+
+func (q *queries) EventsForWorkload(ctx context.Context, tenantID, workloadID uuid.UUID) ([]domain.Event, error) {
+	return q.collectEvents(ctx, `SELECT e.id, e.workload_id, COALESCE(e.from_state, ''), e.to_state, e.reason, e.at
+		FROM workload_events e JOIN workloads w ON w.id = e.workload_id AND w.tenant_id = $2
+		WHERE e.workload_id = $1 ORDER BY e.at, e.id`, workloadID, tenantID)
+}
+
+func (q *queries) collectEvents(ctx context.Context, sql string, args ...any) ([]domain.Event, error) {
+	rows, err := q.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -275,10 +300,10 @@ func (q *queries) InsertUsageIfAbsent(ctx context.Context, r domain.UsageRecord)
 	return tag.RowsAffected() == 1, nil
 }
 
-func (q *queries) Usage(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.UsageRecord, error) {
-	rows, err := q.db.Query(ctx, `SELECT workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds
-		FROM usage_records WHERE tenant_id = $1 AND period_start >= $2 AND period_start < $3
-		ORDER BY period_start, workload_id`, tenantID, from, to)
+const usageCols = `workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds`
+
+func (q *queries) collectUsage(ctx context.Context, sql string, args ...any) ([]domain.UsageRecord, error) {
+	rows, err := q.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -287,4 +312,15 @@ func (q *queries) Usage(ctx context.Context, tenantID uuid.UUID, from, to time.T
 		err := r.Scan(&u.WorkloadID, &u.PeriodStart, &u.TenantID, &u.GPUClass, &u.GPUCount, &u.Seconds)
 		return u, err
 	})
+}
+
+func (q *queries) Usage(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.UsageRecord, error) {
+	return q.collectUsage(ctx, `SELECT `+usageCols+` FROM usage_records
+		WHERE tenant_id = $1 AND period_start >= $2 AND period_start < $3
+		ORDER BY period_start, workload_id`, tenantID, from, to)
+}
+
+func (q *queries) UsageForWorkload(ctx context.Context, tenantID, workloadID uuid.UUID) ([]domain.UsageRecord, error) {
+	return q.collectUsage(ctx, `SELECT `+usageCols+` FROM usage_records
+		WHERE tenant_id = $1 AND workload_id = $2 ORDER BY period_start`, tenantID, workloadID)
 }

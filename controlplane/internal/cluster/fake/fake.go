@@ -15,10 +15,13 @@ import (
 )
 
 type Backend struct {
-	mu        sync.Mutex
-	capacity  map[string]int
-	running   map[uuid.UUID]bool // workload → desired running
-	overrides map[uuid.UUID]cluster.Observed
+	mu          sync.Mutex
+	capacity    map[string]int
+	running     map[uuid.UUID]bool // workload → desired running
+	overrides   map[uuid.UUID]cluster.Observed
+	applyErr    error
+	observeErr  error
+	capacityErr error
 }
 
 func New(capacity map[string]int) *Backend {
@@ -36,15 +39,43 @@ func (b *Backend) SetObserved(id uuid.UUID, o cluster.Observed) {
 	b.overrides[id] = o
 }
 
+// FailApply makes every Apply fail with err (nil restores normal behavior), to simulate a runtime
+// that rejects or can't be reached.
+func (b *Backend) FailApply(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.applyErr = err
+}
+
+// FailObserve makes every Observe fail with err (nil restores normal behavior).
+func (b *Backend) FailObserve(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.observeErr = err
+}
+
+// FailCapacity makes Capacity fail with err (nil restores normal behavior).
+func (b *Backend) FailCapacity(err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.capacityErr = err
+}
+
 func (b *Backend) Capacity(context.Context) (map[string]int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.capacityErr != nil {
+		return nil, b.capacityErr
+	}
 	return maps.Clone(b.capacity), nil
 }
 
 func (b *Backend) Apply(_ context.Context, objs []cluster.Manifest) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.applyErr != nil {
+		return b.applyErr
+	}
 	for _, o := range objs {
 		if err := cluster.CheckJSONTypes(o); err != nil {
 			return fmt.Errorf("fake apply %v: %w", o["kind"], err)
@@ -69,6 +100,9 @@ func (b *Backend) Apply(_ context.Context, objs []cluster.Manifest) error {
 func (b *Backend) Observe(_ context.Context, _ string, id uuid.UUID, _ domain.WorkloadKind) (cluster.Observed, string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.observeErr != nil {
+		return "", "", b.observeErr
+	}
 	if o, ok := b.overrides[id]; ok {
 		return o, "forced by test", nil
 	}

@@ -39,6 +39,29 @@ func TestMeteredIntervals(t *testing.T) {
 	}
 }
 
+// Notes are timeline entries without a state change (From == To); they never open or close an interval.
+func TestNotesDoNotChangeUsage(t *testing.T) {
+	note := func(minutes int, s domain.State) domain.Event {
+		return domain.Event{From: s, To: s, Reason: "note", At: at(minutes)}
+	}
+	events := []domain.Event{
+		ev(0, domain.StatePending), note(1, domain.StatePending), ev(2, domain.StateRunning),
+		note(30, domain.StateRunning), ev(62, domain.StateStopping), note(63, domain.StateStopping),
+	}
+	got := metering.MeteredIntervals(events, at(130))
+	if len(got) != 1 || !got[0].Start.Equal(at(2)) || !got[0].End.Equal(at(62)) {
+		t.Fatalf("got %v, want one interval 10:02–11:02", got)
+	}
+
+	// A note written against a stale state (running, after the workload moved to stopping) must
+	// not reopen metering.
+	stale := []domain.Event{ev(0, domain.StateRunning), ev(60, domain.StateStopping), note(61, domain.StateRunning)}
+	got = metering.MeteredIntervals(stale, at(130))
+	if len(got) != 1 || !got[0].End.Equal(at(60)) {
+		t.Fatalf("stale note reopened metering: %v", got)
+	}
+}
+
 func TestEventsAfterUntilAreIgnored(t *testing.T) {
 	got := metering.MeteredIntervals([]domain.Event{ev(70, domain.StateRunning)}, at(60))
 	if len(got) != 0 {

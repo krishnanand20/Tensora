@@ -39,7 +39,15 @@ type Queries interface {
 	// Workloads, tenant-scoped. Deleted workloads are invisible.
 	CreateWorkload(ctx context.Context, w domain.Workload) error
 	GetWorkload(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error)
+	// GetWorkloadHistory is GetWorkload including deleted workloads, so users can still read and
+	// export the full history of something they deleted (ADR-0015).
+	GetWorkloadHistory(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error)
 	ListWorkloads(ctx context.Context, tenantID uuid.UUID) ([]domain.Workload, error)
+	// ListWorkloadHistory is ListWorkloads including deleted workloads (ADR-0015).
+	ListWorkloadHistory(ctx context.Context, tenantID uuid.UUID) ([]domain.Workload, error)
+	// EventsForWorkload returns one workload's timeline, oldest first. Another tenant's workload
+	// yields no events; callers still check the workload exists first, so they can return 404.
+	EventsForWorkload(ctx context.Context, tenantID, workloadID uuid.UUID) ([]domain.Event, error)
 	// UpdateWorkloadState is a compare-and-swap: it fails with CodeConflict unless the
 	// workload is still in state from. Use service.Transition, not this, directly.
 	UpdateWorkloadState(ctx context.Context, id uuid.UUID, from, to domain.State, at time.Time) error
@@ -53,10 +61,13 @@ type Queries interface {
 
 	// Events (append-only) and usage.
 	AppendEvent(ctx context.Context, e domain.Event) error
+	// Events is system-wide (controller / metering only); request paths use EventsForWorkload.
 	Events(ctx context.Context, workloadID uuid.UUID) ([]domain.Event, error)
 	// InsertUsageIfAbsent writes r unless a record for (workload, period) exists; reports whether it wrote.
 	InsertUsageIfAbsent(ctx context.Context, r domain.UsageRecord) (bool, error)
 	Usage(ctx context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.UsageRecord, error)
+	// UsageForWorkload returns one workload's usage records, oldest first (tenant-scoped).
+	UsageForWorkload(ctx context.Context, tenantID, workloadID uuid.UUID) ([]domain.UsageRecord, error)
 }
 
 func NotFound(what string) error { return domain.Errorf(domain.CodeNotFound, "%s not found", what) }

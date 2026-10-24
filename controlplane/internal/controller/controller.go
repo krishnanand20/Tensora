@@ -18,6 +18,10 @@ import (
 	"github.com/tensora/tensora/controlplane/internal/store"
 )
 
+// errNotInCatalog marks a workload whose GPU class or image was removed from the catalog.
+// Retrying can't fix it; the message is safe to show the owner.
+var errNotInCatalog = errors.New("is no longer offered by this installation")
+
 type Options struct {
 	StorageClass          string
 	ImagesNamespace       string
@@ -48,7 +52,7 @@ func (c *Controller) Run(ctx context.Context, interval time.Duration) error {
 	defer ticker.Stop()
 	for {
 		if err := c.ReconcileOnce(ctx); err != nil {
-			c.log.Error("reconcile pass failed", "err", err)
+			c.log.Error("reconcile pass failed", "err", service.RedactSecrets(err.Error()))
 		}
 		select {
 		case <-ctx.Done():
@@ -82,22 +86,34 @@ func (c *Controller) admit(ctx context.Context) error {
 	}
 	capacity, err := c.backend.Capacity(ctx)
 	if err != nil {
+		for _, w := range waiting {
+			c.note(ctx, w, "couldn't check for free GPUs on the runtime; retrying. The operator's log has the details.")
+		}
 		return wrap("admit: capacity", err)
 	}
 	// FIFO with backfill: a large request at the head does not block smaller ones behind it.
 	// TODO(phase-3): add aging so large requests cannot starve.
 	for _, w := range waiting {
-		if capacity[w.GPUClass]-allocated[w.GPUClass] < w.GPUCount {
+		// Checked before capacity: a class that left the catalog has no capacity either, so the
+		// workload would otherwise wait forever under a misleading reason.
+		if _, _, err := c.catalogEntries(w); err != nil {
+			c.transition(ctx, w, domain.StateFailed, "can't start: "+err.Error())
+			continue
+		}
+		free := max(capacity[w.GPUClass]-allocated[w.GPUClass], 0)
+		c.log.Debug("admission check", "workload", w.ID, "gpu_class", w.GPUClass,
+			"requested", w.GPUCount, "capacity", capacity[w.GPUClass], "allocated", allocated[w.GPUClass])
+		if free < w.GPUCount {
 			if w.State == domain.StatePending {
-				c.transition(ctx, w, domain.StateQueued, "waiting for GPU capacity")
+				c.transition(ctx, w, domain.StateQueued, c.waitingReason(ctx, w, free))
 			}
 			continue
 		}
 		if err := c.provision(ctx, w); err != nil {
-			c.log.Error("provision failed", "workload", w.ID, "err", err)
+			c.retryLater(ctx, w, "start it on the runtime", err)
 			continue
 		}
-		if c.transition(ctx, w, domain.StateProvisioning, "admitted") {
+		if c.transition(ctx, w, domain.StateProvisioning, fmt.Sprintf("admitted: %d × %s", w.GPUCount, w.GPUClass)) {
 			allocated[w.GPUClass] += w.GPUCount
 		}
 	}
@@ -112,13 +128,20 @@ func (c *Controller) observe(ctx context.Context) error {
 	}
 	for _, w := range ws {
 		ns, err := c.namespace(ctx, w)
-		if err != nil {
-			c.log.Error("observe", "workload", w.ID, "err", err)
-			continue
+		var obs cluster.Observed
+		var reason string
+		if err == nil {
+			obs, reason, err = c.backend.Observe(ctx, ns, w.ID, w.Kind)
 		}
-		obs, reason, err := c.backend.Observe(ctx, ns, w.ID, w.Kind)
 		if err != nil {
-			c.log.Error("observe", "workload", w.ID, "err", err)
+			// A status that can't be read must not hold GPUs forever: the provisioning timeout
+			// still applies.
+			if w.State == domain.StateProvisioning && c.now().Sub(w.UpdatedAt) > c.opts.ProvisionTimeout {
+				c.logError("observe failed", w, err)
+				c.fail(ctx, w, fmt.Sprintf("not ready after %s: couldn't read its status from the runtime", c.opts.ProvisionTimeout))
+				continue
+			}
+			c.retryLater(ctx, w, "read its status from the runtime", err)
 			continue
 		}
 		switch {
@@ -143,12 +166,16 @@ func (c *Controller) park(ctx context.Context) error {
 	}
 	for _, w := range ws {
 		if err := c.release(ctx, w); err != nil {
-			c.log.Error("park", "workload", w.ID, "err", err)
+			c.retryLater(ctx, w, "stop it on the runtime", err)
 			continue
 		}
 		ns, _ := c.namespace(ctx, w)
 		obs, _, err := c.backend.Observe(ctx, ns, w.ID, w.Kind)
-		if err == nil && (obs == cluster.ObservedStopped || obs == cluster.ObservedAbsent) {
+		if err != nil {
+			c.retryLater(ctx, w, "read its status from the runtime", err)
+			continue
+		}
+		if obs == cluster.ObservedStopped || obs == cluster.ObservedAbsent {
 			c.transition(ctx, w, domain.StateStopped, "stopped")
 		}
 	}
@@ -167,11 +194,15 @@ func (c *Controller) remove(ctx context.Context) error {
 			err = c.backend.Delete(ctx, ns, w.ID)
 		}
 		if err != nil {
-			c.log.Error("remove", "workload", w.ID, "err", err)
+			c.retryLater(ctx, w, "delete it from the runtime", err)
 			continue
 		}
 		obs, _, err := c.backend.Observe(ctx, ns, w.ID, w.Kind)
-		if err == nil && obs == cluster.ObservedAbsent {
+		if err != nil {
+			c.retryLater(ctx, w, "read its status from the runtime", err)
+			continue
+		}
+		if obs == cluster.ObservedAbsent {
 			c.transition(ctx, w, domain.StateDeleted, "deleted")
 		}
 	}
@@ -216,13 +247,67 @@ func (c *Controller) release(ctx context.Context, w domain.Workload) error {
 // hold capacity the scheduler believes is free.
 func (c *Controller) fail(ctx context.Context, w domain.Workload, reason string) {
 	if err := c.release(ctx, w); err != nil {
-		c.log.Error("release before fail", "workload", w.ID, "err", err)
+		// The failure's reason is recorded with the Failed transition. Leaving it out of the note
+		// keeps one note per problem, even when the runtime's status keeps changing.
+		c.retryLater(ctx, w, "release its GPUs on the runtime after it failed", err)
 		return
 	}
 	c.transition(ctx, w, domain.StateFailed, reason)
 }
 
+// waitingReason says why a workload waits for capacity. Only trusted tenants (a machine's owner
+// and their team) see how many GPUs are free. For invited and community users that number would
+// show when other people use the machines (docs/architecture/tenancy-and-isolation.md).
+func (c *Controller) waitingReason(ctx context.Context, w domain.Workload, free int) string {
+	if t, err := c.tenant(ctx, w); err == nil && t.Tier == domain.TierTrusted {
+		return fmt.Sprintf("waiting for %s capacity: requested %d GPU(s), %d free", w.GPUClass, w.GPUCount, free)
+	}
+	return fmt.Sprintf("waiting for %s capacity: requested %d GPU(s), not enough free right now", w.GPUClass, w.GPUCount)
+}
+
+// retryLater handles a runtime action that failed and will be retried next pass. The operator's
+// log gets the error; the owner's timeline gets a note saying so, never the raw error, which can
+// name internal objects or echo inputs.
+func (c *Controller) retryLater(ctx context.Context, w domain.Workload, action string, err error) {
+	c.logError("couldn't "+action, w, err)
+	if errors.Is(err, errNotInCatalog) {
+		c.note(ctx, w, fmt.Sprintf("couldn't %s: %v. Retrying won't help until the operator restores it.", action, err))
+		return
+	}
+	c.note(ctx, w, fmt.Sprintf("couldn't %s; retrying. The operator's log has the details under this workload's ID.", action))
+}
+
+// note adds a timeline entry without a state change, unless the workload has moved on or its
+// latest entry already says the same, so a retry loop adds one entry rather than one per pass.
+func (c *Controller) note(ctx context.Context, w domain.Workload, reason string) {
+	reason = service.CleanReason(reason)
+	err := c.store.InTx(ctx, func(q store.Queries) error {
+		current, err := q.GetWorkloadHistory(ctx, w.TenantID, w.ID)
+		if err != nil || current.State != w.State {
+			return err
+		}
+		events, err := q.Events(ctx, w.ID)
+		if err != nil {
+			return err
+		}
+		if n := len(events); n > 0 && events[n-1].Reason == reason {
+			return nil
+		}
+		return service.Note(ctx, q, w, reason, c.now())
+	})
+	if err != nil {
+		c.log.Warn("note skipped", "workload", w.ID, "err", err)
+	}
+}
+
+// logError writes a failure to the operator's log. Runtime errors can echo inputs such as a model
+// URI, so credentials are redacted first.
+func (c *Controller) logError(msg string, w domain.Workload, err error) {
+	c.log.Error(msg, "workload", w.ID, "tenant", w.TenantID, "err", service.RedactSecrets(err.Error()))
+}
+
 func (c *Controller) transition(ctx context.Context, w domain.Workload, to domain.State, reason string) bool {
+	reason = service.CleanReason(reason)
 	from := w.State
 	err := c.store.InTx(ctx, func(q store.Queries) error {
 		return service.Transition(ctx, q, &w, to, reason, c.now())
@@ -246,13 +331,18 @@ func (c *Controller) inStates(ctx context.Context, states ...domain.State) ([]do
 	return ws, err
 }
 
-func (c *Controller) namespace(ctx context.Context, w domain.Workload) (string, error) {
+func (c *Controller) tenant(ctx context.Context, w domain.Workload) (domain.Tenant, error) {
 	var t domain.Tenant
 	err := c.store.InTx(ctx, func(q store.Queries) error {
 		var err error
 		t, err = q.TenantByID(ctx, w.TenantID)
 		return err
 	})
+	return t, err
+}
+
+func (c *Controller) namespace(ctx context.Context, w domain.Workload) (string, error) {
+	t, err := c.tenant(ctx, w)
 	return cluster.TenantNamespace(t.Slug), err
 }
 
@@ -270,13 +360,9 @@ func (c *Controller) buildContext(ctx context.Context, w domain.Workload) (manif
 	if err != nil {
 		return manifests.Context{}, nil, err
 	}
-	gpu, ok := c.catalog.GPUClass(w.GPUClass)
-	if !ok {
-		return manifests.Context{}, nil, fmt.Errorf("gpu class %q is no longer in the catalog", w.GPUClass)
-	}
-	img, ok := c.catalog.Image(w.ImageID)
-	if !ok {
-		return manifests.Context{}, nil, fmt.Errorf("image %q is no longer in the catalog", w.ImageID)
+	gpu, img, err := c.catalogEntries(w)
+	if err != nil {
+		return manifests.Context{}, nil, err
 	}
 	return manifests.Context{
 		TenantSlug:            t.Slug,
@@ -287,6 +373,19 @@ func (c *Controller) buildContext(ctx context.Context, w domain.Workload) (manif
 		ImagesNamespace:       c.opts.ImagesNamespace,
 		UntrustedRuntimeClass: c.opts.UntrustedRuntimeClass,
 	}, quotas, nil
+}
+
+// catalogEntries looks up the workload's GPU class and image, which an operator may have removed.
+func (c *Controller) catalogEntries(w domain.Workload) (catalog.GPUClass, catalog.Image, error) {
+	gpu, ok := c.catalog.GPUClass(w.GPUClass)
+	if !ok {
+		return catalog.GPUClass{}, catalog.Image{}, fmt.Errorf("GPU class %q %w", w.GPUClass, errNotInCatalog)
+	}
+	img, ok := c.catalog.Image(w.ImageID)
+	if !ok {
+		return catalog.GPUClass{}, catalog.Image{}, fmt.Errorf("image %q %w", w.ImageID, errNotInCatalog)
+	}
+	return gpu, img, nil
 }
 
 // quotaResources turns per-class quotas into ResourceQuota limits on the extended resources

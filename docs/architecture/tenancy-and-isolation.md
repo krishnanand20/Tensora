@@ -53,6 +53,9 @@ user only sends prompts. No user code runs on the host.
 | Usage-accounting tampering | Gaming quotas or fair share | Append-only events; metered states must hold capacity |
 | Data leaving its region | A fallback or bug moves data abroad | Rule 9; cross-region fallback only with explicit opt-in |
 | Gateway misrouting | User A's request served by user B's endpoint | The gateway routes by API key → tenant → endpoint, never by hostname alone |
+| Leaks through logs | Another user's timeline or export, a credential inside an export, internals or other tenants' activity in a timeline reason, internals in an error message | Logs and exports are tenant-scoped (404), including the store queries behind them (`EventsForWorkload`). Reasons come from a fixed vocabulary, never raw runtime text. Secrets are redacted (failing closed), and each redaction is listed in the export. Model URIs with credentials are refused. Internal errors return only a request ID, and the CLI writes exports owner-only (`0600`). See [logs and transparency](logs-and-transparency.md). |
+| Capacity side channel | Repeatedly queueing a workload to learn when another user is using a shared machine | Untrusted tenants see `not enough free right now`, never a free-GPU count (see Open risks) |
+| Hidden decisions | A user can't tell why their work waited, moved, or failed | Rule 14: every decision is in the timeline with its reason, and the full log is exportable |
 
 ## Controls by layer
 
@@ -69,6 +72,15 @@ user only sends prompts. No user code runs on the host.
 - The tenant comes from a verified identity: a local account, OIDC, or an API token. There's no API parameter that names a tenant.
 - Every store query is scoped by tenant. Dev header auth is refused outside `TENSORA_ENV=dev`.
 
+**Logs** (details in [logs-and-transparency.md](logs-and-transparency.md))
+
+| Who | Sees |
+|---|---|
+| A user | Their own workloads' timeline, usage, and export (output logs planned). Never another tenant's. |
+| A tenant admin | The tenant's activity log (planned, Phase 2) |
+| A host | Their machine's status and which workloads ran on it. Never a guest's output through the product, though as root a host could technically read guest data (disclosed). |
+| The operator | System logs. In a datacenter, Loki access is limited to on-call staff, and audited. |
+
 **Supply chain**
 - Notebooks run catalog images or environments. Endpoints use pinned runtimes (vLLM, MLX, llama.cpp).
 - Release binaries are signed, and macOS builds are notarized (Phase 1).
@@ -84,6 +96,7 @@ user only sends prompts. No user code runs on the host.
 | Datacenter admin network not firewalled | Open | Phase 3 |
 | The controller's ServiceAccount can create pods in any namespace | Accepted | Kind allowlist, RBAC limited to listed resources, audit logging |
 | Hosts can see guest data | **Accepted and disclosed** | Product warnings; confidential computing out of scope |
+| Admission outcomes reveal whether a GPU class is full | Accepted (mitigated) | Untrusted tenants get no free-GPU counts, but queued versus admitted still shows whether a class has room. When sharing lands (Phase 4), compute capacity only over machines that user may use, so the signal covers only what they could run on anyway. |
 
 ## Compliance notes
 

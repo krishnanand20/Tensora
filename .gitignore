@@ -37,3 +37,7 @@ web/dist/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Local logs and workload exports (may contain personal data; see ADR-0015)
+*.log
+tensora-*.json

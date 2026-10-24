@@ -1,6 +1,8 @@
 package service
 
 import (
+	"net/url"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -46,7 +48,7 @@ func (in CreateWorkloadInput) validate() error {
 			return invalid("ssh_public_key is only valid for VMs")
 		}
 		if !validModelURI(in.ModelURI) {
-			return invalid("model_uri must be an s3:// or hf:// URI")
+			return invalid("model_uri must be an s3:// or hf:// URI with no credentials in it")
 		}
 	case domain.KindNotebook:
 		if in.SSHPublicKey != "" || in.ModelURI != "" {
@@ -86,8 +88,19 @@ func validSSHKey(k string) bool {
 	return false
 }
 
+// modelHost is an S3 bucket or Hugging Face organization: no port, no credentials.
+var modelHost = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// validModelURI accepts a well-formed s3:// or hf:// URI. Anything that could carry credentials
+// (an @ anywhere, or a port, which is how url.Parse reads "user:1234/rest-of-password@") is
+// refused: credentials would be copied into the runtime and every log that echoes the URI.
 func validModelURI(u string) bool {
-	if len(u) > 1024 || strings.IndexFunc(u, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+	if len(u) > 1024 || strings.ContainsRune(u, '@') ||
+		strings.IndexFunc(u, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return false
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.User != nil || !modelHost.MatchString(parsed.Host) {
 		return false
 	}
 	for _, scheme := range []string{"s3://", "hf://"} {

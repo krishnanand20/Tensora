@@ -167,15 +167,31 @@ func (q *queries) GetWorkload(_ context.Context, tenantID, id uuid.UUID) (domain
 	return cloneWorkload(w), nil
 }
 
+func (q *queries) GetWorkloadHistory(_ context.Context, tenantID, id uuid.UUID) (domain.Workload, error) {
+	w, ok := q.d.workloads[id]
+	if !ok || w.TenantID != tenantID {
+		return domain.Workload{}, store.NotFound("workload")
+	}
+	return cloneWorkload(w), nil
+}
+
 func (q *queries) ListWorkloads(_ context.Context, tenantID uuid.UUID) ([]domain.Workload, error) {
+	return q.listWorkloads(tenantID, false), nil
+}
+
+func (q *queries) ListWorkloadHistory(_ context.Context, tenantID uuid.UUID) ([]domain.Workload, error) {
+	return q.listWorkloads(tenantID, true), nil
+}
+
+func (q *queries) listWorkloads(tenantID uuid.UUID, includeDeleted bool) []domain.Workload {
 	out := []domain.Workload{}
 	for _, w := range q.d.workloads {
-		if w.TenantID == tenantID && w.State != domain.StateDeleted {
+		if w.TenantID == tenantID && (includeDeleted || w.State != domain.StateDeleted) {
 			out = append(out, cloneWorkload(w))
 		}
 	}
 	sortWorkloads(out)
-	return out, nil
+	return out
 }
 
 func (q *queries) UpdateWorkloadState(_ context.Context, id uuid.UUID, from, to domain.State, at time.Time) error {
@@ -252,6 +268,13 @@ func (q *queries) Events(_ context.Context, workloadID uuid.UUID) ([]domain.Even
 	return out, nil
 }
 
+func (q *queries) EventsForWorkload(ctx context.Context, tenantID, workloadID uuid.UUID) ([]domain.Event, error) {
+	if w, ok := q.d.workloads[workloadID]; !ok || w.TenantID != tenantID {
+		return nil, nil
+	}
+	return q.Events(ctx, workloadID)
+}
+
 func (q *queries) InsertUsageIfAbsent(_ context.Context, r domain.UsageRecord) (bool, error) {
 	k := usageKey{r.WorkloadID, r.PeriodStart.UTC()}
 	if _, ok := q.d.usage[k]; ok {
@@ -259,6 +282,17 @@ func (q *queries) InsertUsageIfAbsent(_ context.Context, r domain.UsageRecord) (
 	}
 	q.d.usage[k] = r
 	return true, nil
+}
+
+func (q *queries) UsageForWorkload(_ context.Context, tenantID, workloadID uuid.UUID) ([]domain.UsageRecord, error) {
+	var out []domain.UsageRecord
+	for _, r := range q.d.usage {
+		if r.TenantID == tenantID && r.WorkloadID == workloadID {
+			out = append(out, r)
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.UsageRecord) int { return a.PeriodStart.Compare(b.PeriodStart) })
+	return out, nil
 }
 
 func (q *queries) Usage(_ context.Context, tenantID uuid.UUID, from, to time.Time) ([]domain.UsageRecord, error) {

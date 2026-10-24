@@ -67,7 +67,7 @@ func TestOtherTenantsSeeNotFound(t *testing.T) {
 	wantCode(t, err, domain.CodeNotFound)
 	_, err = svc.DeleteWorkload(ctx, testutil.Globex, w.ID)
 	wantCode(t, err, domain.CodeNotFound)
-	list, err := svc.ListWorkloads(ctx, testutil.Globex)
+	list, err := svc.ListWorkloads(ctx, testutil.Globex, true)
 	if err != nil || len(list) != 0 {
 		t.Fatalf("globex list = %v, %v", list, err)
 	}
@@ -75,7 +75,7 @@ func TestOtherTenantsSeeNotFound(t *testing.T) {
 
 func TestUnknownTenantIsForbidden(t *testing.T) {
 	svc, _ := setup(t)
-	_, err := svc.ListWorkloads(context.Background(), domain.Principal{Subject: "x", TenantSlug: "nobody"})
+	_, err := svc.ListWorkloads(context.Background(), domain.Principal{Subject: "x", TenantSlug: "nobody"}, false)
 	wantCode(t, err, domain.CodeForbidden)
 }
 
@@ -95,6 +95,12 @@ func TestInputValidation(t *testing.T) {
 		{"key with newline", func(in *service.CreateWorkloadInput) { in.SSHPublicKey += "\nruncmd: [evil]" }, vm, testutil.Acme, domain.CodeInvalid},
 		{"vm with model", func(in *service.CreateWorkloadInput) { in.ModelURI = "hf://x/y" }, vm, testutil.Acme, domain.CodeInvalid},
 		{"http model uri", func(in *service.CreateWorkloadInput) { in.ModelURI = "http://evil/model" }, ep, testutil.Acme, domain.CodeInvalid},
+		{"credentials in model uri", func(in *service.CreateWorkloadInput) { in.ModelURI = "s3://AKIA:secret@models/m" }, ep, testutil.Acme, domain.CodeInvalid},
+		{"unparseable model uri", func(in *service.CreateWorkloadInput) { in.ModelURI = "s3://AKIA:secret%40models/m" }, ep, testutil.Acme, domain.CodeInvalid},
+		{"password read as a port", func(in *service.CreateWorkloadInput) { in.ModelURI = "s3://user:2024/Spring!@bucket/m" }, ep, testutil.Acme, domain.CodeInvalid},
+		{"port in model uri", func(in *service.CreateWorkloadInput) { in.ModelURI = "s3://bucket:9000/m" }, ep, testutil.Acme, domain.CodeInvalid},
+		{"@ in model uri", func(in *service.CreateWorkloadInput) { in.ModelURI = "hf://Qwen/Qwen2.5@main" }, ep, testutil.Acme, domain.CodeInvalid},
+		{"model uri with revision", func(in *service.CreateWorkloadInput) { in.ModelURI = "hf://Qwen/Qwen2.5-0.5B-Instruct?revision=main" }, ep, testutil.Acme, ""},
 		{"bad name", func(in *service.CreateWorkloadInput) { in.Name = "Bad_Name" }, ep, testutil.Acme, domain.CodeInvalid},
 		{"zero gpus", func(in *service.CreateWorkloadInput) { in.GPUCount = 0 }, ep, testutil.Acme, domain.CodeInvalid},
 		{"too many gpus", func(in *service.CreateWorkloadInput) { in.GPUCount = 9 }, ep, testutil.Acme, domain.CodeInvalid},

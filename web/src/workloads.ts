@@ -1,4 +1,4 @@
-import type { WorkloadState } from "./api/types";
+import type { WorkloadEvent, WorkloadState } from "./api/types";
 
 export type Action = "stop" | "start" | "delete";
 
@@ -14,4 +14,10 @@ export function availableActions(state: WorkloadState): Action[] {
 /** States where the controller is still working, so the list should poll. */
 export function isSettling(state: WorkloadState): boolean {
   return ["pending", "queued", "provisioning", "stopping", "deleting"].includes(state);
+}
+
+/** How a timeline entry reads: a state change, or a note that leaves the state as it was. */
+export function describeChange(e: WorkloadEvent): string {
+  if (e.from === e.to) return `still ${e.to}`;
+  return `${e.from ?? "∅"} → ${e.to}`;
 }

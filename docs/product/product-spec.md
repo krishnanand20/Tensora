@@ -56,6 +56,7 @@ lend idle machines to its users.
 4. **Private by default, safe when shared.** A machine is shared only by its owner's choice. Strangers' code never runs without strong isolation, and the dashboard is honest about what a host can see.
 5. **No dead ends.** If the GPU you wanted is busy, opt-in fallbacks keep you working: another GPU, CPU, or another machine ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)).
 6. **Open.** Open source, open formats (safetensors, GGUF), and standard APIs (OpenAI-compatible).
+7. **Nothing hidden** ([ADR-0015](../adr/0015-logs-and-transparency.md)). Every decision about your work is logged with its reason. You can read all of it in the CLI or dashboard and download a complete copy. Only secrets are redacted, and the copy lists each one.
 
 ## Feature map
 
@@ -64,10 +65,11 @@ lend idle machines to its users.
 | **Platforms** | macOS (Apple Silicon), Linux (amd64 and arm64) | Mixed Linux and Mac machines | Kubernetes clusters | Any host type | Windows (WSL2), AMD ROCm |
 | **Workloads** | Notebooks, model endpoints, CPU instances | VMs (libvirt, macOS VZ); fallbacks | KubeVirt VMs, KServe endpoints | Preemptible guest workloads on shared machines | Batch jobs, fine-tuning jobs |
 | **Machines** | The local machine | Agents join over LAN, WireGuard, or the internet (outbound only) | Node pools, regions | Idle detection, schedules, caps, preemption | Auto-discovery on LAN |
-| **Users and access** | One local account, API tokens | Users, invites, teams, quotas | SSO (OIDC/SAML), audit logs, RBAC | Community accounts, fair share, reports and bans | SCIM |
+| **Users and access** | One local account, API tokens | Users, invites, teams, quotas | SSO (OIDC/SAML), RBAC | Community accounts, fair share, reports and bans | SCIM |
 | **Inference** | Endpoints from Hugging Face (safetensors, GGUF) | API keys, request failover | Autoscaling, regional inference gateway | Managed inference on shared hosts | Serverless model API across a pool; model registry; LoRA adapters |
+| **Logs** ([details](../architecture/logs-and-transparency.md)) | Workload timeline with reasons, complete export, request IDs (built); workload output and `tensora logs --follow` | Activity log per team (who did what); output from remote machines | Output logs through Loki; activity log (audit log) retention | Hosts see their machine's activity, never guests' output | — |
 | **Reliability and ops** | `tensora backup` | Machine health, alerts in the dashboard | HA control plane, Prometheus, backups | Host reputation | Upgrades without downtime |
-| **Developer tools** | REST API, dashboard | `tensora` CLI, Python SDK | Verified Datacenter install docs and charts | Pool directory | Terraform provider, templates gallery |
+| **Developer tools** | REST API, dashboard, `tensora` CLI | Python SDK | Verified Datacenter install docs and charts | Pool directory | Terraform provider, templates gallery |
 
 ## Quality bar
 
@@ -152,5 +154,6 @@ machines; crypto mining on shared hosts; training fabrics (InfiniBand) before th
 | 2026-10-23 | **Self-hosted in three profiles**: Solo, Lab, Datacenter (ADR-0012) | Current |
 | 2026-10-23 | **Node agent; Apple Silicon Macs as first-class hosts** (ADR-0013) | Current |
 | 2026-10-23 | **Sharing idle compute**: private, invite-only, community pools (ADR-0014) | Current |
+| 2026-10-24 | **Logs and transparency**: complete, exportable logs; nothing hidden except secrets, and redactions are reported (ADR-0015) | Current |
 | 2026-10-23 | "Tensora" is a working name; choose and clear a final name before the first release | Current |
 | 2026-10-23 | ~~Paid cloud with USD pricing, payments, and a first region in India~~ | Superseded by ADR-0011 and ADR-0012 |

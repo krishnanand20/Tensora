@@ -10,6 +10,7 @@ import (
 
 	"github.com/tensora/tensora/controlplane/internal/catalog"
 	"github.com/tensora/tensora/controlplane/internal/domain"
+	"github.com/tensora/tensora/controlplane/internal/service"
 )
 
 // Response shapes. web/src/api/types.ts mirrors these — change both together.
@@ -57,6 +58,8 @@ type errorView struct {
 type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID matches the X-Request-ID header and the operator's log lines for this request.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 func toWorkloadView(w domain.Workload) workloadView {
@@ -94,11 +97,17 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		if !ok {
 			status = http.StatusBadRequest
 		}
-		writeJSON(w, status, errorView{errorDetail{Code: string(de.Code), Message: de.Message}})
+		writeJSON(w, status, errorView{errorDetail{Code: string(de.Code), Message: de.Message, RequestID: requestID(r.Context())}})
 		return
 	}
-	s.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
-	writeJSON(w, http.StatusInternalServerError, errorView{errorDetail{Code: "internal", Message: "internal error"}})
+	// The full error goes to the operator's log; the user gets the request ID to look it up.
+	info := requestInfoFrom(r.Context())
+	id := info.id
+	s.log.ErrorContext(r.Context(), "request failed",
+		append(info.logAttrs(), "method", r.Method, "path", r.URL.Path, "err", service.RedactSecrets(err.Error()))...)
+	writeJSON(w, http.StatusInternalServerError, errorView{errorDetail{
+		Code: "internal", Message: "internal error; give the operator this request ID to find the full log", RequestID: id,
+	}})
 }
 
 func decodeJSON(r *http.Request, dst any) error {

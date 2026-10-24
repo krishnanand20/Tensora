@@ -11,6 +11,7 @@ One Go binary (`controlplane/`), `tensora`, whose subcommand picks the role.
 | `tensora agent` | Node agent on each machine; runs workloads through OS drivers (ADR-0013) | Lab | Planned (Phase 1–2) |
 | `tensora migrate` | Applies the embedded SQL migrations | Lab (Postgres), Datacenter | Built |
 | `tensora dev` | Development all-in-one: in-memory store, fake backend, seeded users | Development | Built; runs on macOS and Linux |
+| `tensora workloads [-all]`, `events <id>`, `export <id>` | CLI client for a running API: list, full timeline, complete log export ([logs](logs-and-transparency.md)) | Every profile | Built (launch, stop, and `logs --follow` planned) |
 
 ## Sources of truth ([ADR-0008](../adr/0008-postgres-intent-kubernetes-runtime.md), [ADR-0012](../adr/0012-deployment-profiles.md))
 
@@ -68,6 +69,23 @@ stateDiagram-v2
 Every transition goes through `service.Transition`. It validates the step, compare-and-swaps the row,
 and appends a `workload_events` row. If the API and the controller race, one CAS fails and that side retries next pass.
 
+Each row carries a specific, human-readable reason, which becomes the workload's **timeline** (rule 14).
+Decisions that don't change state, such as retrying after the runtime refused an action, are **notes**: rows
+whose `from` equals `to`, written by `service.Note` and ignored by usage accounting. Reasons come from a fixed
+vocabulary, never from raw runtime messages, and `service.CleanReason` cleans every reason before it's stored
+([logs and transparency](logs-and-transparency.md#what-the-timeline-says)):
+
+| Transition | Example reason |
+|---|---|
+| create | `created by dev@acme` |
+| user action | `stop requested by dev@acme` |
+| queued (trusted tenant) | `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free` |
+| queued (untrusted tenant) | `waiting for l40s-48gb capacity: requested 2 GPU(s), not enough free right now` |
+| admitted | `admitted: 2 × l40s-48gb` |
+| retrying (note) | `couldn't start it on the runtime; retrying. The operator's log has the details under this workload's ID.` |
+| runtime unreachable (note) | `couldn't read its status from the runtime; retrying. …`, `couldn't check for free GPUs on the runtime; retrying. …` |
+| failure | A fixed reason from the backend (`model server not ready (RevisionFailed)`), the timeout, or `can't start: GPU class "x" is no longer offered by this installation` |
+
 ## Admission and placement
 
 - **Quota** (API, at create and start): GPUs held plus the request must not exceed the tenant's quota for that class. The quota row is locked, so concurrent creates serialize.
@@ -110,7 +128,10 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 ## API conventions
 
 - Versioned under `/v1`. JSON only, and unknown fields are rejected.
-- Errors look like `{"error": {"code", "message"}}`. The codes are `invalid_request` (400), `unauthenticated` (401), `forbidden` (403), `not_found` (404), and `conflict`, `quota_exceeded`, `invalid_transition` (409).
+- Errors look like `{"error": {"code", "message", "request_id"}}`. The codes are `invalid_request` (400), `unauthenticated` (401), `forbidden` (403), `not_found` (404), and `conflict`, `quota_exceeded`, `invalid_transition` (409).
+- Every response carries `X-Request-ID`, which the server always generates. The ID is on every log line for that request, along with the tenant and subject once the request is authenticated. A caller's own `X-Request-ID` is logged as `client_request_id` if it's safe (`[A-Za-z0-9._-]`, at most 64 characters), and dropped otherwise.
+- `GET /v1/workloads` and `GET /v1/workloads/{id}` take `include_deleted=true` to include deleted workloads, whose history stays available.
+- Unexpected errors return **500** with a generic message and the request ID. The full error goes only to the operator's log.
 - Async actions return **202** and the current state.
 - Another tenant's object is always **404**.
 - IDs are UUIDv7. Runtime object names derive from IDs, never from user input.
@@ -125,7 +146,8 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 |---|---|---|
 | Controller down | New work stays `pending`; running workloads are unaffected | A workload that dies meanwhile stays `running` in the records until the controller returns. Usage accounting corrects for it later (Phase 3). |
 | Store down | API not ready (503); the controller pauses; workloads keep running | |
-| Runtime unreachable (Kubernetes API, or an agent) | Admission and observation stop for that runtime | |
+| Runtime unreachable (Kubernetes API, or an agent) | Admission and observation stop for that runtime | Each affected workload gets one note in its timeline (`couldn't check for free GPUs`, `couldn't read its status`). A provisioning workload still fails at the provisioning timeout. |
+| A GPU class or image removed from the catalog | Waiting workloads fail with `can't start: … is no longer offered by this installation` | *Known gap:* a running or stopping workload of that class can't be parked, because releasing it rebuilds its objects from the catalog. Its timeline says so, and the operator has to restore the entry. Planned: release from what the runtime already has. |
 | Agent offline (laptop closed, machine asleep) | Its workloads become unavailable, and go to `failed` after a grace period | Planned (Phase 2) |
 | Node or machine lost | Its workloads go to `failed` | |
 | One region down | Only that region is affected | ADR-0009 |
@@ -147,4 +169,5 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 - **Models:** `tensora-ml ingest` validates, then caches per machine or region (Phases 2–3)
 - **Access:** a relay through the control plane to notebooks, endpoints, and VM SSH (Phase 2)
 - **Usage API:** `GET /v1/usage`, for reports and fairness, never money (Phase 2)
+- **Logs** ([ADR-0015](../adr/0015-logs-and-transparency.md)): `GET /v1/workloads/{id}/logs` for workload output (Phase 1), and the per-tenant activity log (Phase 2)
 - **Operations:** `/metrics`, admission aging, leader election (Phase 3)

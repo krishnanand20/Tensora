@@ -4,6 +4,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
@@ -207,17 +208,44 @@ func labelsMatch(have, want map[string]string) bool {
 	return true
 }
 
+// Observe's reason is shown to the workload's owner (ADR-0015), so it comes from a fixed vocabulary.
+// Raw runtime messages can name internal objects and nodes, describe other tenants' use of the
+// cluster, or echo credentials from a model URI. Operators read those with kubectl.
+
+// statusWord is a runtime status or condition reason that is a single enum-like word.
+var statusWord = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
+
+var vmStatusReasons = map[string]string{
+	"Provisioning":            "preparing the VM's disk",
+	"WaitingForVolumeBinding": "waiting for the VM's disk",
+	"Starting":                "starting the VM",
+	"ErrorUnschedulable":      "no machine can fit the VM right now",
+	"ErrImagePull":            "the VM image couldn't be downloaded",
+	"ImagePullBackOff":        "the VM image couldn't be downloaded",
+	"CrashLoopBackOff":        "the VM keeps crashing while starting",
+	"DataVolumeError":         "the VM's disk couldn't be prepared",
+	"ErrorPvcNotFound":        "the VM's disk is missing",
+	"Stopping":                "stopping the VM",
+	"Terminating":             "shutting the VM down",
+}
+
 func observeVM(u *unstructured.Unstructured) (cluster.Observed, string) {
 	status, _, _ := unstructured.NestedString(u.Object, "status", "printableStatus")
 	switch status {
 	case "Running":
-		return cluster.ObservedReady, status
+		return cluster.ObservedReady, "running"
 	case "Stopped":
-		return cluster.ObservedStopped, status
+		return cluster.ObservedStopped, "stopped"
 	}
 	// Errors such as ErrorUnschedulable may clear on their own; the controller's
 	// provisioning timeout decides when to give up.
-	return cluster.ObservedProgressing, status
+	if reason, ok := vmStatusReasons[status]; ok {
+		return cluster.ObservedProgressing, reason
+	}
+	if statusWord.MatchString(status) {
+		return cluster.ObservedProgressing, "VM status: " + status
+	}
+	return cluster.ObservedProgressing, "waiting for the VM's status"
 }
 
 func observeStatefulSet(u *unstructured.Unstructured) (cluster.Observed, string) {
@@ -235,6 +263,8 @@ func observeStatefulSet(u *unstructured.Unstructured) (cluster.Observed, string)
 	return cluster.ObservedProgressing, fmt.Sprintf("%d/%d replicas ready", ready, want)
 }
 
+// observeInferenceService reports the Ready condition's reason, a single word such as
+// RevisionMissing, and never its message, which is free text from KServe and Knative.
 func observeInferenceService(u *unstructured.Unstructured) (cluster.Observed, string) {
 	conditions, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	for _, c := range conditions {
@@ -245,8 +275,10 @@ func observeInferenceService(u *unstructured.Unstructured) (cluster.Observed, st
 		if cond["status"] == "True" {
 			return cluster.ObservedReady, ""
 		}
-		msg, _ := cond["message"].(string)
-		return cluster.ObservedProgressing, msg
+		if reason, _ := cond["reason"].(string); statusWord.MatchString(reason) {
+			return cluster.ObservedProgressing, "model server not ready (" + reason + ")"
+		}
+		return cluster.ObservedProgressing, "model server not ready"
 	}
-	return cluster.ObservedProgressing, "waiting for status"
+	return cluster.ObservedProgressing, "waiting for the model server's status"
 }

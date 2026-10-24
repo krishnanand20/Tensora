@@ -2,7 +2,11 @@
 
 The dashboard, built with React, Vite, and TanStack Query. Users launch **GPU VMs**, **Jupyter
 notebooks**, and **model endpoints** from a catalog-driven form, watch their state live, and stop,
-start, or delete them.
+start, or delete them. Each workload's page shows its full timeline (every state change and note, when,
+why, and by whom) and a **Download full log** button that saves the complete export as JSON
+([logs and transparency](../docs/architecture/logs-and-transparency.md)). **Show deleted** on the
+workloads list brings back deleted workloads, whose pages and logs stay available. Error messages include
+the request ID, so an operator can find the exact log lines.
 
 ```bash
 make dev        # from the repo root: API on :8080
@@ -25,3 +29,4 @@ Planned (ADR-0009, 0010, 0013, 0014):
 - the placed class and a fallback badge on each workload
 - sharing settings and host disclosures
 - usage reports in hours (never money)
+- workload output logs, live (ADR-0015, Phase 1), and the team activity log (Phase 2)

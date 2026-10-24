@@ -1,8 +1,11 @@
 package controller_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,15 +16,18 @@ import (
 	"github.com/tensora/tensora/controlplane/internal/controller"
 	"github.com/tensora/tensora/controlplane/internal/domain"
 	"github.com/tensora/tensora/controlplane/internal/service"
+	"github.com/tensora/tensora/controlplane/internal/store"
 	"github.com/tensora/tensora/controlplane/internal/testutil"
 )
 
 type harness struct {
 	t       *testing.T
+	st      store.Store
 	svc     *service.Service
 	ctrl    *controller.Controller
 	backend *fake.Backend
 	clock   *testutil.Clock
+	logs    *bytes.Buffer // the operator's log
 }
 
 func newHarness(t *testing.T, capacity map[string]int) *harness {
@@ -29,11 +35,12 @@ func newHarness(t *testing.T, capacity map[string]int) *harness {
 	cat := testutil.Catalog(t)
 	clock := testutil.NewClock(testutil.T0)
 	b := fake.New(capacity)
+	logs := &bytes.Buffer{}
 	ctrl := controller.New(st, b, cat, controller.Options{
 		StorageClass: "tensora-block", ImagesNamespace: "tensora-images",
 		UntrustedRuntimeClass: "kata", ProvisionTimeout: 10 * time.Minute,
-	}, slog.New(slog.DiscardHandler), clock.Now)
-	return &harness{t: t, svc: service.New(st, cat, clock.Now), ctrl: ctrl, backend: b, clock: clock}
+	}, slog.New(slog.NewTextHandler(logs, nil)), clock.Now)
+	return &harness{t: t, st: st, svc: service.New(st, cat, clock.Now), ctrl: ctrl, backend: b, clock: clock, logs: logs}
 }
 
 func (h *harness) reconcile() {
@@ -64,6 +71,20 @@ func (h *harness) state(p domain.Principal, id uuid.UUID) domain.State {
 		h.t.Fatal(err)
 	}
 	return w.State
+}
+
+// reasons returns the workload's timeline reasons, as its owner sees them.
+func (h *harness) reasons(p domain.Principal, id uuid.UUID) []string {
+	h.t.Helper()
+	events, err := h.svc.WorkloadEvents(context.Background(), p, id)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.Reason
+	}
+	return out
 }
 
 func (h *harness) expect(p domain.Principal, id uuid.UUID, want domain.State) {
@@ -141,4 +162,124 @@ func TestDeletingQueuedWorkloadNeedsNoClusterObjects(t *testing.T) {
 	}
 	h.reconcile()
 	h.expect(testutil.Acme, w.ID, domain.StateDeleted)
+}
+
+func TestWaitingReasonShowsFreeGPUsOnlyToTrustedTenants(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 0})
+	invited := h.create(testutil.Acme, "a", 1)
+	owner := h.create(testutil.Internal, "b", 1)
+	h.reconcile()
+
+	want := map[*domain.Workload]struct {
+		p      domain.Principal
+		reason string
+	}{
+		&invited: {testutil.Acme, "waiting for l40s-48gb capacity: requested 1 GPU(s), not enough free right now"},
+		&owner:   {testutil.Internal, "waiting for l40s-48gb capacity: requested 1 GPU(s), 0 free"},
+	}
+	for w, tt := range want {
+		reasons := h.reasons(tt.p, w.ID)
+		if got := reasons[len(reasons)-1]; got != tt.reason {
+			t.Errorf("%s: reason = %q, want %q", tt.p.TenantSlug, got, tt.reason)
+		}
+	}
+}
+
+func TestRuntimeErrorsAreNotedOnceWithoutRawDetails(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	h.backend.FailApply(errors.New(`admission webhook denied t-acme/w-123: storageUri "s3://AKIA:hunter2@models/m"`))
+	w := h.create(testutil.Acme, "nb", 1)
+	h.reconcile()
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StatePending)
+
+	reasons := h.reasons(testutil.Acme, w.ID)
+	if len(reasons) != 2 || !strings.Contains(reasons[1], "couldn't start it on the runtime; retrying") {
+		t.Fatalf("timeline = %q; want the creation and one retry note", reasons)
+	}
+	for _, r := range reasons {
+		if strings.Contains(r, "t-acme") || strings.Contains(r, "hunter2") || strings.Contains(r, "webhook") {
+			t.Errorf("raw runtime error reached the timeline: %q", r)
+		}
+	}
+	if logs := h.logs.String(); !strings.Contains(logs, "webhook denied") || strings.Contains(logs, "hunter2") {
+		t.Errorf("operator log must keep the error with credentials redacted:\n%s", logs)
+	}
+
+	h.backend.FailApply(nil)
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateRunning)
+}
+
+func TestWorkloadWhoseClassLeftTheCatalogFailsWithAReason(t *testing.T) {
+	// No capacity for the retired class, as with a real backend, which only counts catalog classes.
+	h := newHarness(t, map[string]int{})
+	ctx := context.Background()
+	var w domain.Workload
+	err := h.st.InTx(ctx, func(q store.Queries) error {
+		tn, err := q.TenantBySlug(ctx, testutil.Acme.TenantSlug)
+		if err != nil {
+			return err
+		}
+		w = domain.Workload{
+			ID: uuid.Must(uuid.NewV7()), TenantID: tn.ID, Name: "old", Kind: domain.KindNotebook,
+			State: domain.StatePending, ImageID: "pytorch-notebook", GPUClass: "retired-gpu", GPUCount: 1,
+			Params: map[string]string{}, CreatedBy: "test", CreatedAt: testutil.T0, UpdatedAt: testutil.T0,
+		}
+		return q.CreateWorkload(ctx, w)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateFailed)
+	reasons := h.reasons(testutil.Acme, w.ID)
+	if got := reasons[len(reasons)-1]; got != `can't start: GPU class "retired-gpu" is no longer offered by this installation` {
+		t.Errorf("reason = %q", got)
+	}
+}
+
+func TestUnreadableStatusIsNotedOnceThenTimesOut(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	w := h.create(testutil.Acme, "nb", 1)
+	h.backend.FailObserve(errors.New("the server could not find the requested resource"))
+	h.reconcile()
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateProvisioning)
+	reasons := h.reasons(testutil.Acme, w.ID)
+	notes := 0
+	for _, r := range reasons {
+		if strings.HasPrefix(r, "couldn't read its status from the runtime; retrying") {
+			notes++
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("timeline = %q; want exactly one status note", reasons)
+	}
+
+	// It must not hold its GPUs forever: the provisioning timeout still applies.
+	h.clock.Advance(11 * time.Minute)
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateFailed)
+	reasons = h.reasons(testutil.Acme, w.ID)
+	if got := reasons[len(reasons)-1]; got != "not ready after 10m0s: couldn't read its status from the runtime" {
+		t.Errorf("reason = %q", got)
+	}
+}
+
+func TestCapacityErrorsAreNotedForWaitingWorkloads(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	h.backend.FailCapacity(errors.New("dial tcp 10.0.0.5:6443: connection refused"))
+	w := h.create(testutil.Acme, "nb", 1)
+	if err := h.ctrl.ReconcileOnce(context.Background()); err == nil {
+		t.Fatal("the capacity error must still be returned for the operator's log")
+	}
+	reasons := h.reasons(testutil.Acme, w.ID)
+	if got := reasons[len(reasons)-1]; !strings.HasPrefix(got, "couldn't check for free GPUs on the runtime; retrying") || strings.Contains(got, "10.0.0.5") {
+		t.Errorf("reason = %q", got)
+	}
+
+	h.backend.FailCapacity(nil)
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateRunning)
 }

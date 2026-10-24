@@ -46,7 +46,7 @@ flowchart LR
 ```
 
 One binary (`tensora`) provides the control plane, the agent, and the dashboard in every profile.
-Moving up a profile is an export and import, not a rebuild.
+Moving up a profile is a backup and restore (`tensora backup`, `tensora restore`), not a rebuild.
 
 ## Components
 
@@ -62,6 +62,7 @@ Moving up a profile is an export and import, not a rebuild.
 | Storage | Local disk on each machine | Longhorn, then Ceph ([ADR-0005](../adr/0005-storage-longhorn-then-ceph.md)) | [storage.md](storage.md) |
 | Identity | Local accounts and API tokens | Keycloak, or the company's IdP (OIDC/SAML) | `controlplane/internal/auth` |
 | Observability | Built into the dashboard | Prometheus, DCGM, Loki, Grafana | [observability.md](observability.md) |
+| Logs and transparency | Workload timeline, complete export, request IDs; CLI and dashboard (built). Output logs from agents (planned). | Same, with output logs through Loki (planned) | [logs-and-transparency.md](logs-and-transparency.md) |
 | Admission and placement | Quotas, capacity, region, and opt-in fallbacks ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)); sharing rules ([ADR-0014](../adr/0014-sharing-idle-compute.md)) | Same | [control-plane.md](control-plane.md) |
 | Inference gateway | Built into the control plane (planned) | Regional gateway (planned) | [ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md) |
 | Our code | `tensora` (Go): API, controller, agent, usage accounting, dashboard. `tensora-ml` (Python). | Same | `controlplane/`, `ml/`, `web/` |

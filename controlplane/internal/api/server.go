@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,8 +43,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/workloads/{id}/stop", s.authed(s.workloadAction(s.svc.StopWorkload)))
 	mux.Handle("POST /v1/workloads/{id}/start", s.authed(s.workloadAction(s.svc.StartWorkload)))
 	mux.Handle("DELETE /v1/workloads/{id}", s.authed(s.workloadAction(s.svc.DeleteWorkload)))
+	mux.Handle("GET /v1/workloads/{id}/events", s.authed(s.workloadEvents))
+	mux.Handle("GET /v1/workloads/{id}/export", s.authed(s.exportWorkload))
 
-	return http.MaxBytesHandler(s.logRequests(mux), maxBodyBytes)
+	return http.MaxBytesHandler(withRequestID(s.logRequests(mux)), maxBodyBytes)
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request, p domain.Principal) error
@@ -52,6 +55,9 @@ func (s *Server) authed(h handlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.auth.Authenticate(r)
 		if err == nil {
+			info := requestInfoFrom(r.Context())
+			info.tenant, info.subject = p.TenantSlug, p.Subject
+			s.log.DebugContext(r.Context(), "request authenticated", info.logAttrs()...)
 			err = h(w, r, p)
 		}
 		if err != nil {
@@ -81,7 +87,11 @@ func (s *Server) getCatalog(w http.ResponseWriter, r *http.Request, p domain.Pri
 }
 
 func (s *Server) listWorkloads(w http.ResponseWriter, r *http.Request, p domain.Principal) error {
-	ws, err := s.svc.ListWorkloads(r.Context(), p)
+	withDeleted, err := includeDeleted(r)
+	if err != nil {
+		return err
+	}
+	ws, err := s.svc.ListWorkloads(r.Context(), p, withDeleted)
 	if err != nil {
 		return err
 	}
@@ -111,12 +121,34 @@ func (s *Server) getWorkload(w http.ResponseWriter, r *http.Request, p domain.Pr
 	if err != nil {
 		return err
 	}
-	wl, err := s.svc.GetWorkload(r.Context(), p, id)
+	withDeleted, err := includeDeleted(r)
+	if err != nil {
+		return err
+	}
+	get := s.svc.GetWorkload
+	if withDeleted {
+		get = s.svc.GetWorkloadHistory
+	}
+	wl, err := get(r.Context(), p, id)
 	if err != nil {
 		return err
 	}
 	writeJSON(w, http.StatusOK, toWorkloadView(wl))
 	return nil
+}
+
+// includeDeleted reads ?include_deleted=true, which adds deleted workloads so their history stays
+// reachable (ADR-0015).
+func includeDeleted(r *http.Request) (bool, error) {
+	v := r.URL.Query().Get("include_deleted")
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, domain.Errorf(domain.CodeInvalid, "include_deleted must be true or false")
+	}
+	return b, nil
 }
 
 // workloadAction adapts stop/start/delete. They return 202: the controller does the work.
@@ -162,8 +194,8 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		if r.Pattern == "GET /healthz" || r.Pattern == "GET /readyz" {
 			level = slog.LevelDebug
 		}
-		s.log.Log(r.Context(), level, "http request",
-			"method", r.Method, "route", r.Pattern, "status", rec.status,
-			"duration_ms", time.Since(start).Milliseconds())
+		attrs := append(requestInfoFrom(r.Context()).logAttrs(),
+			"method", r.Method, "route", r.Pattern, "status", rec.status, "duration_ms", time.Since(start).Milliseconds())
+		s.log.Log(r.Context(), level, "http request", attrs...)
 	})
 }

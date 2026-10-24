@@ -4,6 +4,8 @@
 - **Date:** 2026-10-23
 - **Amends:** ADR-0001, ADR-0002, ADR-0008
 
+> **Amended by [ADR-0015](0015-logs-and-transparency.md) (2026-10-24):** `tensora export <id>` now exports one workload's complete log. Moving up a profile uses `tensora backup` and `tensora restore` instead of the `tensora export` and `tensora import` named below. Everything else stands.
+
 ## Context
 
 Users range from a student with one MacBook to a company with racks of NVIDIA servers. The existing

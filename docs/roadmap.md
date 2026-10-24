@@ -21,6 +21,7 @@ This is the engineering plan. **What** each milestone must deliver is defined in
 - [x] ML layer (Python): model validator, ingestion, benchmarking, burn-in (CUDA)
 - [x] Dashboard skeleton (TypeScript)
 - [x] Redesign: free for everyone (ADR-0011), profiles (ADR-0012), node agent and Apple Silicon (ADR-0013), sharing (ADR-0014), regions (ADR-0009), fallbacks (ADR-0010)
+- [x] Logs and transparency (ADR-0015): a timeline for every workload with a specific reason for each change, complete JSON export (deleted workloads too), secret redaction that is always reported, request IDs on every response and log line, `TENSORA_LOG_FILE`, CLI client commands (`workloads`, `events`, `export`), and a dashboard timeline with **Download full log**
 - [ ] **Choose the final product name** and clear it: trademark search in your main markets (classes 9 and 42), plus domain and GitHub org. Several companies already use "Tensora".
 - [ ] **Rename in one change** once the name is final: Go module path, `tensora.io/` labels (use a domain the project owns), `TENSORA_` env vars, `X-Tensora-*` headers, binary, charts, docs
 - [ ] **Choose the open-source licence** (Apache-2.0 recommended) and add `LICENSE`
@@ -50,6 +51,8 @@ Each step keeps `make lint test deploy-check build-all` green. Do the data-model
 | 10 | ML | GGUF validation in `validate.py`; an MPS (Metal) path for `burnin`; bench docs for llama.cpp and MLX servers |
 | 11 | Packaging | Homebrew tap, `install.sh`, `.deb` and `.rpm` packages, launchd and systemd units, signed and notarized macOS builds, a release workflow |
 | 12 | Docs | Turn [runbook 00](runbooks/00-quickstart.md) from planned into verified; update the control-plane.md API tables; remove "planned" notes as each item lands |
+| 13 | CLI | Write commands: `tensora launch`, `stop`, `start`, `delete`, and `catalog`, with `-json` output. The read commands (`workloads`, `events`, `export`) are built. |
+| 14 | Logs | Workload output (ADR-0015): drivers capture stdout and stderr, and VM boot logs. The agent ships them to the control plane, which keeps them per workload for 14 days. Add `GET /v1/workloads/{id}/logs` (with follow), `tensora logs <id> --follow`, a Logs tab in the dashboard, and `output_logs` in the export. |
 
 ## Phase 2: Lab (→ M2)
 
@@ -58,12 +61,13 @@ users, quotas, VMs, fallbacks, and endpoint API keys.
 
 - [ ] Agents join over the network: outbound mTLS (works behind NAT); enrolment from the dashboard; machine health
 - [ ] Users, invites, teams, and per-user quotas; usage reports (no money)
+- [ ] Activity log per tenant (ADR-0015): every API action by every user, with its request ID; tenant admins can read and export it
 - [ ] VMs: `libvirt` driver (Linux KVM, with VFIO GPU passthrough) and `macos-vz` driver (macOS guests with Metal, max 2 per Mac; Linux guests CPU-only)
 - [ ] `macos-container` driver (a Linux container in its own lightweight VM) for strong-isolation CPU workloads on Macs
 - [ ] Fallback placement across machines and to CPU (ADR-0010); `Idempotency-Key` on POST; `Retry-After` on 503
 - [ ] Built-in inference gateway: endpoint API keys, token counts, failover to another replica or CPU
 - [ ] Access to workloads from outside the LAN through the control plane's relay (notebook UI, endpoint API, VM SSH)
-- [ ] `tensora` CLI and Python SDK; Postgres option for larger Labs; `tensora export` and `import`
+- [ ] Python SDK; Postgres option for larger Labs; `tensora backup` and `restore`, portable between SQLite and Postgres (moving up a profile)
 
 ## Phase 3: Datacenter (→ M3)
 
@@ -77,7 +81,8 @@ regions, and HA, and its install docs are verified.
 - [ ] **Validate Kata + GPU passthrough** (needed before untrusted notebooks and endpoints run in containers)
 - [ ] Models resource, with `tensora-ml ingest` running as a Job
 - [ ] More nodes; 3 k3s servers; Rook-Ceph; object store; Postgres HA (CloudNativePG); backups and restore drills
-- [ ] SSO through Keycloak or the company's IdP; audit logs; RBAC
+- [ ] SSO through Keycloak or the company's IdP; RBAC; the activity log kept in Postgres with configurable retention
+- [ ] Workload output logs from Loki (Alloy ships pod logs and VM consoles), served by the API per tenant (ADR-0015)
 - [ ] Regional inference gateway with autoscaling; Prometheus `/metrics` and alerts; host firewall (admin access only over WireGuard); upgrade runbook
 - [ ] Controller leader election; usage-accounting correction for workloads that died while the controller was down
 

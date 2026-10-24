@@ -8,8 +8,9 @@ darwin/arm64** (rule 11): run `make build-all` from the repo root.
 ## Layout and dependency direction
 
 ```
-cmd/tensora/            main: wiring only, with subcommands api | controller | metering | migrate | seed | dev
-                        (planned: up | agent | gateway | backup | export | import)
+cmd/tensora/            main: wiring only. Server subcommands: api | controller | metering | migrate | seed | dev
+                        (planned: up | agent | gateway | backup | restore)
+                        client.go: CLI client commands workloads | events | export (planned: logs)
 internal/domain/        types, the state machine, and error codes. Imports nothing internal.
 internal/config/        TENSORA_* env parsing and production guards
 internal/catalog/       loads images/catalog.yaml
@@ -21,6 +22,7 @@ internal/store/         Store/Queries interfaces
 internal/service/       business operations, tenant-scoped; Transition() is the single path for state changes
 internal/api/           HTTP handlers (stdlib net/http); thin, and calls the service only
 internal/auth/          Dev (header) and OIDC (JWT) authenticators (planned: local accounts and API tokens)
+internal/client/        Go client for the /v1 API, used by the CLI commands (and tests); keeps exports byte-for-byte
 internal/cluster/       Backend interface, labels, CheckJSONTypes
   manifests/            pure builders that return Kubernetes objects as map[string]any
   fake/                 in-memory backend
@@ -49,7 +51,9 @@ Allowed imports flow downward: `api → service → store, domain`; `controller 
 - **State changes:** call `service.Transition(ctx, q, &w, to, reason, now)` inside `store.InTx`. Never call `UpdateWorkloadState` directly.
 - **Time:** inject `now func() time.Time`, never call `time.Now()` inside logic, and store UTC.
 - **Errors:** expected failures are `domain.Errorf(code, ...)`, and their message is shown to users. Wrap everything else with `%w`; it becomes a logged 500.
-- **Logging:** `log/slog` with key-value pairs. Never log tokens, SSH keys, agent certificates, or model URIs that carry credentials.
+- **Logging:** `log/slog` with key-value pairs. Never log tokens, SSH keys, agent certificates, or model URIs that carry credentials. Errors that may echo inputs (runtime and Kubernetes errors) go through `service.RedactSecrets` first. Request-scoped lines use `requestInfoFrom(ctx).logAttrs()` in `api`: the request ID, plus the tenant and subject once authenticated.
+- **Transparency** (rule 14, ADR-0015): every controller decision gets a specific, human-readable `reason` in `service.Transition` (for example `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free`, not `queued`). A decision that doesn't change state, such as a retry, gets a note (`service.Note`). New fields a user supplied belong in the export. If a field can hold a secret, redact it in `service.ExportWorkload` and add a `Redaction` entry; never drop data silently.
+- **Reasons are a fixed vocabulary.** Never put raw runtime messages or errors into a reason: they can name internal objects, describe other tenants' use of the cluster, or echo credentials. `cluster.Backend.Observe` returns fixed text, and the raw error goes to the operator's log. Only trusted tenants see free-capacity counts.
 - **No money** (rule 12): `metering` is usage accounting for quotas and fairness only.
 
 ## Testing

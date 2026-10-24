@@ -68,6 +68,32 @@ func testTenantScoping(t *testing.T, st store.Store) {
 		}
 		return nil
 	})
+
+	// Deleted workloads vanish from normal reads but their history stays exportable by the owner only.
+	tx(t, st, func(q store.Queries) error {
+		return q.UpdateWorkloadState(ctx, wa.ID, domain.StateRunning, domain.StateDeleted, t0)
+	})
+	tx(t, st, func(q store.Queries) error {
+		if _, err := q.GetWorkload(ctx, a.ID, wa.ID); !domain.IsNotFound(err) {
+			t.Errorf("deleted workload still returned by GetWorkload: %v", err)
+		}
+		if got, err := q.GetWorkloadHistory(ctx, a.ID, wa.ID); err != nil || got.State != domain.StateDeleted {
+			t.Errorf("owner history read = %+v, %v", got, err)
+		}
+		if _, err := q.GetWorkloadHistory(ctx, b.ID, wa.ID); !domain.IsNotFound(err) {
+			t.Errorf("tenant B read tenant A's deleted workload history: err=%v", err)
+		}
+		if list, err := q.ListWorkloads(ctx, a.ID); err != nil || len(list) != 0 {
+			t.Errorf("deleted workload still listed: %v, %v", list, err)
+		}
+		if list, err := q.ListWorkloadHistory(ctx, a.ID); err != nil || len(list) != 1 || list[0].State != domain.StateDeleted {
+			t.Errorf("owner history list = %v, %v; want the deleted workload", list, err)
+		}
+		if list, err := q.ListWorkloadHistory(ctx, b.ID); err != nil || len(list) != 0 {
+			t.Errorf("tenant B history list = %v, %v; want empty", list, err)
+		}
+		return nil
+	})
 }
 
 func testCAS(t *testing.T, st store.Store) {
@@ -136,6 +162,7 @@ func testRollback(t *testing.T, st store.Store) {
 func testEventsAndUsage(t *testing.T, st store.Store) {
 	ctx := context.Background()
 	a := tenant(t, st, "alpha")
+	other := tenant(t, st, "bravo")
 	w := workload(t, st, a, domain.StateRunning, 2)
 	tx(t, st, func(q store.Queries) error {
 		for i, to := range []domain.State{domain.StatePending, domain.StateProvisioning, domain.StateRunning} {
@@ -143,12 +170,19 @@ func testEventsAndUsage(t *testing.T, st store.Store) {
 				return err
 			}
 		}
-		return nil
+		// A note: a timeline entry without a state change.
+		return q.AppendEvent(ctx, domain.Event{WorkloadID: w.ID, From: domain.StateRunning, To: domain.StateRunning, Reason: "note", At: t0.Add(3 * time.Minute)})
 	})
 	tx(t, st, func(q store.Queries) error {
 		evs, err := q.Events(ctx, w.ID)
-		if err != nil || len(evs) != 3 || evs[2].To != domain.StateRunning || evs[0].From != "" {
+		if err != nil || len(evs) != 4 || evs[2].To != domain.StateRunning || evs[0].From != "" || evs[3].From != domain.StateRunning {
 			t.Errorf("events = %+v, %v", evs, err)
+		}
+		if mine, err := q.EventsForWorkload(ctx, a.ID, w.ID); err != nil || len(mine) != 4 {
+			t.Errorf("EventsForWorkload(owner) = %+v, %v", mine, err)
+		}
+		if theirs, err := q.EventsForWorkload(ctx, other.ID, w.ID); err != nil || len(theirs) != 0 {
+			t.Errorf("EventsForWorkload(other tenant) = %+v, %v; want none", theirs, err)
 		}
 		ws, err := q.WorkloadsForMetering(ctx, t0.Add(24*time.Hour))
 		if err != nil || len(ws) != 1 {
@@ -165,6 +199,13 @@ func testEventsAndUsage(t *testing.T, st store.Store) {
 		got, err := q.Usage(ctx, a.ID, t0, t0.Add(time.Hour))
 		if err != nil || len(got) != 1 || got[0].Seconds != 3600 || got[0].GPUSeconds() != 7200 {
 			t.Errorf("usage = %+v, %v", got, err)
+		}
+		mine, err := q.UsageForWorkload(ctx, a.ID, w.ID)
+		if err != nil || len(mine) != 1 || mine[0].WorkloadID != w.ID {
+			t.Errorf("UsageForWorkload(owner) = %+v, %v", mine, err)
+		}
+		if theirs, err := q.UsageForWorkload(ctx, other.ID, w.ID); err != nil || len(theirs) != 0 {
+			t.Errorf("UsageForWorkload(other tenant) = %+v, %v; want none", theirs, err)
 		}
 		return nil
 	})

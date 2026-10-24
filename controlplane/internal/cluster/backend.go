@@ -31,7 +31,9 @@ type Backend interface {
 	Capacity(ctx context.Context) (map[string]int, error)
 	// Apply creates or updates objects (server-side apply). Order matters: namespaces first.
 	Apply(ctx context.Context, objs []Manifest) error
-	// Observe reports the state of a workload's primary object plus a human-readable reason.
+	// Observe reports the state of a workload's primary object plus a human-readable reason. The
+	// reason is shown to the workload's owner, so it must come from a fixed vocabulary: never raw
+	// runtime messages, object or node names, or anything that echoes inputs (ADR-0015).
 	Observe(ctx context.Context, namespace string, workloadID uuid.UUID, kind domain.WorkloadKind) (Observed, string, error)
 	// Delete removes every object labeled with the workload ID, including its volumes. Idempotent.
 	Delete(ctx context.Context, namespace string, workloadID uuid.UUID) error

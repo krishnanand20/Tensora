@@ -76,16 +76,22 @@ func (s *Service) CreateWorkload(ctx context.Context, p domain.Principal, in Cre
 		if err := q.CreateWorkload(ctx, w); err != nil {
 			return err
 		}
-		return q.AppendEvent(ctx, domain.Event{WorkloadID: w.ID, To: domain.StatePending, Reason: "created by " + p.Subject, At: now})
+		return q.AppendEvent(ctx, domain.Event{WorkloadID: w.ID, To: domain.StatePending, Reason: CleanReason("created by " + p.Subject), At: now})
 	})
 	return w, err
 }
 
-func (s *Service) ListWorkloads(ctx context.Context, p domain.Principal) ([]domain.Workload, error) {
+// ListWorkloads returns the caller's workloads. includeDeleted adds deleted ones, whose timeline
+// and export stay available (ADR-0015).
+func (s *Service) ListWorkloads(ctx context.Context, p domain.Principal, includeDeleted bool) ([]domain.Workload, error) {
 	var out []domain.Workload
 	err := s.withTenant(ctx, p, func(q store.Queries, t domain.Tenant) error {
 		var err error
-		out, err = q.ListWorkloads(ctx, t.ID)
+		if includeDeleted {
+			out, err = q.ListWorkloadHistory(ctx, t.ID)
+		} else {
+			out, err = q.ListWorkloads(ctx, t.ID)
+		}
 		return err
 	})
 	return out, err
@@ -93,6 +99,17 @@ func (s *Service) ListWorkloads(ctx context.Context, p domain.Principal) ([]doma
 
 func (s *Service) GetWorkload(ctx context.Context, p domain.Principal, id uuid.UUID) (domain.Workload, error) {
 	return s.withWorkload(ctx, p, id, func(store.Queries, domain.Tenant, *domain.Workload) error { return nil })
+}
+
+// GetWorkloadHistory is GetWorkload including deleted workloads, for reading their history.
+func (s *Service) GetWorkloadHistory(ctx context.Context, p domain.Principal, id uuid.UUID) (domain.Workload, error) {
+	var w domain.Workload
+	err := s.withTenant(ctx, p, func(q store.Queries, t domain.Tenant) error {
+		var err error
+		w, err = q.GetWorkloadHistory(ctx, t.ID, id)
+		return err
+	})
+	return w, err
 }
 
 // StopWorkload releases the GPU. VMs and notebooks keep their disks; endpoints are torn down.

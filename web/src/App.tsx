@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router";
 
 import { LaunchPage } from "./pages/LaunchPage";
+import { WorkloadDetailPage } from "./pages/WorkloadDetailPage";
 import { WorkloadsPage } from "./pages/WorkloadsPage";
 
 export function App() {
@@ -19,6 +20,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<WorkloadsPage />} />
           <Route path="/launch" element={<LaunchPage />} />
+          <Route path="/workloads/:id" element={<WorkloadDetailPage />} />
         </Routes>
       </main>
     </div>

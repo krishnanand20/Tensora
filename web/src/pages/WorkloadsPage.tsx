@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router";
 
 import { api } from "../api/client";
@@ -13,9 +14,10 @@ const run: Record<Action, (id: string) => Promise<Workload>> = {
 
 export function WorkloadsPage() {
   const queryClient = useQueryClient();
+  const [showDeleted, setShowDeleted] = useState(false);
   const workloads = useQuery({
-    queryKey: ["workloads"],
-    queryFn: api.listWorkloads,
+    queryKey: ["workloads", showDeleted],
+    queryFn: () => api.listWorkloads(showDeleted),
     // Poll while anything is mid-transition; the controller does the work asynchronously.
     refetchInterval: (q) => (q.state.data?.items.some((w) => isSettling(w.state)) ? 2000 : false),
   });
@@ -32,9 +34,15 @@ export function WorkloadsPage() {
     <section>
       <div className="section-head">
         <h1>Workloads</h1>
-        <Link className="button" to="/launch">
-          Launch
-        </Link>
+        <div className="head-actions">
+          <label className="muted">
+            <input type="checkbox" checked={showDeleted} onChange={(e) => setShowDeleted(e.target.checked)} /> Show
+            deleted
+          </label>
+          <Link className="button" to="/launch">
+            Launch
+          </Link>
+        </div>
       </div>
       {action.isError && <p className="error">{action.error.message}</p>}
       {items.length === 0 ? (
@@ -57,7 +65,9 @@ export function WorkloadsPage() {
             <tbody>
               {items.map((w) => (
                 <tr key={w.id}>
-                  <td>{w.name}</td>
+                  <td>
+                    <Link to={`/workloads/${w.id}`}>{w.name}</Link>
+                  </td>
                   <td>{w.kind}</td>
                   <td>
                     <span className={`state state-${w.state}`}>{w.state}</span>

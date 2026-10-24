@@ -104,3 +104,30 @@ func TestObserve(t *testing.T) {
 		}
 	}
 }
+
+// Reasons reach users, so runtime free text must never pass through (ADR-0015).
+func TestObserveNeverPassesRuntimeTextThrough(t *testing.T) {
+	leaky := `Revision "w-1-predictor-00001" failed: 0/12 nodes are available: 9 Insufficient nvidia.com/gpu; ` +
+		`pull from 10.0.0.5:5000 failed; storageUri s3://AKIA:secret@bucket/m`
+	tests := []struct {
+		name  string
+		judge func(*unstructured.Unstructured) (cluster.Observed, string)
+		obj   map[string]any
+		want  string
+	}{
+		{"isvc message dropped, reason kept", observeInferenceService, map[string]any{"status": map[string]any{"conditions": []any{
+			map[string]any{"type": "Ready", "status": "False", "reason": "RevisionFailed", "message": leaky},
+		}}}, "model server not ready (RevisionFailed)"},
+		{"isvc free-text reason dropped", observeInferenceService, map[string]any{"status": map[string]any{"conditions": []any{
+			map[string]any{"type": "Ready", "status": "False", "reason": leaky, "message": leaky},
+		}}}, "model server not ready"},
+		{"vm known status", observeVM, map[string]any{"status": map[string]any{"printableStatus": "ErrorUnschedulable"}}, "no machine can fit the VM right now"},
+		{"vm unknown word", observeVM, map[string]any{"status": map[string]any{"printableStatus": "Migrating"}}, "VM status: Migrating"},
+		{"vm free text", observeVM, map[string]any{"status": map[string]any{"printableStatus": leaky}}, "waiting for the VM's status"},
+	}
+	for _, tt := range tests {
+		if _, got := tt.judge(obj(tt.obj)); got != tt.want {
+			t.Errorf("%s: reason = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
