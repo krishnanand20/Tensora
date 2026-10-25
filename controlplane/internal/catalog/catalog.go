@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 
@@ -40,6 +41,10 @@ type GPUClass struct {
 	VMDeviceName string `json:"vm_device_name,omitempty"`
 	// NodeSelector picks container-mode nodes carrying this GPU (GPU Feature Discovery labels).
 	NodeSelector map[string]string `json:"node_selector,omitempty"`
+	// Models are the device names node agents report for this class (NVIDIA and AMD), such as
+	// "NVIDIA L40S". A device model belongs to at most one class. Without it, agents never offer
+	// the class. Apple classes match by unified memory instead (DevicesOn).
+	Models []string `json:"models,omitempty"`
 	// VCPUsPerGPU and MemoryGiBPerGPU size each unit: one GPU, or one CPU-class unit.
 	VCPUsPerGPU     int `json:"vcpus_per_gpu"`
 	MemoryGiBPerGPU int `json:"memory_gib_per_gpu"`
@@ -134,10 +139,17 @@ func (c *Catalog) Validate() error {
 	if len(c.Regions) == 0 {
 		errs = append(errs, errors.New("regions: list at least one (a Solo install has one, local)"))
 	}
-	seen := map[string]bool{}
+	seen, models := map[string]bool{}, map[string]string{}
 	for _, g := range c.GPUClasses {
 		errs = append(errs, validateClass(g, seen, regions))
 		seen[g.ID] = true
+		for _, m := range g.Models {
+			key := strings.ToLower(m)
+			if other, dup := models[key]; dup {
+				errs = append(errs, fmt.Errorf("class %q: model %q is already class %q's; a device matches one class", g.ID, m, other))
+			}
+			models[key] = g.ID
+		}
 	}
 	seen = map[string]bool{}
 	for _, img := range c.Images {
@@ -158,6 +170,8 @@ func validateClass(g GPUClass, seen map[string]bool, regions map[domain.Region]b
 		return fmt.Errorf("class %q: container_resource is required for %s GPUs", g.ID, g.Accelerator)
 	case g.Accelerator == domain.AcceleratorApple && kubernetes:
 		return fmt.Errorf("class %q: Apple classes run only on node agents, so they take no Kubernetes fields", g.ID)
+	case len(g.Models) > 0 && g.Accelerator != domain.AcceleratorNVIDIA && g.Accelerator != domain.AcceleratorAMD:
+		return fmt.Errorf("class %q: models are for NVIDIA and AMD classes", g.ID)
 	case g.Accelerator != domain.AcceleratorCPU && g.VRAMGB <= 0:
 		return fmt.Errorf("class %q: vram_gb must be positive for a GPU", g.ID)
 	case g.VCPUsPerGPU <= 0 || g.MemoryGiBPerGPU <= 0:
@@ -237,6 +251,38 @@ func CheckLaunch(tier domain.IsolationTier, class GPUClass, img Image, kind doma
 			class.Accelerator, runtime.Server, runtime.ModelFormat)
 	}
 	return runtime, nil
+}
+
+// DevicesOn reports how many devices of each GPU class a machine's accelerators provide, among the
+// classes offered in region (ADR-0016). An NVIDIA or AMD device matches the class listing its model;
+// a Mac's GPU matches the largest Apple class whose vram_gb fits in its unified memory. CPU classes
+// need no devices, so they aren't listed.
+func (c *Catalog) DevicesOn(accelerators []domain.Accelerator, region domain.Region) map[string]int {
+	out := map[string]int{}
+	for _, a := range accelerators {
+		switch a.Kind {
+		case domain.AcceleratorNVIDIA, domain.AcceleratorAMD:
+			for _, g := range c.GPUClasses {
+				if g.Accelerator == a.Kind && g.OfferedIn(region) && slices.ContainsFunc(g.Models, func(m string) bool {
+					return strings.EqualFold(m, a.Model)
+				}) {
+					out[g.ID] += a.Count
+				}
+			}
+		case domain.AcceleratorApple:
+			best := GPUClass{}
+			for _, g := range c.GPUClasses {
+				if g.Accelerator == domain.AcceleratorApple && g.OfferedIn(region) &&
+					int64(g.VRAMGB)*1024 <= a.MemoryMiB && g.VRAMGB > best.VRAMGB {
+					best = g
+				}
+			}
+			if best.ID != "" {
+				out[best.ID] += a.Count
+			}
+		}
+	}
+	return out
 }
 
 // DefaultRegion is where workloads go when they don't name a region: the first one listed.

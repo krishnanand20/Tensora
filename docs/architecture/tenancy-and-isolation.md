@@ -41,8 +41,32 @@ user only sends prompts. No user code runs on the host.
 catalog or tier can't be bypassed): on Apple Silicon, notebooks and endpoints run natively on macOS, so
 only trusted tenants may launch them; untrusted tenants get macOS VMs there. Endpoints are refused when
 their server would load a model format `tensora-ml validate` doesn't check yet (GGUF, so llama.cpp, until
-roadmap step 10). Per-machine rules (`Machine.CanHost`) check region and sharing; making them also weigh
-the runtime's isolation is part of the agent work (roadmap step 6).
+roadmap step 10).
+
+On agents, placement (`controller/placement.go`, [ADR-0016](../adr/0016-agent-protocol-and-machine-placement.md))
+checks each machine:
+
+- Only the tenant's own machines, until sharing lets a user choose someone else's (ADR-0014, Phase 4): a
+  workload never lands where a host could see its data without its user saying so. `Machine.CanHost` also
+  checks the machine is in the workload's region and shared with its tenant.
+- `Machine.Permits`: a driver with weak isolation (`macos-native`, plain `docker`, `sim`) is only for the machine
+  owner's own workloads. The **Owner** column above means the machine's owner here, not the trusted tier, since
+  it's the owner's machine at risk.
+- A driver's isolation comes from the control plane's table (`domain.LookupDriver`), never from what an agent
+  reports. A host that lied about its drivers would only expose its own machine, whose guests' data it can see
+  anyway.
+- `macos-vz` gives a macOS guest the Mac's GPU, so a macOS VM always takes the GPU's whole unit (no CPU-only
+  macOS VMs that would share it), and a Mac runs at most two (the macOS licence).
+- A VM or notebook that has run keeps its driver, since its data is in that driver's storage.
+- Stores re-check the same rules when the placement is recorded (`SetPlacement`).
+- Agents check again: they refuse a driver they don't have, weak isolation for a workload marked as needing
+  strong, and starting a workload while any other workload is still active on the GPU it needs (one being
+  stopped or removed counts until it has stopped). So a bug or a race can't put two users on one GPU.
+- What an agent reports must fit its machine: one Apple GPU, only on an Apple Silicon Mac; NVIDIA and AMD GPUs
+  only on Linux; drivers only on their own OS.
+- An agent deletes a workload's data only when told to remove that workload. One it has but wasn't told about
+  is stopped and kept, so a mistake about which machine it is can't wipe anything. A machine is found by the ID
+  saved next to its database, never by its hostname.
 
 ## Threat model
 
@@ -68,7 +92,7 @@ the runtime's isolation is part of the agent work (roadmap step 6).
 
 **Compute**
 - Datacenter tenant pods get `automountServiceAccountToken: false`, no host namespaces, dropped capabilities, RuntimeDefault seccomp, requests equal to limits, and the Kata runtime class for untrusted tenants.
-- Agents run non-owner workloads only through strong-isolation drivers, per the matrix. They cap memory, CPU, GPU memory, and disk on every workload.
+- Agents run non-owner workloads only through strong-isolation drivers, per the matrix (enforced by placement and checked again by the agent). They will cap memory, CPU, GPU memory, and disk on every workload (the drivers, roadmap step 7). A machine's owner keeps a quarter of its CPUs and memory: placement uses only what the agent reports as usable.
 - No GPU time-slicing between different users, ever. On a Mac, an untrusted user gets the whole GPU or none of it.
 
 **Network** (details in [networking.md](networking.md))
@@ -79,13 +103,14 @@ the runtime's isolation is part of the agent work (roadmap step 6).
 - The tenant comes from a verified identity: a local account, OIDC, or an API token. There's no API parameter that names a tenant.
 - **Local accounts** (built):
   - *Passwords* are hashed with argon2id, at most a few at a time, so guessing can't overload the server. Unknown emails cost the same to check as real ones, and older hashes are upgraded at sign-in, so timing doesn't reveal which accounts exist.
-  - *Guessing* is limited per email and address pair (10 failures in 15 minutes) and per address (30), counted as attempts start, so parallel guesses can't slip through (429 with `Retry-After`). Knowing the owner's email isn't enough to lock them out. Behind a reverse proxy, the address comes from `X-Forwarded-For` only if the proxy is listed in `TENSORA_TRUSTED_PROXIES`.
-  - *Passwords and session cookies cross only private connections*: HTTPS (directly, or from a trusted proxy that says so), or this machine. Plain HTTP from another machine is refused unless the operator sets `TENSORA_INSECURE_HTTP=true` for a network they trust.
-  - *Session and API tokens* are 256 random bits, stored only as SHA-256 hashes; a new API token is shown once. The session cookie is HttpOnly and SameSite=Strict, and over HTTPS it's `Secure` with the `__Host-` name, so no other host can set it; a request carrying two session cookies is refused. Every cookie request that changes something needs the `X-Tensora-CSRF` header, which other sites can't add.
-  - *An API token can't make tokens or change the password*: those need a signed-in browser, so a stolen token stops working once revoked. Changing the password signs out every other session and reports how many API tokens still work.
+  - *Guessing* is limited per account and caller pair (10 failures in 15 minutes) and per caller (30, and 2 attempts at a time), counted as attempts start, so parallel guesses can't slip through (429 with `Retry-After`). A caller is an IPv4 address or an IPv6 /64; an IPv6 /48, which one person can easily hold whole, gets a looser limit of its own (100, and 4 at a time). Where an ISP gives each home a /56 or /64 out of a shared /48, a neighbour can still use up that /48's limit and block sign-in from it for 15 minutes; the per-pair and per-caller limits are the ones that hold for everyone. Knowing the owner's email isn't enough to lock them out, and password checks for a signed-in user (making a token, changing the password) are limited per caller too, so someone holding a stolen session can't use up the owner's. Only attempts whose password was checked count, so the limiter's memory is bounded by how fast passwords can be checked, and it's capped too. New passwords must not be common or mostly one character. Someone with many addresses can still guess slowly (see Open risks).
+  - *Proxies:* behind a reverse proxy, the caller's address comes from `X-Forwarded-For` (every header line, nearest entry first) only if the proxy is listed in `TENSORA_TRUSTED_PROXIES`. List only the proxies' own addresses: every listed address can claim HTTPS and any client address, and the server warns about ranges. A proxied request without `X-Forwarded-For` is refused, since everyone behind the proxy would share one limit. A request with proxy headers from a peer that isn't listed is refused for sign-in and sessions, even from this machine: everyone behind that proxy would share one limit, and what it says about HTTPS can't be believed. A proxy must send `X-Forwarded-For` and `X-Forwarded-Proto`; one that sends neither can't be told apart from a browser on the same machine.
+  - *Passwords and session cookies cross only private connections*: HTTPS (directly, or from a listed proxy that says so), or a browser on this machine. Plain HTTP from another machine is refused unless the operator sets `TENSORA_INSECURE_HTTP=true` for a network they trust.
+  - *Session and API tokens* are 256 random bits, stored only as SHA-256 hashes; a new API token is shown once. The session cookie is HttpOnly and SameSite=Strict, and over HTTPS it's `Secure` with the `__Host-` name, so no other host can set it; over HTTPS a cookie with the plain name is ignored, and a request carrying the session cookie twice is refused. Every cookie request that changes something needs the `X-Tensora-CSRF` header, which other sites can't add.
+  - *An API token can't make tokens or change the password*, and a browser session needs the password again to make a token: a token outlives the session that makes it. Changing the password signs out every other session and reports how many API tokens still work. A sign-in that checked the old password can't finish after a password change: both lock the user's row.
   - A user lists and revokes only their own tokens. Disabling an account ends its sessions and tokens. Timelines name the credential that acted (`browser session`, or the token's name and prefix).
-  - The first account comes from `tensora setup` on the machine itself, never from a first-come web form, and `tensora setup -reset-password` is the way back in. Both need access to the database.
-- **Workload web UIs** (Jupyter, endpoint UIs; roadmap step 7 and the relay) must be served from a different site than the dashboard and API, such as their own hostname. Code running in a workload controls what its UI serves, and on the dashboard's own origin it could send requests with the user's session cookie and the CSRF header.
+  - The first account comes from `tensora setup` on the machine itself, never from a first-come web form, and `tensora setup -reset-password` is the way back in. Both need access to the database. A reset also signs out every session, which is how to end one that was stolen.
+- **Workload web UIs** (Jupyter, endpoint UIs; roadmap step 7 and the relay) must be served from a different site than the dashboard and API, such as their own hostname. Code running in a workload controls what its UI serves, and on the dashboard's own origin it could send requests with the user's session cookie and the CSRF header. Another port on the same host isn't a different site for cookies (a notebook on `localhost:8888` can set cookies for the dashboard on `localhost:8080`), and neither is a subdomain of the dashboard's domain.
 - Every store query is scoped by tenant. Dev header auth is refused outside `TENSORA_ENV=dev`.
 
 **Logs** (details in [logs-and-transparency.md](logs-and-transparency.md))
@@ -112,6 +137,7 @@ the runtime's isolation is part of the agent work (roadmap step 6).
 | Datacenter admin network not firewalled | Open | Phase 3 |
 | The controller's ServiceAccount can create pods in any namespace | Accepted | Kind allowlist, RBAC limited to listed resources, audit logging |
 | Hosts can see guest data | **Accepted and disclosed** | Product warnings; confidential computing out of scope |
+| Slow guessing from many addresses, and making sign-in busy | Accepted (mitigated) | Per-caller limits, a cap on concurrent password checks, and refusing common passwords keep guessing slow, but someone with many IPv4 addresses or IPv6 /48s can still guess slowly, or keep the password checks busy so sign-in answers "busy" for a while. Use a long, uncommon password. Before exposing sign-in to the internet, put a rate-limiting proxy in front; Phase 2 adds per-account alerts. |
 | Admission outcomes reveal whether a GPU class is full | Accepted (mitigated) | Untrusted tenants get no free-GPU counts, but queued versus admitted still shows whether a class has room. When sharing lands (Phase 4), compute capacity only over machines that user may use, so the signal covers only what they could run on anyway. |
 
 ## Compliance notes

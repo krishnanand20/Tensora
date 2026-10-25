@@ -79,6 +79,7 @@ type Workload struct {
 	Region        Region        // fixed at creation; the workload's data never leaves it (rule 9)
 	PlacedClass   string        // the class it was admitted on; empty until first admitted
 	MachineID     uuid.UUID     // the agent machine it runs on; uuid.Nil until placed on one
+	Driver        string        // the agent driver that runs it (ADR-0016); empty on Kubernetes
 	Fallback      []string      // other classes, or "cpu", the user accepts, in order; empty means wait
 	FallbackAfter time.Duration // how long to wait for GPUClass before trying Fallback
 }

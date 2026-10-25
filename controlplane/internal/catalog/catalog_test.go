@@ -1,8 +1,10 @@
 package catalog_test
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,5 +209,65 @@ func TestCheckLaunchUsesTheWorkloadsKind(t *testing.T) {
 	if _, err := catalog.CheckLaunch(domain.TierUntrusted, g, nowAVM, domain.KindNotebook, "local"); err == nil ||
 		!strings.Contains(err.Error(), "no longer a notebook image") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Agents' devices match classes: NVIDIA by model name, a Mac by the largest tier its unified
+// memory holds. Nothing matches what the catalog doesn't list, or a region the class isn't in.
+func TestDevicesOn(t *testing.T) {
+	c := testutil.Catalog(t)
+	gib := func(n int64) int64 { return n * 1024 }
+	for name, tt := range map[string]struct {
+		accelerators []domain.Accelerator
+		want         map[string]int
+	}{
+		"two L40S": {[]domain.Accelerator{{Kind: domain.AcceleratorNVIDIA, Model: "NVIDIA L40S", Count: 2, MemoryMiB: 46068}},
+			map[string]int{"l40s-48gb": 2}},
+		"model names ignore case": {[]domain.Accelerator{{Kind: domain.AcceleratorNVIDIA, Model: "nvidia geforce rtx 4090", Count: 1}},
+			map[string]int{"rtx4090-24gb": 1}},
+		"an unlisted NVIDIA card": {[]domain.Accelerator{{Kind: domain.AcceleratorNVIDIA, Model: "NVIDIA T4", Count: 1}},
+			map[string]int{}},
+		"a 36 GB Mac is the 32 GB tier": {[]domain.Accelerator{{Kind: domain.AcceleratorApple, Model: "Apple M3 Pro", Count: 1, MemoryMiB: gib(36)}},
+			map[string]int{"apple-silicon-32gb": 1}},
+		"a 16 GB Mac": {[]domain.Accelerator{{Kind: domain.AcceleratorApple, Model: "Apple M2", Count: 1, MemoryMiB: gib(16)}},
+			map[string]int{"apple-silicon-16gb": 1}},
+		"an 8 GB Mac has no GPU tier": {[]domain.Accelerator{{Kind: domain.AcceleratorApple, Model: "Apple M1", Count: 1, MemoryMiB: gib(8)}},
+			map[string]int{}},
+	} {
+		if got := c.DevicesOn(tt.accelerators, "local"); !maps.Equal(got, tt.want) {
+			t.Errorf("%s: DevicesOn = %v, want %v", name, got, tt.want)
+		}
+	}
+	limited := *c
+	limited.GPUClasses = slices.Clone(c.GPUClasses)
+	for i := range limited.GPUClasses {
+		limited.GPUClasses[i].Regions = []domain.Region{"eu-fra-1"}
+	}
+	if got := limited.DevicesOn([]domain.Accelerator{{Kind: domain.AcceleratorNVIDIA, Model: "NVIDIA L40S", Count: 1}}, "local"); len(got) != 0 {
+		t.Errorf("in a region without the class: %v", got)
+	}
+}
+
+func TestModelsBelongToOneClass(t *testing.T) {
+	c := testutil.Catalog(t)
+	dup := *c
+	dup.GPUClasses = slices.Clone(c.GPUClasses)
+	for i, g := range dup.GPUClasses {
+		if g.ID == "a100-80gb" {
+			dup.GPUClasses[i].Models = []string{"nvidia l40s"}
+		}
+	}
+	if err := dup.Validate(); err == nil || !strings.Contains(err.Error(), "already class") {
+		t.Errorf("a model in two classes: %v", err)
+	}
+	apple := *c
+	apple.GPUClasses = slices.Clone(c.GPUClasses)
+	for i, g := range apple.GPUClasses {
+		if g.Accelerator == domain.AcceleratorApple {
+			apple.GPUClasses[i].Models = []string{"Apple M3"}
+		}
+	}
+	if err := apple.Validate(); err == nil {
+		t.Error("models on an Apple class were accepted")
 	}
 }

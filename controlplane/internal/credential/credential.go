@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -96,12 +97,52 @@ func HashToken(token string) string {
 }
 
 // ErrWeakPassword explains why a new password was refused; its message is safe to show.
-var ErrWeakPassword = errors.New("a password needs at least 12 characters, at most 1024 bytes, and must differ from the email")
+var ErrWeakPassword = errors.New("a password needs at least 12 characters (at most 1024 bytes), " +
+	"must differ from the email, and can't be a common password or mostly one character")
 
-// CheckNewPassword refuses passwords that are too short to resist guessing, or long enough to be
-// a way to make the server work hard.
+// common reports the passwords of 12 or more characters that guessing tools try first, compared
+// without case, spaces, or punctuation. Built once, and never changed after.
+var common = sync.OnceValue(func() map[string]bool {
+	set := map[string]bool{}
+	for _, p := range strings.Fields(`
+		password1234 password12345 password123456 password1234567 password12345678 passwordpassword
+		123456789012 1234567890123 12345678901234 123456789123 123123123123 111111111111 000000000000
+		qwertyuiop12 qwertyuiop123 qwerty123456 qwerty1234567 qwertyuiopasdf qwertyuiopasdfgh
+		1q2w3e4r5t6y 1qaz2wsx3edc 1qaz2wsx3edc4rfv zaq12wsxcde3 asdfghjkl123 asdfghjklqwe
+		iloveyou1234 iloveyouiloveyou letmein12345 welcome12345 welcome123456 changeme1234
+		changeme12345 administrator administrator1 admin1234567 adminadmin123 rootroot1234
+		trustno11234 sunshine1234 football1234 baseball1234 superman1234 princess1234 dragon123456
+		monkey123456 master123456 abc123456789 abcdefghijkl abcdefghijklmn abcd12345678 abcd1234abcd
+		passw0rd1234 p4ssw0rd1234 letmeinletmein whatever1234 starwars1234 pokemon12345
+		tensora12345 tensora123456 tensoratensora
+	`) {
+		set[p] = true
+	}
+	return set
+})
+
+// fold reduces a password to what guessing tools vary least: lowercase letters and digits.
+func fold(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			return r + 'a' - 'A'
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		}
+		return -1
+	}, s)
+}
+
+// CheckNewPassword refuses passwords that are too short or too common to resist guessing, or long
+// enough to be a way to make the server work hard.
 func CheckNewPassword(password, email string) error {
-	if len([]rune(password)) < 12 || len(password) > MaxPasswordBytes || strings.EqualFold(password, email) {
+	distinct := map[rune]bool{}
+	for _, r := range password {
+		distinct[r] = true
+	}
+	if len([]rune(password)) < 12 || len(password) > MaxPasswordBytes || strings.EqualFold(password, email) ||
+		len(distinct) < 5 || common()[fold(password)] {
 		return ErrWeakPassword
 	}
 	return nil

@@ -33,12 +33,15 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 // database with them (CheckSchema), so a migration written for only one database fails a test.
 var (
 	SchemaColumns = map[string][]string{
-		"tenants":  {"created_at", "id", "name", "slug", "tier"},
-		"quotas":   {"gpu_class", "max_gpus", "tenant_id"},
-		"machines": {"accelerators", "arch", "created_at", "id", "last_seen_at", "name", "os", "region", "sharing", "tenant_id"},
+		"tenants": {"created_at", "id", "name", "slug", "tier"},
+		"quotas":  {"gpu_class", "max_gpus", "tenant_id"},
+		"machines": {
+			"accelerators", "arch", "cpus", "created_at", "id", "last_seen_at", "memory_mib", "name", "os", "region",
+			"sharing", "tenant_id",
+		},
 		"workloads": {
-			"created_at", "created_by", "fallback", "fallback_after_s", "gpu_class", "gpu_count", "id", "image_id",
-			"kind", "machine_id", "name", "params", "placed_class", "region", "state", "tenant_id", "updated_at",
+			"created_at", "created_by", "driver", "fallback", "fallback_after_s", "gpu_class", "gpu_count", "id",
+			"image_id", "kind", "machine_id", "name", "params", "placed_class", "region", "state", "tenant_id", "updated_at",
 		},
 		"workload_events":  {"at", "from_state", "id", "reason", "to_state", "workload_id"},
 		"usage_records":    {"created_at", "gpu_class", "gpu_count", "machine_id", "period_start", "region", "seconds", "tenant_id", "workload_id"},
@@ -51,7 +54,7 @@ var (
 		"api_tokens_active_name_idx", "idempotency_keys_created_idx", "machines_region_idx",
 		"sessions_expires_idx", "sessions_user_idx", "users_tenant_idx",
 		"usage_records_tenant_idx", "workload_events_at_idx", "workload_events_workload_idx",
-		"workloads_active_state_idx", "workloads_region_state_idx", "workloads_tenant_idx",
+		"workloads_active_state_idx", "workloads_machine_idx", "workloads_region_state_idx", "workloads_tenant_idx",
 	}
 )
 
@@ -346,6 +349,7 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 	a, b := tenant(t, st, "alpha"), tenant(t, st, "bravo")
 	m := domain.Machine{
 		ID: uuid.New(), TenantID: a.ID, Name: "studio-mac", Region: "eu-fra-1", OS: "darwin", Arch: "arm64",
+		CPUs: 16, MemoryMiB: 131072,
 		Accelerators: []domain.Accelerator{{Kind: domain.AcceleratorApple, Model: "Apple M3 Max", Count: 1, MemoryMiB: 131072}},
 		Sharing:      domain.SharingInvite, LastSeenAt: t0.Add(time.Minute), CreatedAt: t0,
 	}
@@ -397,7 +401,7 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 	tx(t, st, func(q store.Queries) error {
 		got, err := q.GetMachine(ctx, a.ID, m.ID)
 		if err != nil || got.Region != m.Region || got.Sharing != m.Sharing || !got.LastSeenAt.Equal(m.LastSeenAt) ||
-			len(got.Accelerators) != 1 || got.Accelerators[0] != m.Accelerators[0] {
+			got.CPUs != 16 || got.MemoryMiB != 131072 || len(got.Accelerators) != 1 || got.Accelerators[0] != m.Accelerators[0] {
 			t.Errorf("machine round trip = %+v, %v", got, err)
 		}
 		list, err := q.ListMachines(ctx, a.ID)
@@ -417,15 +421,21 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 			!slices.Equal(got.Fallback, w.Fallback) || got.FallbackAfter != 10*time.Minute {
 			t.Errorf("unplaced workload round trip = %+v, %v", got, err)
 		}
-		if err := q.SetPlacement(ctx, w.ID, "a100-80gb", m.ID); err != nil {
+		if err := q.SetPlacement(ctx, w.ID, "a100-80gb", m.ID, domain.DriverMacOSNative); err != nil {
 			return err
 		}
 		return q.UpdateWorkloadState(ctx, w.ID, domain.StatePending, domain.StateProvisioning, t0)
 	})
 	tx(t, st, func(q store.Queries) error {
 		got, err := q.GetWorkload(ctx, a.ID, w.ID)
-		if err != nil || got.PlacedClass != "a100-80gb" || got.MachineID != m.ID {
+		if err != nil || got.PlacedClass != "a100-80gb" || got.MachineID != m.ID || got.Driver != domain.DriverMacOSNative {
 			t.Errorf("placed workload = %+v, %v", got, err)
+		}
+		if on, err := q.WorkloadsOnMachine(ctx, m.ID); err != nil || len(on) != 1 || on[0].ID != w.ID {
+			t.Errorf("WorkloadsOnMachine = %+v, %v; want the placed workload", on, err)
+		}
+		if on, err := q.WorkloadsOnMachine(ctx, quiet.ID); err != nil || len(on) != 0 {
+			t.Errorf("WorkloadsOnMachine(another machine) = %+v, %v; want none", on, err)
 		}
 		if alloc, err := q.GPUsAllocated(ctx, "eu-fra-1"); err != nil || alloc["a100-80gb"] != 1 || alloc["l40s-48gb"] != 0 {
 			t.Errorf("GPUsAllocated = %v, %v; want the placed class counted, not the requested one", alloc, err)
@@ -452,8 +462,10 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 		return nil
 	})
 	for name, fn := range map[string]func(q store.Queries) error{
-		"unknown machine":  func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "a100-80gb", uuid.New()) },
-		"unknown workload": func(q store.Queries) error { return q.SetPlacement(ctx, uuid.New(), "a100-80gb", uuid.Nil) },
+		"unknown machine": func(q store.Queries) error {
+			return q.SetPlacement(ctx, w.ID, "a100-80gb", uuid.New(), domain.DriverLibvirt)
+		},
+		"unknown workload": func(q store.Queries) error { return q.SetPlacement(ctx, uuid.New(), "a100-80gb", uuid.Nil, "") },
 	} {
 		if !domain.IsNotFound(st.InTx(ctx, fn)) {
 			t.Errorf("SetPlacement with an %s must be not found", name)
@@ -472,18 +484,65 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 		}
 		return q.CreateMachine(ctx, bravos)
 	})
+	community := bravos
+	community.ID, community.Name, community.Sharing = uuid.New(), "bravo-pool", domain.SharingCommunity
+	tx(t, st, func(q store.Queries) error { return q.CreateMachine(ctx, community) })
 	for name, tt := range map[string]struct {
 		machine uuid.UUID
+		driver  string
 		want    domain.Code
 	}{
-		"machine in another region":       {elsewhere.ID, domain.CodeInvalid},
-		"another tenant's invite machine": {bravos.ID, domain.CodeForbidden},
+		"machine in another region":                    {elsewhere.ID, domain.DriverLibvirt, domain.CodeInvalid},
+		"another tenant's invite machine":              {bravos.ID, domain.DriverLibvirt, domain.CodeForbidden},
+		"weak isolation on another tenant's community": {community.ID, domain.DriverMacOSNative, domain.CodeForbidden},
+		"an unknown driver":                            {m.ID, "made-up", domain.CodeInvalid},
+		"a driver without a machine":                   {uuid.Nil, domain.DriverDocker, domain.CodeInvalid},
+		"strong isolation on a community machine":      {community.ID, domain.DriverMacOSVZ, ""},
 	} {
-		code, _ := domain.CodeOf(st.InTx(ctx, func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "a100-80gb", tt.machine) }))
+		code, _ := domain.CodeOf(st.InTx(ctx, func(q store.Queries) error {
+			return q.SetPlacement(ctx, w.ID, "a100-80gb", tt.machine, tt.driver)
+		}))
 		if code != tt.want {
 			t.Errorf("SetPlacement on a %s: code = %q, want %q", name, code, tt.want)
 		}
 	}
+
+	// An agent's report updates only the inventory and when it was last seen, never the owner,
+	// name, region, or sharing.
+	tx(t, st, func(q store.Queries) error {
+		report := quiet
+		report.TenantID, report.Name, report.Region, report.Sharing = b.ID, "renamed", domain.RegionLocal, domain.SharingCommunity
+		report.OS, report.Arch, report.CPUs, report.MemoryMiB, report.LastSeenAt = "linux", "amd64", 32, 65536, t0.Add(time.Hour)
+		report.Accelerators = []domain.Accelerator{{Kind: domain.AcceleratorNVIDIA, Model: "NVIDIA L40S", Count: 2, MemoryMiB: 46068}}
+		if err := q.UpdateMachineInventory(ctx, report); err != nil {
+			return err
+		}
+		got, err := q.GetMachine(ctx, a.ID, quiet.ID)
+		if err != nil || got.Name != quiet.Name || got.Region != quiet.Region || got.Sharing != quiet.Sharing ||
+			got.OS != "linux" || got.CPUs != 32 || got.MemoryMiB != 65536 || !got.LastSeenAt.Equal(t0.Add(time.Hour)) ||
+			len(got.Accelerators) != 1 || got.Accelerators[0].Count != 2 {
+			t.Errorf("after an inventory report = %+v, %v", got, err)
+		}
+		if byID, err := q.MachineByID(ctx, quiet.ID); err != nil || byID.Name != quiet.Name || byID.CPUs != 32 {
+			t.Errorf("MachineByID = %+v, %v", byID, err)
+		}
+		if _, err := q.MachineByID(ctx, uuid.New()); !domain.IsNotFound(err) {
+			t.Errorf("MachineByID(unknown): %v; want not found", err)
+		}
+		if err := q.UpdateMachineInventory(ctx, domain.Machine{ID: uuid.New()}); !domain.IsNotFound(err) {
+			t.Errorf("inventory for an unknown machine: %v; want not found", err)
+		}
+		inRegion, err := q.MachinesInRegion(ctx, "eu-fra-1")
+		if err != nil || len(inRegion) != 5 {
+			t.Errorf("MachinesInRegion(eu-fra-1) = %d machines, %v; want 5, across tenants", len(inRegion), err)
+		}
+		for _, x := range inRegion {
+			if x.Region != "eu-fra-1" {
+				t.Errorf("MachinesInRegion returned %s in %s", x.Name, x.Region)
+			}
+		}
+		return nil
+	})
 
 	// A workload holding capacity without a recorded placement (admitted by an older version) is
 	// counted under the class it requested, never left out.
@@ -595,6 +654,9 @@ func testLocalAccounts(t *testing.T, st store.Store) {
 		if err := q.CreateUser(ctx, alice); err != nil {
 			return err
 		}
+		if err := q.LockUser(ctx, alice.ID); err != nil {
+			t.Errorf("LockUser: %v", err)
+		}
 		return q.CreateUser(ctx, bob)
 	})
 	for name, tt := range map[string]struct {
@@ -606,6 +668,9 @@ func testLocalAccounts(t *testing.T, st store.Store) {
 			dup.ID = uuid.New()
 			return q.CreateUser(ctx, dup)
 		}, domain.CodeConflict},
+		"lock a missing user": {func(q store.Queries) error {
+			return q.LockUser(ctx, uuid.New())
+		}, domain.CodeNotFound},
 		"user for a missing tenant": {func(q store.Queries) error {
 			orphan := alice
 			orphan.ID, orphan.TenantID, orphan.Email = uuid.New(), uuid.New(), "orphan@x.test"

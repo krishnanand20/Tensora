@@ -29,6 +29,10 @@ state as it was (`still pending`). Reasons are written for you, from a fixed voc
 | The runtime can't be reached (a note) | `couldn't read its status from the runtime; retrying. …` or `couldn't check for free GPUs on the runtime; retrying. …` |
 | Something retrying can't fix | `can't start: GPU class "x" is no longer offered by this installation` |
 | A model server that isn't ready | `model server not ready (RevisionFailed)` |
+| Placed on a machine (node agents) | `admitted: 1 × apple-silicon-32gb on studio with macos-native`: the class, the machine, and the driver |
+| Waiting for a machine | `waiting for a machine that can run apple-silicon-32gb to come online`, or for a VM or notebook that ran before, `waiting for its machine to come online: its disk is there` |
+| The machine is offline (a note) | `its machine is offline; waiting for it to reconnect` |
+| What the machine's agent reports | A fixed reason for each code it sends, such as `waiting for its machine's GPU to be free` or `it ran out of memory`. An agent's own words never appear; a code the control plane doesn't know reads `its machine reported a problem`. |
 
 Raw runtime messages from Kubernetes, KServe, or agents never appear in a timeline. They can name internal
 objects and machines, describe other people's use of the cluster, or echo credentials. The operator's log

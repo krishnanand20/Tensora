@@ -1,0 +1,506 @@
+// Package agents is the node-agent cluster.Backend (ADR-0013, ADR-0016). Each machine's agent syncs
+// with it: it records what the agent reports, and answers with what the machine should run, worked
+// out from the store on every sync, so nothing about desired state lives only in memory. What
+// agents report never decides a machine's owner, region, or a driver's isolation, and their words
+// never reach a timeline.
+package agents
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"log/slog"
+	"slices"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/google/uuid"
+
+	"github.com/tensora/tensora/controlplane/internal/agent/protocol"
+	"github.com/tensora/tensora/controlplane/internal/catalog"
+	"github.com/tensora/tensora/controlplane/internal/cluster"
+	"github.com/tensora/tensora/controlplane/internal/domain"
+	"github.com/tensora/tensora/controlplane/internal/store"
+)
+
+type Options struct {
+	// Region is the one region this backend serves: a machine in another is refused (rule 9).
+	Region domain.Region
+	// PollTimeout is how long a sync waits for a change before answering anyway.
+	PollTimeout time.Duration
+	// OfflineAfter is how long after its last sync a machine that isn't waiting in one counts as
+	// offline.
+	OfflineAfter time.Duration
+	// LostAfter is how long a machine may stay offline before its running workloads fail: they
+	// aren't running, and shouldn't hold quota or be accounted forever.
+	LostAfter time.Duration
+	// AllowSim accepts agents' sim driver, which runs nothing (development only).
+	AllowSim bool
+}
+
+const (
+	defaultPollTimeout  = 20 * time.Second
+	defaultOfflineAfter = 45 * time.Second
+	defaultLostAfter    = 10 * time.Minute
+	// heartbeatEvery limits how often a machine's last-seen time is written, so syncs stay reads.
+	heartbeatEvery = time.Minute
+	maxStatuses    = 1000
+	maxDrivers     = 16
+)
+
+// Offline is the reason a workload waits while its machine is offline.
+const Offline = "its machine is offline; waiting for it to reconnect"
+
+type Hub struct {
+	store   store.Store
+	catalog *catalog.Catalog
+	opts    Options
+	log     *slog.Logger
+	now     func() time.Time
+	started time.Time // machines reconnect in the first OfflineAfter; nothing is decided on their absence
+
+	mu       sync.Mutex
+	sessions map[uuid.UUID]*session
+}
+
+// session is what the hub knows about one machine's agent since the hub started: runtime state,
+// rebuilt from the agent's next sync after a restart.
+type session struct {
+	inventory     protocol.Inventory // validated
+	hasInventory  bool
+	statuses      map[uuid.UUID]protocol.Status
+	lastSync      time.Time
+	heartbeatAt   time.Time
+	polling       int    // syncs waiting right now
+	generation    uint64 // bumped whenever the machine's desired state may have changed
+	wake          chan struct{}
+	statusesKnown bool // a sync has reported the agent's complete status
+}
+
+func New(st store.Store, cat *catalog.Catalog, opts Options, log *slog.Logger, now func() time.Time) *Hub {
+	if now == nil {
+		now = time.Now
+	}
+	if opts.Region == "" {
+		opts.Region = domain.RegionLocal
+	}
+	if opts.PollTimeout <= 0 {
+		opts.PollTimeout = defaultPollTimeout
+	}
+	if opts.OfflineAfter <= 0 {
+		opts.OfflineAfter = defaultOfflineAfter
+	}
+	if opts.LostAfter <= 0 {
+		opts.LostAfter = defaultLostAfter
+	}
+	return &Hub{store: st, catalog: cat, opts: opts, log: log, now: now, started: now().UTC(), sessions: map[uuid.UUID]*session{}}
+}
+
+// starting reports whether machines may still be reconnecting after the hub started.
+func (h *Hub) starting() bool { return h.now().UTC().Sub(h.started) < h.opts.OfflineAfter }
+
+// Conn is the in-process connection for machine id's agent (Solo). Phase 2's HTTPS transport
+// calls Sync the same way, with the machine taken from its client certificate.
+func (h *Hub) Conn(id uuid.UUID) protocol.Conn { return localConn{h: h, id: id} }
+
+type localConn struct {
+	h  *Hub
+	id uuid.UUID
+}
+
+func (c localConn) Sync(ctx context.Context, req protocol.SyncRequest) (protocol.SyncResponse, error) {
+	return c.h.Sync(ctx, c.id, req)
+}
+
+func (h *Hub) session(id uuid.UUID) *session {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s, ok := h.sessions[id]
+	if !ok {
+		// Not 0, which a starting agent sends, nor a small number an agent from before a restart
+		// might hold: its first sync is always answered at once.
+		s = &session{statuses: map[uuid.UUID]protocol.Status{}, generation: uint64(h.now().UnixNano()), wake: make(chan struct{})}
+		h.sessions[id] = s
+	}
+	return s
+}
+
+// Sync records machine id's report and answers with its desired state, waiting up to PollTimeout
+// for a change when the agent is already up to date.
+func (h *Hub) Sync(ctx context.Context, id uuid.UUID, req protocol.SyncRequest) (protocol.SyncResponse, error) {
+	if req.Version != protocol.Version {
+		return protocol.SyncResponse{}, domain.Errorf(domain.CodeInvalid, "protocol version %d isn't supported; this control plane speaks %d", req.Version, protocol.Version)
+	}
+	if len(req.Statuses) > maxStatuses {
+		return protocol.SyncResponse{}, domain.Errorf(domain.CodeInvalid, "too many statuses")
+	}
+	var m domain.Machine
+	if err := h.store.InTx(ctx, func(q store.Queries) error {
+		var err error
+		m, err = q.MachineByID(ctx, id)
+		return err
+	}); err != nil {
+		return protocol.SyncResponse{}, err
+	}
+	if m.Region != h.opts.Region {
+		return protocol.SyncResponse{}, domain.Errorf(domain.CodeForbidden, "machine %s is in region %s, not this control plane's %s", m.Name, m.Region, h.opts.Region)
+	}
+	s := h.session(id)
+	now := h.now().UTC()
+
+	statuses := map[uuid.UUID]protocol.Status{}
+	for _, st := range req.Statuses {
+		switch st.State {
+		case protocol.StateProgressing, protocol.StateReady, protocol.StateStopped, protocol.StateFailed:
+		default:
+			st.State, st.Code = protocol.StateFailed, "" // an unknown state reads as a problem
+		}
+		statuses[st.ID] = st
+	}
+	h.mu.Lock()
+	s.statuses, s.statusesKnown, s.lastSync = statuses, true, now
+	h.mu.Unlock()
+
+	if err := h.recordInventory(ctx, s, m, req.Inventory, now); err != nil {
+		return protocol.SyncResponse{}, err
+	}
+
+	h.mu.Lock()
+	gen, wake, has := s.generation, s.wake, s.hasInventory
+	s.polling++
+	h.mu.Unlock()
+	if req.Generation == gen && has {
+		timer := time.NewTimer(h.opts.PollTimeout)
+		select {
+		case <-wake:
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+	}
+	h.mu.Lock()
+	s.polling--
+	s.lastSync = h.now().UTC()
+	gen = s.generation
+	h.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return protocol.SyncResponse{}, err
+	}
+	desired, err := h.desired(ctx, m)
+	return protocol.SyncResponse{Generation: gen, Workloads: desired, SendInventory: !has}, err
+}
+
+// recordInventory checks and stores a reported inventory, or writes a heartbeat now and then.
+func (h *Hub) recordInventory(ctx context.Context, s *session, m domain.Machine, inv *protocol.Inventory, now time.Time) error {
+	h.mu.Lock()
+	beat := s.hasInventory && now.Sub(s.heartbeatAt) >= heartbeatEvery
+	h.mu.Unlock()
+	if inv == nil && !beat {
+		return nil
+	}
+	if inv != nil {
+		checked, err := h.checkInventory(m, *inv)
+		if err != nil {
+			h.log.Warn("agent inventory refused", "machine", m.ID, "err", err)
+			return err
+		}
+		m.OS, m.Arch, m.CPUs, m.MemoryMiB, m.Accelerators = checked.OS, checked.Arch, checked.CPUs, checked.MemoryMiB, checked.Accelerators
+		inv = &checked
+	}
+	m.LastSeenAt = now
+	if err := h.store.InTx(ctx, func(q store.Queries) error { return q.UpdateMachineInventory(ctx, m) }); err != nil {
+		return fmt.Errorf("record machine %s: %w", m.ID, err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s.heartbeatAt = now
+	if inv != nil {
+		s.inventory, s.hasInventory = *inv, true
+	}
+	return nil
+}
+
+// checkInventory validates what an agent reports and keeps only drivers the control plane knows.
+func (h *Hub) checkInventory(m domain.Machine, inv protocol.Inventory) (protocol.Inventory, error) {
+	m.OS, m.Arch, m.CPUs, m.MemoryMiB, m.Accelerators = inv.OS, inv.Arch, inv.CPUs, inv.MemoryMiB, inv.Accelerators
+	if err := m.Validate(); err != nil {
+		return inv, err
+	}
+	if inv.UsableCPUs < 0 || inv.UsableCPUs > inv.CPUs || inv.UsableMemoryMiB < 0 || inv.UsableMemoryMiB > inv.MemoryMiB ||
+		len(inv.AgentVersion) > 64 || !printable(inv.AgentVersion) || len(inv.Drivers) > maxDrivers {
+		return inv, domain.Errorf(domain.CodeInvalid, "machine %s: its inventory is out of range", m.Name)
+	}
+	// The accelerators must make sense for the machine: one Apple GPU, only on an Apple Silicon Mac,
+	// with no more memory than the Mac has; NVIDIA and AMD GPUs only on Linux. Counts decide how many
+	// workloads share nothing, so they're never taken on trust.
+	apple := 0
+	for _, a := range inv.Accelerators {
+		switch a.Kind {
+		case domain.AcceleratorApple:
+			apple++
+			if inv.OS != "darwin" || inv.Arch != "arm64" || a.Count != 1 || apple > 1 || a.MemoryMiB > inv.MemoryMiB {
+				return inv, domain.Errorf(domain.CodeInvalid, "machine %s: its Apple GPU report doesn't fit the machine", m.Name)
+			}
+		case domain.AcceleratorNVIDIA, domain.AcceleratorAMD:
+			if inv.OS != "linux" {
+				return inv, domain.Errorf(domain.CodeInvalid, "machine %s: %s GPUs are supported on Linux only", m.Name, a.Kind)
+			}
+		case domain.AcceleratorCPU:
+			return inv, domain.Errorf(domain.CodeInvalid, "machine %s: CPUs aren't reported as accelerators", m.Name)
+		}
+	}
+	var drivers []protocol.Driver
+	seen := map[string]bool{}
+	for _, d := range inv.Drivers {
+		spec, ok := domain.LookupDriver(d.Name)
+		if !ok || seen[d.Name] || (d.Name == domain.DriverSim && !h.opts.AllowSim) || (spec.OS != "" && spec.OS != inv.OS) {
+			h.log.Warn("agent driver ignored", "machine", m.ID, "driver", fmt.Sprintf("%.40q", d.Name))
+			continue
+		}
+		seen[d.Name] = true
+		var accelerators []domain.AcceleratorKind
+		for _, a := range d.Accelerators {
+			if slices.Contains(spec.Accelerators, a) && !slices.Contains(accelerators, a) {
+				accelerators = append(accelerators, a)
+			}
+		}
+		drivers = append(drivers, protocol.Driver{Name: d.Name, Accelerators: accelerators})
+	}
+	inv.Drivers = drivers
+	return inv, nil
+}
+
+func printable(s string) bool {
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// desired is what machine m should be doing: every workload placed on it, by state. Placed and
+// admitted ones run; deleting ones are removed; endpoints that stopped are removed (they keep
+// nothing); everything else is parked, keeping its disk.
+func (h *Hub) desired(ctx context.Context, m domain.Machine) ([]protocol.Desired, error) {
+	var ws []domain.Workload
+	if err := h.store.InTx(ctx, func(q store.Queries) error {
+		var err error
+		ws, err = q.WorkloadsOnMachine(ctx, m.ID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]protocol.Desired, 0, len(ws))
+	for _, w := range ws {
+		d := protocol.Desired{ID: w.ID, Kind: w.Kind, Driver: w.Driver, StrongIsolation: w.TenantID != m.TenantID}
+		switch {
+		case w.State == domain.StateDeleting:
+			d.Mode = protocol.ModeRemove
+		case w.State == domain.StateProvisioning || w.State == domain.StateRunning:
+			d.Mode = protocol.ModeRun
+		case w.Kind == domain.KindEndpoint:
+			d.Mode = protocol.ModeRemove
+		default:
+			d.Mode = protocol.ModePark
+		}
+		if err := h.describe(&d, w); err != nil && d.Mode == protocol.ModeRun {
+			// Removed from the catalog since. An agent leaves a workload that's already running
+			// alone, and refuses to start one it can't be told how to run; the controller decides
+			// what happens next. Removing and parking need no description.
+			h.log.Warn("workload can't be fully described to its agent", "workload", w.ID, "err", err)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// describe fills in what the agent needs to run w: its placed class's size (first, so even a
+// workload being removed says which GPUs it holds), and its image's runtime for that class's
+// accelerator.
+func (h *Hub) describe(d *protocol.Desired, w domain.Workload) error {
+	class := w.PlacedClass
+	if class == "" {
+		class = w.GPUClass
+	}
+	g, ok := h.catalog.GPUClass(class)
+	if !ok {
+		return fmt.Errorf("class %q isn't in the catalog", class)
+	}
+	d.Accelerator, d.VCPUs, d.MemoryMiB = g.Accelerator, g.VCPUsPerGPU*w.GPUCount, int64(g.MemoryGiBPerGPU)*1024*int64(w.GPUCount)
+	if g.Accelerator != domain.AcceleratorCPU {
+		d.Devices = w.GPUCount
+	}
+	img, ok := h.catalog.Image(w.ImageID)
+	if !ok {
+		return fmt.Errorf("image %q isn't in the catalog", w.ImageID)
+	}
+	rt, ok := img.RuntimeFor(g.Accelerator)
+	if !ok {
+		return fmt.Errorf("image %q has no runtime for %s", w.ImageID, g.Accelerator)
+	}
+	d.ImageID = img.ID
+	d.Runtime = protocol.Runtime{Ref: rt.Ref, Server: rt.Server, ModelFormat: rt.ModelFormat}
+	d.ModelURI, d.SSHPublicKey = w.Params[domain.ParamModelURI], w.Params[domain.ParamSSHPublicKey]
+	return nil
+}
+
+// online reports whether s's agent is in a sync now or synced recently. Call with h.mu held.
+func (h *Hub) online(s *session) bool {
+	return s.polling > 0 || h.now().UTC().Sub(s.lastSync) < h.opts.OfflineAfter
+}
+
+// Capacity lists the machines connected now, with their devices per class, the CPUs and memory
+// their agents let Tensora use, and their drivers. The controller places on them. Right after the
+// hub starts, while machines in its region haven't all reconnected, it says it's settling, so a
+// restart doesn't queue workloads for machines that are about to come back.
+func (h *Hub) Capacity(ctx context.Context) (cluster.Capacity, error) {
+	settling := false
+	if h.starting() {
+		var machines []domain.Machine
+		if err := h.store.InTx(ctx, func(q store.Queries) error {
+			var err error
+			machines, err = q.MachinesInRegion(ctx, h.opts.Region)
+			return err
+		}); err != nil {
+			return cluster.Capacity{}, err
+		}
+		h.mu.Lock()
+		for _, m := range machines {
+			if s, ok := h.sessions[m.ID]; !ok || !s.hasInventory {
+				settling = true
+			}
+		}
+		h.mu.Unlock()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := cluster.Capacity{Machines: []cluster.MachineCapacity{}, Settling: settling}
+	for id, s := range h.sessions {
+		if !s.hasInventory || !h.online(s) {
+			continue
+		}
+		mc := cluster.MachineCapacity{ID: id, Devices: h.catalog.DevicesOn(s.inventory.Accelerators, h.opts.Region),
+			VCPUs: s.inventory.UsableCPUs, MemoryMiB: s.inventory.UsableMemoryMiB}
+		for _, d := range s.inventory.Drivers {
+			mc.Drivers = append(mc.Drivers, cluster.Driver{Name: d.Name, Accelerators: slices.Clone(d.Accelerators)})
+		}
+		out.Machines = append(out.Machines, mc)
+	}
+	slices.SortFunc(out.Machines, func(a, b cluster.MachineCapacity) int { return cmp.Compare(a.ID.String(), b.ID.String()) })
+	return out, nil
+}
+
+// Run, Park, and Delete wake the machine's agent: its desired state comes from the store, which the
+// controller has already changed.
+func (h *Hub) Run(_ context.Context, s cluster.Spec) error { h.nudge(s.Workload.MachineID); return nil }
+func (h *Hub) Park(_ context.Context, s cluster.Spec) error {
+	h.nudge(s.Workload.MachineID)
+	return nil
+}
+func (h *Hub) Delete(_ context.Context, ref cluster.Ref) error {
+	h.nudge(ref.MachineID)
+	return nil
+}
+
+func (h *Hub) nudge(id uuid.UUID) {
+	if id == uuid.Nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if s, ok := h.sessions[id]; ok {
+		s.generation++
+		close(s.wake)
+		s.wake = make(chan struct{})
+	}
+}
+
+// Observe reports what the workload's agent last said, with reasons from a fixed vocabulary.
+func (h *Hub) Observe(_ context.Context, ref cluster.Ref) (cluster.Observed, string, error) {
+	if ref.MachineID == uuid.Nil {
+		return cluster.ObservedAbsent, "", nil // never placed on a machine
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s, ok := h.sessions[ref.MachineID]
+	if !ok || !s.statusesKnown || !h.online(s) {
+		offlineSince := h.started
+		if ok && s.lastSync.After(offlineSince) {
+			offlineSince = s.lastSync
+		}
+		switch away := h.now().UTC().Sub(offlineSince); {
+		case !ok && h.starting():
+			return cluster.ObservedProgressing, "", nil // reconnecting after a restart: nothing to say yet
+		case away > h.opts.LostAfter:
+			return cluster.ObservedFailed, fmt.Sprintf("its machine has been offline for over %s", h.opts.LostAfter), nil
+		}
+		return cluster.ObservedUnknown, Offline, nil
+	}
+	st, ok := s.statuses[ref.ID]
+	if !ok {
+		return cluster.ObservedAbsent, "", nil
+	}
+	switch st.State {
+	case protocol.StateReady:
+		return cluster.ObservedReady, "", nil
+	case protocol.StateStopped:
+		return cluster.ObservedStopped, "", nil
+	case protocol.StateFailed:
+		return cluster.ObservedFailed, protocol.Reason(st.Code), nil
+	}
+	return cluster.ObservedProgressing, protocol.Reason(st.Code), nil
+}
+
+// RegisterLocal finds or creates the record of the control plane's own machine, owned by the tenant
+// with slug owner, for the in-process agent (Solo). id is the machine's ID from an earlier start, or
+// uuid.Nil the first time. A known machine is found by ID alone, so a new hostname is only a new
+// label: registering it again as an empty machine would make its workloads look gone. Its owner
+// and region never change (rule 9); a mismatch is refused. Phase 2 enrolment registers other
+// machines.
+func RegisterLocal(ctx context.Context, st store.Store, id uuid.UUID, owner, name, goos, goarch string, region domain.Region, now time.Time) (domain.Machine, error) {
+	var m domain.Machine
+	err := st.InTx(ctx, func(q store.Queries) error {
+		t, err := q.TenantBySlug(ctx, owner)
+		if err != nil {
+			return err
+		}
+		if id != uuid.Nil {
+			existing, err := q.MachineByID(ctx, id)
+			switch {
+			case err == nil && existing.TenantID != t.ID:
+				return domain.Errorf(domain.CodeConflict, "this machine belongs to another tenant than %s (TENSORA_MACHINE_OWNER); a machine's owner can't change yet", owner)
+			case err == nil && existing.Region != region:
+				return domain.Errorf(domain.CodeConflict, "this machine is registered in region %s, not %s; a machine never moves region", existing.Region, region)
+			case err == nil:
+				m = existing
+				return nil
+			case !domain.IsNotFound(err):
+				return err
+			} // not in this database: registered below with the same ID
+		} else {
+			ms, err := q.ListMachines(ctx, t.ID)
+			if err != nil {
+				return err
+			}
+			for _, existing := range ms {
+				if existing.Name == name {
+					if existing.Region != region {
+						return domain.Errorf(domain.CodeConflict, "machine %s is registered in region %s, not %s; a machine never moves region", name, existing.Region, region)
+					}
+					m = existing
+					return nil
+				}
+			}
+			id = uuid.Must(uuid.NewV7())
+		}
+		m = domain.Machine{ID: id, TenantID: t.ID, Name: name, Region: region, OS: goos, Arch: goarch,
+			Sharing: domain.SharingPrivate, CreatedAt: now.UTC()}
+		if err := m.Validate(); err != nil {
+			return err
+		}
+		return q.CreateMachine(ctx, m)
+	})
+	return m, err
+}

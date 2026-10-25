@@ -14,18 +14,27 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/tensora/tensora/controlplane/internal/agent"
+	"github.com/tensora/tensora/controlplane/internal/agent/drivers/inventory"
+	"github.com/tensora/tensora/controlplane/internal/agent/drivers/sim"
 	"github.com/tensora/tensora/controlplane/internal/api"
 	"github.com/tensora/tensora/controlplane/internal/auth"
 	"github.com/tensora/tensora/controlplane/internal/catalog"
 	"github.com/tensora/tensora/controlplane/internal/cluster"
+	"github.com/tensora/tensora/controlplane/internal/cluster/agents"
 	"github.com/tensora/tensora/controlplane/internal/cluster/fake"
 	"github.com/tensora/tensora/controlplane/internal/cluster/kube"
 	"github.com/tensora/tensora/controlplane/internal/config"
 	"github.com/tensora/tensora/controlplane/internal/controller"
 	"github.com/tensora/tensora/controlplane/internal/devseed"
+	"github.com/tensora/tensora/controlplane/internal/domain"
 	"github.com/tensora/tensora/controlplane/internal/metering"
 	"github.com/tensora/tensora/controlplane/internal/service"
 	"github.com/tensora/tensora/controlplane/internal/store"
@@ -135,11 +144,11 @@ func run(ctx context.Context, cmd string) error {
 	case "api":
 		return serveAPI(ctx, cfg, log, st, cat)
 	case "controller":
-		ctrl, err := newController(cfg, log, st, cat)
+		runController, err := newController(cfg, log, st, cat)
 		if err != nil {
 			return err
 		}
-		return ctrl.Run(ctx, cfg.ControllerInterval)
+		return runController(ctx)
 	case "metering":
 		return metering.New(st, log, nil).Run(ctx, cfg.MeteringInterval)
 	case "seed":
@@ -154,14 +163,14 @@ func run(ctx context.Context, cmd string) error {
 		if err := devseed.Seed(ctx, st, time.Now()); err != nil {
 			return err
 		}
-		ctrl, err := newController(cfg, log, st, cat)
+		runController, err := newController(cfg, log, st, cat)
 		if err != nil {
 			return err
 		}
 		log.Info("dev stack: seeded tenants acme, globex (untrusted) and internal (trusted); use header X-Dev-Tenant")
 		return runAll(ctx,
 			func(ctx context.Context) error { return serveAPI(ctx, cfg, log, st, cat) },
-			func(ctx context.Context) error { return ctrl.Run(ctx, cfg.ControllerInterval) },
+			runController,
 			func(ctx context.Context) error { return metering.New(st, log, nil).Run(ctx, cfg.MeteringInterval) },
 		)
 	}
@@ -252,15 +261,25 @@ func openStore(ctx context.Context, cfg config.Config, log *slog.Logger, allowMe
 	return memstore.New(), nil
 }
 
-func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *catalog.Catalog) (*controller.Controller, error) {
+// newController builds the controller and returns what runs it: with the agent backend, the
+// controller and this machine's in-process agent (Solo).
+func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *catalog.Catalog) (func(context.Context) error, error) {
 	// A controller for a region users can't create workloads in would leave everything pending.
 	if _, ok := cat.Region(cfg.Region); !ok {
 		return nil, fmt.Errorf("TENSORA_REGION %q isn't in the catalog's regions", cfg.Region)
 	}
 	var backend cluster.Backend
+	var localAgent func(context.Context) error
 	switch cfg.ClusterBackend {
+	case "agent":
+		hub := agents.New(st, cat, agents.Options{Region: cfg.Region, AllowSim: cfg.Env == "dev"}, log.With("component", "agents"), nil)
+		backend, localAgent = hub, runLocalAgent(cfg, log, st, hub)
 	case "kubernetes":
-		b, err := kube.New(cat)
+		b, err := kube.New(cat, kube.Options{
+			StorageClass:          cfg.StorageClass,
+			ImagesNamespace:       cfg.ImagesNamespace,
+			UntrustedRuntimeClass: cfg.UntrustedRuntimeClass,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -268,13 +287,140 @@ func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *cat
 	default:
 		backend = fake.New(cfg.FakeCapacity)
 	}
-	return controller.New(st, backend, cat, controller.Options{
-		Region:                cfg.Region,
-		StorageClass:          cfg.StorageClass,
-		ImagesNamespace:       cfg.ImagesNamespace,
-		UntrustedRuntimeClass: cfg.UntrustedRuntimeClass,
-		ProvisionTimeout:      cfg.ProvisionTimeout,
-	}, log.With("component", "controller"), nil), nil
+	ctrl := controller.New(st, backend, cat, controller.Options{
+		Region:           cfg.Region,
+		ProvisionTimeout: cfg.ProvisionTimeout,
+	}, log.With("component", "controller"), nil)
+	run := func(ctx context.Context) error { return ctrl.Run(ctx, cfg.ControllerInterval) }
+	if localAgent == nil {
+		return run, nil
+	}
+	return func(ctx context.Context) error { return runAll(ctx, run, localAgent) }, nil
+}
+
+// runLocalAgent registers this machine, owned by TENSORA_MACHINE_OWNER, and runs its agent in this
+// process (Solo, ADR-0016). It waits for the owner's tenant, which `tensora setup` creates.
+func runLocalAgent(cfg config.Config, log *slog.Logger, st store.Store, hub *agents.Hub) func(context.Context) error {
+	return func(ctx context.Context) error {
+		log = log.With("component", "agent")
+		name := machineName()
+		idFile, err := machineIDFile(cfg)
+		if err != nil {
+			return err
+		}
+		known, err := readMachineID(idFile)
+		if err != nil {
+			return err
+		}
+		warned := false
+		for {
+			m, err := agents.RegisterLocal(ctx, st, known, cfg.MachineOwner, name, runtime.GOOS, runtime.GOARCH, cfg.Region, time.Now())
+			if err == nil && known == uuid.Nil && idFile != "" {
+				err = writeMachineID(idFile, m.ID)
+			}
+			if err == nil {
+				log.Info("this machine is registered", "machine", m.Name, "id", m.ID, "owner", cfg.MachineOwner, "region", m.Region)
+				var drivers []agent.Driver
+				for _, d := range cfg.AgentDrivers {
+					if d == domain.DriverSim {
+						drivers = append(drivers, sim.New(domain.AcceleratorNVIDIA, domain.AcceleratorApple, domain.AcceleratorAMD, domain.AcceleratorCPU))
+					}
+				}
+				if len(drivers) == 0 {
+					log.Warn("this machine's agent has no drivers yet (roadmap step 7), so workloads wait for a machine that can run them; " +
+						"TENSORA_AGENT_DRIVERS=sim simulates them in dev")
+				}
+				return agent.New(hub.Conn(m.ID), drivers, inventory.Detect, "dev", log).Run(ctx)
+			}
+			if !domain.IsNotFound(err) {
+				return fmt.Errorf("register this machine: %w", err)
+			}
+			if !warned {
+				log.Warn("this machine's owner tenant doesn't exist yet; create it with `tensora setup`, or set TENSORA_MACHINE_OWNER",
+					"tenant", cfg.MachineOwner)
+				warned = true
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}
+}
+
+// machineIDFile is where this machine's ID is kept between starts: TENSORA_AGENT_STATE_DIR, or the
+// SQLite database's directory. With the in-memory store (dev) nothing is kept, since the database
+// itself isn't.
+func machineIDFile(cfg config.Config) (string, error) {
+	dir := cfg.AgentStateDir
+	if dir == "" {
+		db, err := cfg.Database()
+		if err != nil || db.Driver != "sqlite" {
+			return "", err
+		}
+		dir = filepath.Dir(db.DSN)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("agent state directory: %w", err)
+	}
+	return filepath.Join(dir, "machine-id"), nil
+}
+
+// readMachineID returns the ID saved by an earlier start, or uuid.Nil before the first.
+func readMachineID(path string) (uuid.UUID, error) {
+	if path == "" {
+		return uuid.Nil, nil
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // the path comes from operator config
+	if errors.Is(err, os.ErrNotExist) {
+		return uuid.Nil, nil
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("read this machine's ID: %w", err)
+	}
+	id, err := uuid.Parse(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("%s doesn't hold a machine ID; restore it, or remove it to register this machine anew", path)
+	}
+	return id, nil
+}
+
+// writeMachineID saves the machine's ID, readable by its owner only. It never replaces a file.
+func writeMachineID(path string, id uuid.UUID) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // the path comes from operator config
+	if err != nil {
+		return fmt.Errorf("save this machine's ID: %w", err)
+	}
+	if _, err := f.WriteString(id.String() + "\n"); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("save this machine's ID: %w", err)
+	}
+	return f.Close()
+}
+
+// machineName is this machine's name for its record: its hostname, as a slug. It's a label: the
+// machine is found by its saved ID, so a new hostname changes nothing else.
+func machineName() string {
+	host, _ := os.Hostname()
+	host = strings.TrimSuffix(strings.ToLower(host), ".local")
+	var b strings.Builder
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0 && !strings.HasSuffix(b.String(), "-"):
+			b.WriteByte('-')
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if len(name) > 40 {
+		name = strings.Trim(name[:40], "-")
+	}
+	if !domain.ValidSlug(name) {
+		return "this-machine"
+	}
+	return name
 }
 
 func serveAPI(ctx context.Context, cfg config.Config, log *slog.Logger, st store.Store, cat *catalog.Catalog) error {
@@ -296,6 +442,12 @@ func serveAPI(ctx context.Context, cfg config.Config, log *slog.Logger, st store
 			log.Warn("local auth: listening beyond this machine, but sign-in from other machines needs HTTPS "+
 				"through a trusted proxy (TENSORA_TRUSTED_PROXIES), or TENSORA_INSECURE_HTTP=true on a network you trust",
 				"addr", cfg.HTTPAddr)
+		}
+		for _, p := range cfg.TrustedProxies {
+			if p.Bits() < p.Addr().BitLen() {
+				log.Warn("local auth: TENSORA_TRUSTED_PROXIES lists a range; every address in it can claim any client "+
+					"address and claim HTTPS, so list only your proxies' own addresses", "range", p.String())
+			}
 		}
 	default:
 		authn = auth.Dev{}

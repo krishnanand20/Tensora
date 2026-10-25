@@ -139,7 +139,7 @@ func TestStartRechecksQuota(t *testing.T) {
 	}
 	// Drive it to stopped the way the controller would: placed, then admitted.
 	err = st.InTx(ctx, func(q store.Queries) error {
-		if err := q.SetPlacement(ctx, first.ID, first.GPUClass, uuid.Nil); err != nil {
+		if err := q.SetPlacement(ctx, first.ID, first.GPUClass, uuid.Nil, ""); err != nil {
 			return err
 		}
 		first.PlacedClass = first.GPUClass

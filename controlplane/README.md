@@ -6,13 +6,13 @@ The subcommand picks the role:
 | Command | Role | Needs | Status |
 |---|---|---|---|
 | `tensora api` | REST API under `/v1` | A store: a SQLite file or Postgres | Built |
-| `tensora controller` | Reconciles workload intent with the runtime | A store, plus Kubernetes credentials or (planned) agents | Built |
+| `tensora controller` | Reconciles workload intent with the runtime. With `TENSORA_CLUSTER_BACKEND=agent`, also runs this machine's agent in-process | A store, plus Kubernetes credentials, or the agent backend | Built |
 | `tensora metering` | Usage accounting: lifecycle events → hourly usage records, for quotas and fairness (no money) | A store | Built |
 | `tensora migrate` | Applies the SQL migrations embedded in the binary | Postgres, or a SQLite file (also migrated whenever it's opened) | Built |
 | `tensora dev` | API, controller, and usage accounting in one process with seeded tenants | Nothing | Built |
 | `tensora setup -email you@example.com` | Creates the first account, the machine's owner, for `TENSORA_AUTH_MODE=local`, with a trusted tenant and a quota on every class. Asks for the password without echoing it (or `-password-stdin`). Refused once an account exists. With `-reset-password`, sets a new password for an existing account and signs it out everywhere: the way back in, since there's no email reset. | A store | Built |
 | `tensora up` | Solo: everything in one process, with SQLite and the embedded dashboard | Nothing | Planned |
-| `tensora agent` | Node agent on each machine (Linux, macOS) | An enrolment token | Planned |
+| `tensora agent` | Node agent on other machines (Linux, macOS), joining over the network | An enrolment token | Planned (Phase 2); the agent runs in-process today |
 
 The same binary is a **CLI client** for a running API ([logs and transparency](../docs/architecture/logs-and-transparency.md)):
 
@@ -42,7 +42,15 @@ existing file that others can read, a symlink, or a device is refused, so put th
 the operator can write to.
 
 `dev` uses the in-memory store and the fake backend unless `TENSORA_DATABASE_URL` or
-`TENSORA_CLUSTER_BACKEND=kubernetes` is set. To keep data between restarts without Postgres, use a SQLite
+`TENSORA_CLUSTER_BACKEND` is set. With `TENSORA_CLUSTER_BACKEND=agent`, the controller runs this machine's agent in
+its own process ([ADR-0016](../docs/adr/0016-agent-protocol-and-machine-placement.md)): it registers the machine,
+owned by the tenant `TENSORA_MACHINE_OWNER` (`home` by default, which `tensora setup` creates), reports its CPUs,
+memory, and GPU (an Apple Silicon GPU through sysctl, NVIDIA GPUs through `nvidia-smi`), and runs what the
+controller places on it. Until the real drivers land (roadmap step 7), `TENSORA_AGENT_DRIVERS=sim` simulates them
+in dev: `TENSORA_CLUSTER_BACKEND=agent TENSORA_AGENT_DRIVERS=sim TENSORA_MACHINE_OWNER=internal go run ./cmd/tensora dev`,
+then launch on `apple-silicon-32gb` (or whichever tier this Mac's memory holds) or a CPU class with `X-Dev-Tenant: internal`.
+The machine's ID is saved in `machine-id` next to the SQLite database (`TENSORA_AGENT_STATE_DIR` with Postgres), so
+a new hostname is only a new label; with the in-memory store nothing is saved. To keep data between restarts without Postgres, use a SQLite
 file: `TENSORA_DATABASE_URL=sqlite:$PWD/tensora.db go run ./cmd/tensora dev`. It's created readable by you
 only and migrated when opened, and the path in use is logged at startup. The file and its `-wal` and `-shm`
 files must stay owner-only, in a directory other users can't write to; otherwise Tensora refuses to start
@@ -58,25 +66,28 @@ your laptop, use `TENSORA_CLUSTER_BACKEND=kubernetes`. It reads `KUBECONFIG`. Ne
 | GET | `/v1/catalog` | Regions, and the classes (with accelerator and regions) and images (with each runtime's accelerators and server) visible to the caller's tenant |
 | GET | `/v1/workloads` | `{"items": [...]}`. `?include_deleted=true` adds deleted workloads. |
 | POST | `/v1/workloads` | `{name, kind, image_id, gpu_class, gpu_count, region?, ssh_public_key?, model_uri?}` → 201. `region` defaults to the catalog's first. `kind` is `vm` (GPU VM, needs `ssh_public_key`), `notebook`, or `endpoint` (needs `model_uri`: `s3://` or `hf://`, with no credentials in it). |
-| GET | `/v1/workloads/{id}` | `?include_deleted=true` also finds a deleted workload |
+| GET | `/v1/workloads/{id}` | `?include_deleted=true` also finds a deleted workload. A workload shows where it runs once admitted: `region`, `placed_class`, and on agents `machine_id` and `driver`. |
 | POST | `/v1/workloads/{id}/stop` | 202; VMs and notebooks keep their disks |
 | POST | `/v1/workloads/{id}/start` | 202; re-checks quota |
 | DELETE | `/v1/workloads/{id}` | 202; idempotent |
 | GET | `/v1/workloads/{id}/events` | `{"items": [{id, from?, to, reason, at}]}`, the full timeline, oldest first. A note has `from` equal to `to`. Works after deletion. |
-| GET | `/v1/workloads/{id}/export` | The complete log as a JSON attachment (`tensora.workload-export/v1`): workload, inputs, timeline, usage, `output_logs`, and `redactions`. Works after deletion. |
+| GET | `/v1/workloads/{id}/export` | The complete log as a JSON attachment (`tensora.workload-export/v1`): workload, inputs, timeline, usage (with its machine), `output_logs`, and `redactions`, plus the last placement (`last_placed_class`, `last_machine_id`, `last_driver`). Works after deletion. |
 | GET | `/v1/auth/me` | Who's calling: `{subject, email, tenant, auth_mode}` |
 | POST | `/v1/auth/login` | Local mode. `{email, password}` → sets the session cookie (HttpOnly, SameSite=Strict, 7 days; over HTTPS, `Secure` and named `__Host-tensora_session`). Needs the `X-Tensora-CSRF` header, and HTTPS or this machine (see below). Repeated failures are slowed down (429 with `Retry-After`). |
 | POST | `/v1/auth/logout` | Local mode. Ends the session |
 | POST | `/v1/auth/password` | Local mode, signed-in browser only. `{current_password, new_password}`; signs out every other session → `{status, api_tokens_active}`, the API tokens that still work |
-| GET, POST | `/v1/tokens` | Local mode. List your API tokens, or create one (signed-in browser only): `{name, expires_in_days}` (0 = never) → 201 with `token`, shown only this once |
+| GET, POST | `/v1/tokens` | Local mode. List your API tokens, or create one (signed-in browser only, with your current password): `{name, expires_in_days, password}` (0 days = never) → 201 with `token`, shown only this once |
 | DELETE | `/v1/tokens/{id}` | Local mode. Revokes one of your tokens; another user's is 404 |
 
 **Authentication** (`TENSORA_AUTH_MODE`): `local` takes an API token (`Authorization: Bearer tsk_…`) or the
 dashboard's session cookie; with the cookie, a request that changes something must also send
 `X-Tensora-CSRF` (any value), which other sites can't add. Passwords and session cookies are accepted only
-over HTTPS or from this machine: behind a reverse proxy that terminates HTTPS, list it in
-`TENSORA_TRUSTED_PROXIES`, which also makes its `X-Forwarded-For` count for sign-in limits;
-`TENSORA_INSECURE_HTTP=true` allows plain HTTP from other machines on a network you trust. API tokens
+over HTTPS or from this machine: behind a reverse proxy that terminates HTTPS, list its own addresses (not a
+whole network) in `TENSORA_TRUSTED_PROXIES`, which also makes its `X-Forwarded-For` count for sign-in limits.
+Every listed address can claim HTTPS and any client address. The proxy must
+send `X-Forwarded-For` and `X-Forwarded-Proto`, and sign-in through a proxy that isn't listed is refused,
+even on this machine. `TENSORA_INSECURE_HTTP=true` allows plain HTTP from other machines on a network you
+trust. API tokens
 can't create tokens or change the password, and timelines name the credential that acted. `oidc` takes an
 identity provider's token, and `dev` trusts the `X-Dev-Tenant` header (dev only).
 

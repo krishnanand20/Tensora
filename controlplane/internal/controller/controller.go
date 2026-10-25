@@ -1,6 +1,7 @@
-// Package controller reconciles workload intent in Postgres with objects in Kubernetes.
-// It is the only component with cluster credentials. Each pass is idempotent: cluster
-// writes are server-side applies, and state changes are compare-and-swap transitions.
+// Package controller reconciles workload intent in the store with the runtime (Kubernetes or node
+// agents, through cluster.Backend). It's the only component with runtime access, and the one place
+// that decides where workloads run (placement.go). Each pass is idempotent: runtime calls are
+// idempotent, and state changes are compare-and-swap transitions.
 package controller
 
 import (
@@ -14,7 +15,6 @@ import (
 
 	"github.com/tensora/tensora/controlplane/internal/catalog"
 	"github.com/tensora/tensora/controlplane/internal/cluster"
-	"github.com/tensora/tensora/controlplane/internal/cluster/manifests"
 	"github.com/tensora/tensora/controlplane/internal/domain"
 	"github.com/tensora/tensora/controlplane/internal/service"
 	"github.com/tensora/tensora/controlplane/internal/store"
@@ -27,11 +27,8 @@ var errNotInCatalog = errors.New("is no longer offered by this installation")
 type Options struct {
 	// Region is the one region this controller reconciles (ADR-0009). It never sees, counts, or
 	// admits another region's workloads. Empty means local, the region of a Solo install.
-	Region                domain.Region
-	StorageClass          string
-	ImagesNamespace       string
-	UntrustedRuntimeClass string
-	ProvisionTimeout      time.Duration
+	Region           domain.Region
+	ProvisionTimeout time.Duration
 }
 
 type Controller struct {
@@ -76,17 +73,20 @@ func (c *Controller) ReconcileOnce(ctx context.Context) error {
 	return errors.Join(c.admit(ctx), c.observe(ctx), c.park(ctx), c.remove(ctx))
 }
 
-// admit moves pending/queued workloads onto free GPUs. Capacity comes from the cluster;
-// allocation comes from Postgres, because every GPU workload goes through Tensora.
+// admit places pending and queued workloads where there's room, then runs them. Capacity comes from
+// the backend; allocation comes from the store, because every workload goes through Tensora.
 func (c *Controller) admit(ctx context.Context) error {
-	var waiting []domain.Workload
-	var allocated map[string]int
+	var waiting, holding []domain.Workload
+	var machines []domain.Machine
 	err := c.store.InTx(ctx, func(q store.Queries) error {
 		var err error
-		if waiting, err = q.WorkloadsInStates(ctx, c.opts.Region, domain.StatePending, domain.StateQueued); err != nil {
+		if waiting, err = q.WorkloadsInStates(ctx, c.opts.Region, domain.StatePending, domain.StateQueued); err != nil || len(waiting) == 0 {
 			return err
 		}
-		allocated, err = q.GPUsAllocated(ctx, c.opts.Region)
+		if holding, err = q.WorkloadsInStates(ctx, c.opts.Region, domain.StatesWhere(domain.State.HoldsCapacity)...); err != nil {
+			return err
+		}
+		machines, err = q.MachinesInRegion(ctx, c.opts.Region)
 		return err
 	})
 	if err != nil || len(waiting) == 0 {
@@ -99,6 +99,10 @@ func (c *Controller) admit(ctx context.Context) error {
 		}
 		return wrap("admit: capacity", err)
 	}
+	if capacity.Settling {
+		return nil // machines are still reconnecting: decide nothing on their absence
+	}
+	free := newPool(c.catalog, capacity, machines, holding)
 	// FIFO with backfill: a large request at the head does not block smaller ones behind it.
 	// TODO(phase-3): add aging so large requests cannot starve.
 	for _, w := range waiting {
@@ -113,25 +117,29 @@ func (c *Controller) admit(ctx context.Context) error {
 			c.transition(ctx, w, domain.StateFailed, "can't start: "+userMessage(err))
 			continue
 		}
-		free := max(capacity[w.GPUClass]-allocated[w.GPUClass], 0)
-		c.log.Debug("admission check", "workload", w.ID, "gpu_class", w.GPUClass,
-			"requested", w.GPUCount, "capacity", capacity[w.GPUClass], "allocated", allocated[w.GPUClass])
-		if free < w.GPUCount {
+		g, _ := c.catalog.GPUClass(w.GPUClass) // checkLaunch found it
+		// Placed on the requested class. Fallback placement (ADR-0010) and ADR-0014's sharing rules
+		// will choose here too, in the same place.
+		pl, n, why, ok := free.choose(w, g)
+		c.log.Debug("admission check", "workload", w.ID, "gpu_class", w.GPUClass, "requested", w.GPUCount,
+			"free", n, "placed", ok, "machine", pl.machine, "driver", pl.driver)
+		if !ok {
 			if w.State == domain.StatePending {
-				c.transition(ctx, w, domain.StateQueued, c.waitingReason(ctx, w, free))
+				if why == "" {
+					why = c.waitingReason(ctx, w, n)
+				}
+				c.transition(ctx, w, domain.StateQueued, why)
 			}
 			continue
 		}
-		if err := c.provision(ctx, w); err != nil {
-			c.retryLater(ctx, w, "start it on the runtime", err)
-			continue
+		free.take(pl, w)
+		placed, ok := c.place(ctx, w, pl, runtime.Server)
+		if !ok {
+			continue // counted anyway; the next pass sees what happened
 		}
-		// Placed on the requested class. Fallback placement (ADR-0010) and agent machines will choose
-		// here, in one place, as admission grows (ADR-0014's sharing rules too).
-		placed, machine := w.GPUClass, uuid.Nil
-		// Counted even if placing fails: its objects were just applied, and the next pass retries.
-		allocated[placed] += w.GPUCount
-		c.place(ctx, w, placed, machine, runtime.Server)
+		if err := c.run(ctx, placed); err != nil {
+			c.retryLater(ctx, placed, "start it on the runtime", err)
+		}
 	}
 	return nil
 }
@@ -143,11 +151,11 @@ func (c *Controller) observe(ctx context.Context) error {
 		return wrap("observe", err)
 	}
 	for _, w := range ws {
-		ns, err := c.namespace(ctx, w)
+		ref, err := c.ref(ctx, w)
 		var obs cluster.Observed
 		var reason string
 		if err == nil {
-			obs, reason, err = c.backend.Observe(ctx, ns, w.ID, w.Kind)
+			obs, reason, err = c.backend.Observe(ctx, ref)
 		}
 		if err != nil {
 			// A status that can't be read must not hold GPUs forever: the provisioning timeout
@@ -168,12 +176,26 @@ func (c *Controller) observe(ctx context.Context) error {
 			}
 		}
 		switch {
+		case obs == cluster.ObservedUnknown:
+			// Nothing is decided on it, but the owner hears why it's waiting.
+			c.note(ctx, w, reason)
 		case obs == cluster.ObservedFailed:
 			c.fail(ctx, w, "workload failed: "+reason)
 			continue
 		case w.State == domain.StateRunning && obs == cluster.ObservedAbsent:
-			c.fail(ctx, w, "cluster objects disappeared")
+			c.fail(ctx, w, "it disappeared from the runtime")
 			continue
+		case w.State == domain.StateRunning && obs == cluster.ObservedStopped:
+			// Shut down from inside, or stopped by the runtime: it isn't running, so it mustn't be
+			// accounted as running.
+			c.fail(ctx, w, "it stopped by itself")
+			continue
+		case w.State == domain.StateProvisioning && obs == cluster.ObservedAbsent:
+			// Placed, but the runtime doesn't have it: starting it failed, or hasn't reached the
+			// runtime yet. Run is idempotent, so ask again.
+			if err := c.run(ctx, w); err != nil {
+				c.retryLater(ctx, w, "start it on the runtime", err)
+			}
 		case w.State == domain.StateProvisioning && obs == cluster.ObservedReady:
 			if c.transition(ctx, w, domain.StateRunning, "ready") {
 				continue
@@ -192,7 +214,7 @@ func (c *Controller) observe(ctx context.Context) error {
 // without one, and says so in its timeline.
 func (c *Controller) adoptPlacement(ctx context.Context, w *domain.Workload) bool {
 	err := c.store.InTx(ctx, func(q store.Queries) error {
-		return q.SetPlacement(ctx, w.ID, w.GPUClass, w.MachineID)
+		return q.SetPlacement(ctx, w.ID, w.GPUClass, w.MachineID, w.Driver)
 	})
 	if err != nil {
 		c.logError("adopt placement failed", *w, err)
@@ -214,14 +236,25 @@ func (c *Controller) park(ctx context.Context) error {
 			c.retryLater(ctx, w, "stop it on the runtime", err)
 			continue
 		}
-		ns, _ := c.namespace(ctx, w)
-		obs, _, err := c.backend.Observe(ctx, ns, w.ID, w.Kind)
+		ref, err := c.ref(ctx, w)
+		var obs cluster.Observed
+		var reason string
+		if err == nil {
+			obs, reason, err = c.backend.Observe(ctx, ref)
+		}
 		if err != nil {
 			c.retryLater(ctx, w, "read its status from the runtime", err)
 			continue
 		}
-		if obs == cluster.ObservedStopped || obs == cluster.ObservedAbsent {
+		switch obs {
+		case cluster.ObservedStopped, cluster.ObservedAbsent:
 			c.transition(ctx, w, domain.StateStopped, "stopped")
+		case cluster.ObservedFailed:
+			// It isn't running either way, such as when its machine has been offline too long; it's
+			// parked when the machine returns.
+			c.transition(ctx, w, domain.StateStopped, "stopped: "+reason)
+		case cluster.ObservedUnknown:
+			c.note(ctx, w, reason)
 		}
 	}
 	return nil
@@ -234,58 +267,53 @@ func (c *Controller) remove(ctx context.Context) error {
 		return wrap("remove", err)
 	}
 	for _, w := range ws {
-		ns, err := c.namespace(ctx, w)
+		ref, err := c.ref(ctx, w)
 		if err == nil {
-			err = c.backend.Delete(ctx, ns, w.ID)
+			err = c.backend.Delete(ctx, ref)
 		}
 		if err != nil {
 			c.retryLater(ctx, w, "delete it from the runtime", err)
 			continue
 		}
-		obs, _, err := c.backend.Observe(ctx, ns, w.ID, w.Kind)
+		obs, reason, err := c.backend.Observe(ctx, ref)
 		if err != nil {
 			c.retryLater(ctx, w, "read its status from the runtime", err)
 			continue
 		}
-		if obs == cluster.ObservedAbsent {
+		switch obs {
+		case cluster.ObservedAbsent:
 			c.transition(ctx, w, domain.StateDeleted, "deleted")
+		case cluster.ObservedUnknown:
+			c.note(ctx, w, reason)
 		}
 	}
 	return nil
 }
 
-func (c *Controller) provision(ctx context.Context, w domain.Workload) error {
-	bc, quotas, err := c.buildContext(ctx, w)
+// run asks the runtime to run a placed workload.
+func (c *Controller) run(ctx context.Context, w domain.Workload) error {
+	spec, err := c.spec(ctx, w)
 	if err != nil {
 		return err
 	}
-	objs, err := manifests.Workload(w, bc, true)
-	if err != nil {
-		return err
-	}
-	tenant := manifests.Tenant(bc.TenantSlug, c.quotaResources(quotas), c.opts.ImagesNamespace)
-	return c.backend.Apply(ctx, append(tenant, objs...))
+	return c.backend.Run(ctx, spec)
 }
 
 // release parks a workload's GPUs: VMs halt and notebooks scale to zero (disks kept);
 // endpoints are deleted because they have nothing worth keeping.
 func (c *Controller) release(ctx context.Context, w domain.Workload) error {
 	if w.Kind == domain.KindEndpoint {
-		ns, err := c.namespace(ctx, w)
+		ref, err := c.ref(ctx, w)
 		if err != nil {
 			return err
 		}
-		return c.backend.Delete(ctx, ns, w.ID)
+		return c.backend.Delete(ctx, ref)
 	}
-	bc, _, err := c.buildContext(ctx, w)
+	spec, err := c.spec(ctx, w)
 	if err != nil {
 		return err
 	}
-	objs, err := manifests.Workload(w, bc, false)
-	if err != nil {
-		return err
-	}
-	return c.backend.Apply(ctx, objs)
+	return c.backend.Park(ctx, spec)
 }
 
 // fail releases GPUs before marking the workload failed, so failed workloads never
@@ -356,21 +384,27 @@ func (c *Controller) logError(msg string, w domain.Workload, err error) {
 }
 
 // place records where the workload was placed and moves it to provisioning, in one transaction,
-// so a workload is never provisioning without a placement. The reason names the model server for
-// endpoints, so a change of server is never silent (rule 10).
-func (c *Controller) place(ctx context.Context, w domain.Workload, placedClass string, machineID uuid.UUID, server string) bool {
-	reason := fmt.Sprintf("admitted: %d × %s", w.GPUCount, placedClass)
+// so a workload is never provisioning without a placement. The reason says the machine and driver
+// on agents, and the model server for endpoints, so where and how it runs is never silent (rule 10).
+// It returns the workload as placed.
+func (c *Controller) place(ctx context.Context, w domain.Workload, pl placement, server string) (domain.Workload, bool) {
+	reason := fmt.Sprintf("admitted: %d × %s", w.GPUCount, pl.class)
+	if pl.machineID != uuid.Nil {
+		reason += fmt.Sprintf(" on %s with %s", pl.machine, pl.driver)
+	}
 	if server != "" {
 		reason += ", served by " + server
 	}
-	return c.transitionWith(ctx, w, domain.StateProvisioning, reason,
+	ok := c.transitionWith(ctx, w, domain.StateProvisioning, reason,
 		func(q store.Queries, w *domain.Workload) error {
-			if err := q.SetPlacement(ctx, w.ID, placedClass, machineID); err != nil {
+			if err := q.SetPlacement(ctx, w.ID, pl.class, pl.machineID, pl.driver); err != nil {
 				return err
 			}
-			w.PlacedClass, w.MachineID = placedClass, machineID
+			w.PlacedClass, w.MachineID, w.Driver = pl.class, pl.machineID, pl.driver
 			return nil
 		})
+	w.PlacedClass, w.MachineID, w.Driver, w.State = pl.class, pl.machineID, pl.driver, domain.StateProvisioning
+	return w, ok
 }
 
 func (c *Controller) transition(ctx context.Context, w domain.Workload, to domain.State, reason string) bool {
@@ -425,12 +459,14 @@ func (c *Controller) tenant(ctx context.Context, w domain.Workload) (domain.Tena
 	return t, err
 }
 
-func (c *Controller) namespace(ctx context.Context, w domain.Workload) (string, error) {
+// ref names the workload in its runtime.
+func (c *Controller) ref(ctx context.Context, w domain.Workload) (cluster.Ref, error) {
 	t, err := c.tenant(ctx, w)
-	return cluster.TenantNamespace(t.Slug), err
+	return cluster.Ref{ID: w.ID, TenantSlug: t.Slug, Kind: w.Kind, MachineID: w.MachineID}, err
 }
 
-func (c *Controller) buildContext(ctx context.Context, w domain.Workload) (manifests.Context, []domain.Quota, error) {
+// spec is everything the runtime needs to run w as placed.
+func (c *Controller) spec(ctx context.Context, w domain.Workload) (cluster.Spec, error) {
 	var t domain.Tenant
 	var quotas []domain.Quota
 	err := c.store.InTx(ctx, func(q store.Queries) error {
@@ -442,22 +478,22 @@ func (c *Controller) buildContext(ctx context.Context, w domain.Workload) (manif
 		return err
 	})
 	if err != nil {
-		return manifests.Context{}, nil, err
+		return cluster.Spec{}, err
 	}
-	gpu, img, runtime, err := c.catalogEntries(w)
+	spec := cluster.Spec{Workload: w, TenantSlug: t.Slug, Tier: t.Tier, Quotas: quotas}
+	placed := w
+	placed.GPUClass = classOf(w)
+	gpu, img, runtime, err := c.catalogEntries(placed)
+	if err != nil && w.MachineID != uuid.Nil {
+		// An agent works out what to run from the store, and parks or removes by ID alone, so a
+		// catalog entry removed since doesn't stop a release there.
+		return spec, nil
+	}
 	if err != nil {
-		return manifests.Context{}, nil, err
+		return cluster.Spec{}, err
 	}
-	return manifests.Context{
-		TenantSlug:            t.Slug,
-		Tier:                  t.Tier,
-		GPU:                   gpu,
-		Image:                 img,
-		Runtime:               runtime,
-		StorageClass:          c.opts.StorageClass,
-		ImagesNamespace:       c.opts.ImagesNamespace,
-		UntrustedRuntimeClass: c.opts.UntrustedRuntimeClass,
-	}, quotas, nil
+	spec.Class, spec.Image, spec.Runtime = gpu, img, runtime
+	return spec, nil
 }
 
 // errRetryLater means a check couldn't be made this pass; nothing is decided.
@@ -503,23 +539,6 @@ func (c *Controller) catalogEntries(w domain.Workload) (catalog.GPUClass, catalo
 		return catalog.GPUClass{}, catalog.Image{}, catalog.Runtime{}, fmt.Errorf("image %q on %s %w", w.ImageID, gpu.Accelerator, errNotInCatalog)
 	}
 	return gpu, img, runtime, nil
-}
-
-// quotaResources turns per-class quotas into ResourceQuota limits on the extended resources
-// those classes consume. Classes sharing nvidia.com/gpu are summed (it's a backstop only).
-func (c *Controller) quotaResources(quotas []domain.Quota) map[string]int {
-	out := map[string]int{}
-	for _, q := range quotas {
-		gc, ok := c.catalog.GPUClass(q.GPUClass)
-		if !ok || gc.ContainerResource == "" { // Apple and CPU classes don't run on Kubernetes
-			continue
-		}
-		out[gc.ContainerResource] += q.MaxGPUs
-		if gc.VMDeviceName != "" {
-			out[gc.VMDeviceName] += q.MaxGPUs
-		}
-	}
-	return out
 }
 
 func wrap(step string, err error) error {

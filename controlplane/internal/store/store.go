@@ -42,6 +42,18 @@ type Queries interface {
 	CreateMachine(ctx context.Context, m domain.Machine) error
 	GetMachine(ctx context.Context, tenantID, id uuid.UUID) (domain.Machine, error)
 	ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domain.Machine, error)
+	// Machines, system-wide (the controller and the agent backend only, ADR-0016).
+	// MachinesInRegion lists every machine in region, by name.
+	MachinesInRegion(ctx context.Context, region domain.Region) ([]domain.Machine, error)
+	// MachineByID returns one machine, whoever owns it.
+	MachineByID(ctx context.Context, id uuid.UUID) (domain.Machine, error)
+	// UpdateMachineInventory records what m's agent reports (OS, Arch, CPUs, MemoryMiB,
+	// Accelerators) and LastSeenAt, for the machine m.ID. It never changes the owner, name, region,
+	// or sharing, which no agent decides.
+	UpdateMachineInventory(ctx context.Context, m domain.Machine) error
+	// WorkloadsOnMachine returns every workload placed on the machine that isn't deleted: what its
+	// agent should be running, parking, or removing.
+	WorkloadsOnMachine(ctx context.Context, machineID uuid.UUID) ([]domain.Workload, error)
 
 	// Local accounts (ADR-0012). Sign-in looks a user up before any tenant is known, so these are
 	// system-wide: request handlers reach them only through the service's account methods.
@@ -52,6 +64,10 @@ type Queries interface {
 	CreateUser(ctx context.Context, u domain.User) error
 	UserByEmail(ctx context.Context, email string) (domain.User, error)
 	UserByID(ctx context.Context, id uuid.UUID) (domain.User, error)
+	// LockUser holds one user's row until the transaction ends, so a password check and what
+	// depends on it (a new session, a password change) can't interleave with another change:
+	// Postgres locks the row; SQLite and memstore run one transaction at a time. Not found if absent.
+	LockUser(ctx context.Context, id uuid.UUID) error
 	SetPasswordHash(ctx context.Context, userID uuid.UUID, hash string) error
 	CreateSession(ctx context.Context, s domain.Session) error
 	SessionByTokenHash(ctx context.Context, hash string) (domain.Session, error)
@@ -91,9 +107,10 @@ type Queries interface {
 	// a recorded placement, so capacity is never under-counted.
 	GPUsAllocated(ctx context.Context, region domain.Region) (map[string]int, error)
 	// SetPlacement records what a workload was admitted on: its class and, on agents, its machine
-	// (uuid.Nil for none). The machine must be allowed to host it (domain.Machine.CanHost). Call it
-	// in the transaction that moves the workload to provisioning.
-	SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error
+	// and driver (uuid.Nil and "" for none). The machine must be allowed to host it with that driver
+	// (domain.Machine.CanHost and Permits). Call it in the transaction that moves the workload to
+	// provisioning.
+	SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID, driver string) error
 	// WorkloadsForMetering returns workloads that are metered now or had an event at or after since.
 	WorkloadsForMetering(ctx context.Context, since time.Time) ([]domain.Workload, error)
 

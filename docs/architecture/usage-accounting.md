@@ -48,4 +48,5 @@ flowchart LR
 
 - **Controller downtime:** a workload that dies while the controller is down stays `running` until it's noticed. The fix is to reconcile against runtime condition timestamps.
 - **Clock skew:** timestamps come from the controller's clock. The Datacenter profile runs chrony on every node (the base Ansible role does), and agents report their clock offset (planned).
+- **Placement per interval:** a usage record takes the workload's current class and machine. A workload placed again elsewhere after a stop (an endpoint on another machine, or a fallback, Phase 2) would have earlier hours recorded against the new placement if they're accounted after it moved. The fix is to take each interval's placement from its admission event.
 - **Fair-share policy:** the weighting (decay window, per-team shares) is still to be designed (Phase 4).

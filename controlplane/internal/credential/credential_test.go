@@ -68,6 +68,11 @@ func TestCheckNewPassword(t *testing.T) {
 		"twelve chars":                 true,
 		"me@example.com":               false, // equals the email
 		strings.Repeat("x", 1025):      false,
+		"Password1234":                 false, // common, whatever the case
+		"password-1234!":               false, // common, whatever the punctuation
+		"aaaaaaaaaaaaaaaa":             false, // mostly one character
+		"abababababab":                 false,
+		"glacier tulip 42 obey":        true,
 	} {
 		if err := CheckNewPassword(pw, "me@example.com"); (err == nil) != ok {
 			t.Errorf("CheckNewPassword(%.20q) = %v, want ok=%v", pw, err, ok)

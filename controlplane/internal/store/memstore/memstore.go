@@ -174,6 +174,14 @@ func (q *queries) CountUsers(context.Context) (int, error) { return len(q.d.user
 // LockUsers needs nothing here: transactions already run one at a time.
 func (q *queries) LockUsers(context.Context) error { return nil }
 
+// LockUser only checks the user exists: memstore runs one transaction at a time.
+func (q *queries) LockUser(_ context.Context, id uuid.UUID) error {
+	if _, ok := q.d.users[id]; !ok {
+		return store.NotFound("user")
+	}
+	return nil
+}
+
 func (q *queries) CreateUser(_ context.Context, u domain.User) error {
 	if _, ok := q.d.tenants[u.TenantID]; !ok {
 		return store.NotFound("user")
@@ -342,6 +350,47 @@ func (q *queries) ListMachines(_ context.Context, tenantID uuid.UUID) ([]domain.
 	return out, nil
 }
 
+func (q *queries) MachinesInRegion(_ context.Context, region domain.Region) ([]domain.Machine, error) {
+	var out []domain.Machine
+	for _, m := range q.d.machines {
+		if m.Region == region {
+			out = append(out, cloneMachine(m))
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.Machine) int { return cmp.Compare(a.Name, b.Name) })
+	return out, nil
+}
+
+func (q *queries) MachineByID(_ context.Context, id uuid.UUID) (domain.Machine, error) {
+	m, ok := q.d.machines[id]
+	if !ok {
+		return domain.Machine{}, store.NotFound("machine")
+	}
+	return cloneMachine(m), nil
+}
+
+func (q *queries) UpdateMachineInventory(_ context.Context, m domain.Machine) error {
+	cur, ok := q.d.machines[m.ID]
+	if !ok {
+		return store.NotFound("machine")
+	}
+	cur.OS, cur.Arch, cur.CPUs, cur.MemoryMiB, cur.LastSeenAt = m.OS, m.Arch, m.CPUs, m.MemoryMiB, m.LastSeenAt
+	cur.Accelerators = slices.Clone(m.Accelerators)
+	q.d.machines[m.ID] = cur
+	return nil
+}
+
+func (q *queries) WorkloadsOnMachine(_ context.Context, machineID uuid.UUID) ([]domain.Workload, error) {
+	out := []domain.Workload{}
+	for _, w := range q.d.workloads {
+		if machineID != uuid.Nil && w.MachineID == machineID && w.State != domain.StateDeleted {
+			out = append(out, cloneWorkload(w))
+		}
+	}
+	sortWorkloads(out)
+	return out, nil
+}
+
 func (q *queries) CreateWorkload(_ context.Context, w domain.Workload) error {
 	if !w.Region.Valid() {
 		return store.InvalidRegion("workload", w.Region)
@@ -433,21 +482,24 @@ func (q *queries) GPUsAllocated(_ context.Context, region domain.Region) (map[st
 	return out, nil
 }
 
-func (q *queries) SetPlacement(_ context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error {
+func (q *queries) SetPlacement(_ context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID, driver string) error {
 	w, ok := q.d.workloads[id]
 	if !ok {
 		return store.NotFound("workload")
+	}
+	if machineID == uuid.Nil && driver != "" {
+		return domain.ErrDriverWithoutMachine
 	}
 	if machineID != uuid.Nil {
 		m, ok := q.d.machines[machineID]
 		if !ok {
 			return store.NotFound("machine")
 		}
-		if err := m.CanHost(w); err != nil {
+		if err := m.CheckPlacement(w, driver); err != nil {
 			return err
 		}
 	}
-	w.PlacedClass, w.MachineID = placedClass, machineID
+	w.PlacedClass, w.MachineID, w.Driver = placedClass, machineID, driver
 	q.d.workloads[id] = w
 	return nil
 }

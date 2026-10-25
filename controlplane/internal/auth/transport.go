@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+
+	"github.com/tensora/tensora/controlplane/internal/domain"
 )
 
 // Transport decides what a request's connection can be trusted with: who the client is (for
@@ -16,6 +18,23 @@ type Transport struct {
 	// AllowPlainHTTP allows sign-in and session cookies over plain HTTP from other machines
 	// (TENSORA_INSECURE_HTTP=true), for a network the operator trusts.
 	AllowPlainHTTP bool
+}
+
+// forwardingHeaders are what reverse proxies add. From a peer that isn't a trusted proxy they mean
+// a proxy the operator hasn't listed, or a client making them up. Either way they can't be
+// believed, and the peer's address may stand for everyone behind that proxy.
+var forwardingHeaders = []string{
+	"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Forwarded-Server", "Forwarded", "Via",
+	"X-Real-Ip", "X-Client-Ip", "Cf-Connecting-Ip", "True-Client-Ip",
+}
+
+func forwarded(r *http.Request) bool {
+	for _, h := range forwardingHeaders {
+		if len(r.Header.Values(h)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (t Transport) peer(r *http.Request) (netip.Addr, bool) {
@@ -36,54 +55,103 @@ func (t Transport) trusted(a netip.Addr) bool {
 	return false
 }
 
-// forwarded reports whether r came through a trusted proxy.
-func (t Transport) forwarded(r *http.Request) bool {
+// viaTrustedProxy reports whether r came from a trusted proxy.
+func (t Transport) viaTrustedProxy(r *http.Request) bool {
 	a, ok := t.peer(r)
 	return ok && t.trusted(a)
 }
 
-// Client is the caller's address, for rate limiting. Behind a trusted proxy it's the nearest
-// address in X-Forwarded-For that isn't a trusted proxy. An IPv6 address counts as its /64, which
-// one person usually controls entirely.
-func (t Transport) Client(r *http.Request) string {
-	a, ok := t.peer(r)
-	if !ok {
-		return r.RemoteAddr
+// parseHop reads one X-Forwarded-For entry: an address, with or without a port.
+func parseHop(s string) (netip.Addr, bool) {
+	s = strings.TrimSpace(s)
+	if a, err := netip.ParseAddr(s); err == nil {
+		return a.Unmap(), true
 	}
-	if t.trusted(a) {
-		hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-		for i := len(hops) - 1; i >= 0; i-- {
-			h, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
-			if err != nil {
-				break
-			}
-			if h = h.Unmap(); !t.trusted(h) {
-				a = h
-				break
-			}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		if a, err := netip.ParseAddr(host); err == nil {
+			return a.Unmap(), true
 		}
 	}
-	if a.Is6() {
-		p, _ := a.Prefix(64)
-		return p.String()
+	return netip.Addr{}, false
+}
+
+// Client is the caller's address, for slowing down guessing, or false if it can't be told. From a
+// trusted proxy, it's the nearest X-Forwarded-For entry (across every header line) that isn't a
+// trusted proxy, since each proxy appends the address it saw; entries further left can be made up
+// by the client. If every entry is a trusted proxy, it's the leftmost one. An entry that can't be
+// read means the client can't be told: guessing must not share one limit with everyone else.
+func (t Transport) Client(r *http.Request) (netip.Addr, bool) {
+	peer, ok := t.peer(r)
+	if !ok || !t.trusted(peer) {
+		return peer, ok
 	}
-	return a.String()
+	lines := r.Header.Values("X-Forwarded-For")
+	if len(lines) == 0 {
+		if forwarded(r) {
+			// Proxied, but without saying who for: everyone behind it would share one limit.
+			return netip.Addr{}, false
+		}
+		return peer, true // the proxy's own request, or this machine's browser beside it
+	}
+	hops := strings.Split(strings.Join(lines, ","), ",")
+	var a netip.Addr
+	for i := len(hops) - 1; i >= 0; i-- {
+		h, ok := parseHop(hops[i])
+		if !ok {
+			return netip.Addr{}, false
+		}
+		if a = h; !t.trusted(h) {
+			break
+		}
+	}
+	return a, true
+}
+
+// forwardedProto is what the nearest proxy says the client used: the last X-Forwarded-Proto value.
+func forwardedProto(r *http.Request) string {
+	lines := r.Header.Values("X-Forwarded-Proto")
+	if len(lines) == 0 {
+		return ""
+	}
+	values := strings.Split(lines[len(lines)-1], ",")
+	return strings.ToLower(strings.TrimSpace(values[len(values)-1]))
 }
 
 // Secure reports whether r arrived over HTTPS: directly, or through a trusted proxy that says so.
 func (t Transport) Secure(r *http.Request) bool {
-	return r.TLS != nil || (t.forwarded(r) && r.Header.Get("X-Forwarded-Proto") == "https")
+	return r.TLS != nil || (t.viaTrustedProxy(r) && forwardedProto(r) == "https")
 }
 
-// Private reports whether passwords and session cookies may cross r's connection: HTTPS, this
-// machine (a loopback client that didn't come through a proxy), or the operator's opt-in.
-func (t Transport) Private(r *http.Request) bool {
-	if t.Secure(r) || t.AllowPlainHTTP {
-		return true
+var (
+	errPlainHTTP = domain.Errorf(domain.CodeForbidden,
+		"signing in needs HTTPS or this machine; on a network you trust, the operator can set TENSORA_INSECURE_HTTP=true")
+	errUnlistedProxy = domain.Errorf(domain.CodeForbidden,
+		"this request came through a proxy that isn't in TENSORA_TRUSTED_PROXIES; the operator needs to list it")
+	errUnknownClient = domain.Errorf(domain.CodeForbidden,
+		"the proxy's X-Forwarded-For doesn't say who you are; the operator needs to fix the proxy")
+)
+
+// CheckPrivate says why passwords and session cookies may not cross r's connection, or returns
+// nil when they may: over HTTPS, from a browser on this machine (a loopback peer with no proxy
+// headers), or with the operator's opt-in. A request with proxy headers from a peer that isn't a
+// trusted proxy is refused even then: whatever is in front can't be checked, and everyone behind
+// it would share one limit on guessing. A proxy that adds no headers at all can't be told from a
+// browser, which is why proxies must be listed and must send X-Forwarded-For and -Proto.
+func (t Transport) CheckPrivate(r *http.Request) error {
+	peer, ok := t.peer(r)
+	switch {
+	case forwarded(r) && (!ok || !t.trusted(peer)):
+		return errUnlistedProxy
+	case t.Secure(r) || t.AllowPlainHTTP:
+		return nil
+	case ok && peer.IsLoopback() && !forwarded(r):
+		return nil
 	}
-	a, ok := t.peer(r)
-	return ok && a.IsLoopback() && !t.trusted(a)
+	return errPlainHTTP
 }
+
+// Private reports whether passwords and session cookies may cross r's connection (CheckPrivate).
+func (t Transport) Private(r *http.Request) bool { return t.CheckPrivate(r) == nil }
 
 // SessionCookieName is the cookie's name for r: over HTTPS, the __Host- form, which a browser only
 // accepts with Secure, Path=/, and no Domain, so another site or subdomain can't plant or overwrite it.

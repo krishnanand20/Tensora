@@ -121,12 +121,48 @@ func TestLoginSlowsDownGuessing(t *testing.T) {
 		t.Fatalf("after the window: %v", err)
 	}
 
-	// One address guessing across many emails is limited too.
+	// One caller guessing across many emails is limited too.
 	for i := range 30 {
-		_, _ = svc.Login(ctx, fmt.Sprintf("guess%d@example.com", i), "wrong password!!", "10.0.0.3")
+		_, _ = svc.Login(ctx, fmt.Sprintf("guess%d@example.com", i), "wrong password!!", "2001:db8:7:1::1")
 	}
-	_, err = svc.Login(ctx, "owner@example.com", ownerPassword, "10.0.0.3")
+	_, err = svc.Login(ctx, "owner@example.com", ownerPassword, "2001:db8:7:1::2") // the same /64
 	wantCode(t, err, domain.CodeTooManyRequests)
+	// A neighbour on the same IPv6 /48 isn't blocked by one subscriber's guessing.
+	if _, err := svc.Login(ctx, "owner@example.com", ownerPassword, "2001:db8:7:2::1"); err != nil {
+		t.Errorf("another /64 in the /48: %v", err)
+	}
+}
+
+// Someone holding a stolen session can't use up the owner's password checks from elsewhere: the
+// limit is per user and caller.
+func TestPasswordChecksAreLimitedPerCaller(t *testing.T) {
+	svc, _, _, _ := accounts(t)
+	ctx := context.Background()
+	session, _ := svc.Login(ctx, "owner@example.com", ownerPassword, "10.0.0.1")
+	p, _ := svc.PrincipalForSession(ctx, session)
+	for range 10 {
+		_, _, _ = svc.CreateAPIToken(ctx, p, "x", 0, "wrong password!!", "203.0.113.66")
+	}
+	_, _, err := svc.CreateAPIToken(ctx, p, "x", 0, ownerPassword, "203.0.113.66")
+	wantCode(t, err, domain.CodeTooManyRequests)
+	if _, err := svc.ChangePassword(ctx, p, ownerPassword, "a brand new passphrase", session, "10.0.0.1"); err != nil {
+		t.Errorf("the owner, from their own address: %v", err)
+	}
+}
+
+// A password too long to be anyone's is refused without being checked or counted, so it can't be
+// a cheap way to fill the limiter.
+func TestOverlongPasswordsAreNotCounted(t *testing.T) {
+	svc, _, _, _ := accounts(t)
+	ctx := context.Background()
+	long := strings.Repeat("x", credential.MaxPasswordBytes+1)
+	for range 40 {
+		_, err := svc.Login(ctx, "owner@example.com", long, "10.0.0.1")
+		wantCode(t, err, domain.CodeUnauthenticated)
+	}
+	if _, err := svc.Login(ctx, "owner@example.com", ownerPassword, "10.0.0.1"); err != nil {
+		t.Fatalf("after over-long attempts: %v", err)
+	}
 }
 
 // Attempts count from the moment they start, so guesses sent in parallel can't all be checked
@@ -216,7 +252,7 @@ func TestChangePasswordSignsOutOtherSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.CreateAPIToken(ctx, p, "laptop", 0); err != nil {
+	if _, _, err := svc.CreateAPIToken(ctx, p, "laptop", 0, ownerPassword, "10.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	_, err = svc.ChangePassword(ctx, p, "wrong password!!", "a brand new passphrase", here, "10.0.0.1")
@@ -245,7 +281,7 @@ func TestAPITokens(t *testing.T) {
 	session, _ := svc.Login(ctx, "owner@example.com", ownerPassword, "10.0.0.1")
 	p, _ := svc.PrincipalForSession(ctx, session)
 
-	token, tok, err := svc.CreateAPIToken(ctx, p, "laptop", 24*time.Hour)
+	token, tok, err := svc.CreateAPIToken(ctx, p, "laptop", 24*time.Hour, ownerPassword, "10.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,10 +292,10 @@ func TestAPITokens(t *testing.T) {
 	if err != nil || got.UserID != owner.ID {
 		t.Fatalf("token principal = %+v, %v", got, err)
 	}
-	if _, _, err := svc.CreateAPIToken(ctx, p, "laptop", 0); err == nil {
+	if _, _, err := svc.CreateAPIToken(ctx, p, "laptop", 0, ownerPassword, "10.0.0.1"); err == nil {
 		t.Error("two live tokens with one name")
 	}
-	if _, _, err := svc.CreateAPIToken(ctx, domain.Principal{Subject: "dev", TenantSlug: "home"}, "x", 0); err == nil {
+	if _, _, err := svc.CreateAPIToken(ctx, domain.Principal{Subject: "dev", TenantSlug: "home"}, "x", 0, ownerPassword, "10.0.0.1"); err == nil {
 		t.Error("a principal without a local account made a token")
 	}
 
@@ -279,7 +315,7 @@ func TestAPITokens(t *testing.T) {
 	_, err = svc.PrincipalForToken(ctx, token)
 	wantCode(t, err, domain.CodeUnauthenticated) // expired
 
-	forever, ftok, _ := svc.CreateAPIToken(ctx, p, "ci", 0)
+	forever, ftok, _ := svc.CreateAPIToken(ctx, p, "ci", 0, ownerPassword, "10.0.0.1")
 	if _, err := svc.PrincipalForToken(ctx, forever); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +334,7 @@ func TestTokensCantMakeTokensOrChangeThePassword(t *testing.T) {
 	ctx := context.Background()
 	session, _ := svc.Login(ctx, "owner@example.com", ownerPassword, "10.0.0.1")
 	p, _ := svc.PrincipalForSession(ctx, session)
-	token, _, err := svc.CreateAPIToken(ctx, p, "script", 0)
+	token, _, err := svc.CreateAPIToken(ctx, p, "script", 0, ownerPassword, "10.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +342,10 @@ func TestTokensCantMakeTokensOrChangeThePassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = svc.CreateAPIToken(ctx, tp, "another", 0)
+	_, _, err = svc.CreateAPIToken(ctx, tp, "another", 0, ownerPassword, "10.0.0.1")
+	wantCode(t, err, domain.CodeForbidden)
+	// A session needs the password too: a token outlives the session that makes it.
+	_, _, err = svc.CreateAPIToken(ctx, p, "another", 0, "wrong password!!", "10.0.0.1")
 	wantCode(t, err, domain.CodeForbidden)
 	_, err = svc.ChangePassword(ctx, tp, ownerPassword, "a brand new passphrase", "", "10.0.0.1")
 	wantCode(t, err, domain.CodeForbidden)
@@ -371,7 +410,7 @@ func TestTimelineNamesTheCredential(t *testing.T) {
 	ctx := context.Background()
 	session, _ := svc.Login(ctx, "owner@example.com", ownerPassword, "10.0.0.1")
 	p, _ := svc.PrincipalForSession(ctx, session)
-	token, tok, _ := svc.CreateAPIToken(ctx, p, "ci runner", 0)
+	token, tok, _ := svc.CreateAPIToken(ctx, p, "ci runner", 0, ownerPassword, "10.0.0.1")
 	tp, _ := svc.PrincipalForToken(ctx, token)
 
 	w, err := svc.CreateWorkload(ctx, tp, notebook("nb", 1))

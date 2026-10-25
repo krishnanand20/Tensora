@@ -5,7 +5,7 @@
 | Concern | Design | Status |
 |---|---|---|
 | Control plane address | Solo binds to `127.0.0.1` by default. A Lab binds to the LAN or a WireGuard interface, chosen at setup. | Planned |
-| Agents joining | Each agent **dials out** to the control plane over mTLS (ADR-0013), so it works behind home routers, NAT, and CGNAT. No inbound ports are opened on machines. | Planned |
+| Agents joining | Each agent **dials out** to the control plane: one long-polled call, `POST /agent/v1/sync` over HTTPS with mutual TLS ([ADR-0016](../adr/0016-agent-protocol-and-machine-placement.md)), so it works behind home routers, NAT, and CGNAT. No inbound ports are opened on machines. In Solo, the agent runs inside the control plane's process, with no network at all. | In-process agent built; network transport Phase 2 |
 | Enrolment | A one-time token from the dashboard, after which the agent gets its own certificate, revocable per machine | Planned |
 | Reaching your workloads | **On the same machine or LAN:** direct. **From elsewhere:** a relay through the control plane's agent connection (notebook UI, endpoint API, VM SSH), authenticated per user. | Planned (Phase 2) |
 | Guest egress (non-owners) | No access to the host, the LAN, or private and link-local ranges. **Community workloads have no internet by default** (ADR-0014). | Planned |

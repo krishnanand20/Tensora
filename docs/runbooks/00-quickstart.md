@@ -100,5 +100,20 @@ On the dashboard's **API tokens** page, create a token for the CLI and set `TENS
 password? `go run ./cmd/tensora setup -reset-password -email you@example.com` sets a new one.
 
 Sign-in works over HTTPS or from this machine. To sign in from another machine, put an HTTPS reverse proxy in
-front and list its address in `TENSORA_TRUSTED_PROXIES`, or, only on a network you trust, set
-`TENSORA_INSECURE_HTTP=true`.
+front (Caddy, nginx, cloudflared, or Tailscale Serve, sending `X-Forwarded-For` and `X-Forwarded-Proto`)
+and list its address in `TENSORA_TRUSTED_PROXIES`, even when it runs on this machine. Only on a network you
+trust, `TENSORA_INSECURE_HTTP=true` allows plain HTTP instead.
+
+To try the node agent on this machine ([ADR-0016](../adr/0016-agent-protocol-and-machine-placement.md)), use the
+agent backend. Until the real drivers land (roadmap step 7), the `sim` driver only pretends to run workloads, but
+everything else is real: this machine is registered and its inventory detected, placement picks it and a driver,
+and the timeline says so.
+
+```bash
+cd controlplane
+TENSORA_CLUSTER_BACKEND=agent TENSORA_AGENT_DRIVERS=sim TENSORA_MACHINE_OWNER=internal go run ./cmd/tensora dev
+# in another terminal: a notebook on this Mac's GPU (use the tier its memory holds, or a CPU class such as cpu-2c-8g)
+curl -s -X POST -H 'X-Dev-Tenant: internal' localhost:8080/v1/workloads \
+  -d '{"name":"nb","kind":"notebook","image_id":"pytorch-notebook","gpu_class":"apple-silicon-32gb","gpu_count":1}'
+TENSORA_DEV_TENANT=internal go run ./cmd/tensora events <id>   # admitted: 1 × apple-silicon-32gb on <this machine> with sim
+```

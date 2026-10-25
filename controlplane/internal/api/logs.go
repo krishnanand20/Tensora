@@ -36,6 +36,7 @@ type usageView struct {
 	Seconds     int64         `json:"seconds"`
 	GPUSeconds  int64         `json:"gpu_seconds"`
 	Region      domain.Region `json:"region"`
+	MachineID   string        `json:"machine_id,omitempty"` // the agent machine it ran on
 }
 
 type redactionView struct {
@@ -53,9 +54,11 @@ type exportView struct {
 	ExportedAt time.Time    `json:"exported_at"`
 	ExportedBy string       `json:"exported_by"`
 	Workload   workloadView `json:"workload"`
-	// LastPlacedClass is the stored placement, kept for a workload that's waiting again (whose view
-	// hides it), so the export stays complete.
+	// LastPlacedClass, LastMachineID, and LastDriver are the stored placement, kept for a workload
+	// that's waiting again (whose view hides it), so the export stays complete.
 	LastPlacedClass string            `json:"last_placed_class,omitempty"`
+	LastMachineID   string            `json:"last_machine_id,omitempty"`
+	LastDriver      string            `json:"last_driver,omitempty"`
 	CreatedBy       string            `json:"created_by"`
 	Params          map[string]string `json:"params"`
 	Events          []eventView       `json:"events"`
@@ -101,6 +104,8 @@ func (s *Server) exportWorkload(w http.ResponseWriter, r *http.Request, p domain
 		ExportedBy:      p.Actor(),
 		Workload:        toWorkloadView(exp.Workload),
 		LastPlacedClass: exp.Workload.PlacedClass,
+		LastMachineID:   idOrEmpty(exp.Workload.MachineID),
+		LastDriver:      exp.Workload.Driver,
 		CreatedBy:       exp.Workload.CreatedBy,
 		Params:          exp.Workload.Params,
 		Events:          toEventViews(exp.Events),
@@ -110,7 +115,7 @@ func (s *Server) exportWorkload(w http.ResponseWriter, r *http.Request, p domain
 	}
 	for i, u := range exp.Usage {
 		view.Usage[i] = usageView{PeriodStart: u.PeriodStart, GPUClass: u.GPUClass, GPUCount: u.GPUCount,
-			Seconds: u.Seconds, GPUSeconds: u.GPUSeconds(), Region: u.Region}
+			Seconds: u.Seconds, GPUSeconds: u.GPUSeconds(), Region: u.Region, MachineID: idOrEmpty(u.MachineID)}
 	}
 	for i, rd := range exp.Redactions {
 		view.Redactions[i] = redactionView{Field: rd.Field, Reason: rd.Reason}

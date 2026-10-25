@@ -4,7 +4,7 @@
 
 | Signal | Source | Status |
 |---|---|---|
-| Machine health: online, CPU, RAM, disk, temperature where available | Agent heartbeat | Planned (Phase 1–2) |
+| Machine health: online, CPU, RAM, disk, temperature where available | Agent heartbeat | Inventory and last-seen time recorded (built, ADR-0016); disk, temperature, and the dashboard planned (Phase 1–2) |
 | NVIDIA GPU use and memory | NVML, through the agent | Planned |
 | Apple GPU use and unified memory | macOS IOKit, through the agent (no root needed) | Planned (approach to validate) |
 | Workload timeline | Every state change and note with its reason; readable and exportable by the owner ([logs and transparency](logs-and-transparency.md)) | **Built** |

@@ -4,7 +4,7 @@
 |---|---|
 | **Activity log** | (Planned) per tenant: every API action by every user, with its request ID. An audit log. Tenant admins can read and export it (ADR-0015). |
 | **Admission** | The controller's decision to place a pending or queued workload onto free capacity |
-| **Agent (node agent)** | `tensora agent`: runs on each machine (Linux or macOS), dials out to the control plane, reports inventory, and runs workloads through drivers (ADR-0013) |
+| **Agent (node agent)** | Runs on each machine (Linux or macOS), reports its inventory, and runs workloads through drivers (ADR-0013). In Solo it runs inside the control plane's process; other machines will run `tensora agent` and dial out (Phase 2). It syncs with the control plane's agent backend (ADR-0016). |
 | **Allocation (usage accounting)** | Time a resource is reserved for a workload in a metered state, whatever its utilization. Used for quotas and fairness, never money (ADR-0011). |
 | **API token** | A credential for the CLI and scripts (`tsk_…`), made on the dashboard's API tokens page. Shown once, stored only as a hash, revocable, and optionally expiring. |
 | **Apple Silicon** | Apple's M-series chips. Their GPU is used through **Metal**, and CPU and GPU share **unified memory**. |
@@ -14,18 +14,20 @@
 | **Community pool** | A Tensora instance where hosts lend idle machines to any of its users (ADR-0014) |
 | **DataSource** | A CDI object naming a "golden" disk that VM disks are cloned from (Datacenter) |
 | **DCGM** | NVIDIA Data Center GPU Manager. Its exporter publishes GPU metrics. |
-| **Driver** | The part of the agent that runs one kind of workload on one OS, for example `macos-native`, `macos-vz`, `docker`, or `libvirt` |
+| **Desired state** | What a machine should be running, parking, or removing, worked out from the store on every sync, so a restart never loses it (ADR-0016) |
+| **Driver** | The part of the agent that runs one kind of workload on one OS, for example `macos-native`, `macos-vz`, `docker`, or `libvirt`; `sim` runs nothing, for development. Each driver's isolation (strong or weak) is set by the control plane, never by the agent. |
 | **Export (workload export)** | One JSON file (`tensora.workload-export/v1`) with everything recorded about a workload: inputs, timeline, usage, and redactions. `tensora export <id>`, or **Download full log** in the dashboard (ADR-0015). |
 | **Fallback** | An opt-in substitute (another GPU class, CPU, machine, replica, model, or region) used when the requested one is unavailable (ADR-0010) |
 | **Gateway API** | The Kubernetes ingress API that succeeds Ingress (Datacenter) |
 | **GGUF** | A code-free model file format used by llama.cpp. Allowed once the validator checks it (ADR-0013). |
 | **GPU class** | A catalog entry for what a workload runs on (`l40s-48gb`, `apple-silicon-32gb`, `cpu-4c-16g`), with its accelerator kind and the regions offering it. CPU classes are classes too. |
-| **Runtime** | How a catalog image runs on a kind of accelerator: for an endpoint, vLLM on NVIDIA, MLX on Apple Silicon, or llama.cpp on anything |
 | **GPU Operator** | NVIDIA operator that installs the driver, toolkit, device plugins, vfio-manager, MIG manager, and DCGM (Datacenter) |
 | **Host** | The owner of a machine that runs workloads. Can see guest data on their own machine. |
 | **Inference gateway** | A proxy in front of endpoints: API keys, token counts, rate limits, and request failover (ADR-0010) |
 | **Intent** | What a user asked for, recorded in the store. The controller makes the runtime match it. |
+| **Inventory** | What a machine's agent reports: OS, CPUs, memory, GPUs, the drivers it has, and what Tensora may use (the rest stays the owner's). It never decides the machine's owner, region, or sharing. |
 | **IOMMU** | CPU feature (Intel VT-d, AMD-Vi) that isolates device DMA; required for passthrough |
+| **Isolation (strong or weak)** | How well a driver separates a workload from its host: strong (a VM, or a container in its own VM) or weak (a shared kernel, or the macOS sandbox). Weak isolation is only for the machine owner's own workloads (the trust matrix). |
 | **Isolation tier** | In code today: `trusted` (owners) or `untrusted` (invited and community users) |
 | **Kata Containers** | Runs each container inside a lightweight VM, giving containers a VM-grade boundary |
 | **KServe** | Kubernetes model-serving layer. `InferenceService` is its main resource. (Datacenter) |
@@ -47,9 +49,11 @@
 | **Redaction** | Replacing a secret (a password or token, for example inside a model URI) with `REDACTED` in an export. Every redaction is listed in the export, so nothing is removed silently. |
 | **Region** | One location (a home, an office, a datacenter) within a deployment. Every workload lives in exactly one, and Solo has one called `local` (ADR-0009). |
 | **Request ID** | An ID the server generates for every request, returned in `X-Request-ID` and in error bodies (`request_id`). The same ID is on every log line for that request, with the tenant and subject, so an operator can find exactly what happened and check whose request it was. |
+| **Runtime** | How a catalog image runs on a kind of accelerator: for an endpoint, vLLM on NVIDIA, MLX on Apple Silicon, or llama.cpp on anything |
 | **safetensors** | A tensor file format that can't execute code when loaded, unlike pickle-based `.bin` and `.pt` files |
 | **Sharing level** | Per machine: **private** (default), **invite-only**, or **community** (ADR-0014) |
 | **Store** | Where business state lives: SQLite (Solo and small Labs) or Postgres |
+| **Sync** | The one call between an agent and the control plane: the agent reports what it has, and gets the machine's complete desired state back as soon as it changes (a long poll; ADR-0016) |
 | **Tenant** | A user or organization account. In a datacenter its objects live in namespace `t-<slug>`. |
 | **Time-slicing** | Several processes sharing one GPU with no memory isolation. Never used between different users. |
 | **Timeline** | A workload's complete list of state changes and notes, each with a time and a human-readable reason (`workload_events`). A **note** records a decision that leaves the state as it was, such as a retry. `tensora events <id>` (ADR-0015). |

@@ -20,7 +20,13 @@ type seedTenant struct {
 var tenants = []seedTenant{
 	{"acme", "Acme Robotics (invited team)", domain.TierUntrusted, map[string]int{"l40s-48gb": 2, "a100-80gb": 1}},
 	{"globex", "Globex (community users)", domain.TierUntrusted, map[string]int{"l40s-48gb": 1}},
-	{"internal", "Tensora internal", domain.TierTrusted, map[string]int{"l40s-48gb": 4, "a100-80gb": 2, "rtx4090-24gb": 2}},
+	// The trusted tenant can also use this machine's GPU or CPUs through the agent backend
+	// (TENSORA_CLUSTER_BACKEND=agent TENSORA_MACHINE_OWNER=internal).
+	{"internal", "Tensora internal", domain.TierTrusted, map[string]int{
+		"l40s-48gb": 4, "a100-80gb": 2, "rtx4090-24gb": 2,
+		"apple-silicon-16gb": 1, "apple-silicon-32gb": 1, "apple-silicon-64gb": 1, "apple-silicon-128gb": 1,
+		"cpu-2c-8g": 4, "cpu-4c-16g": 2, "cpu-16c-64g": 1,
+	}},
 }
 
 // Seed is idempotent: existing tenants are left alone.

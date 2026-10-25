@@ -23,7 +23,11 @@ import (
 	"github.com/tensora/tensora/controlplane/internal/testutil"
 )
 
-const ownerCreds = `{"email":"owner@example.com","password":"correct horse battery staple"}`
+const (
+	ownerCreds = `{"email":"owner@example.com","password":"correct horse battery staple"}`
+	// ownerPassword ends a JSON object that needs the owner's password, such as a new token's.
+	ownerPassword = `,"password":"correct horse battery staple"`
+)
 
 // localServer is an API in local auth mode with the owner set up. Test requests come from
 // 192.0.2.1, another machine, so it allows plain HTTP, as an operator may on a network they trust.
@@ -133,7 +137,7 @@ func TestAPITokenFlow(t *testing.T) {
 		body: `{"email":"owner@example.com","password":"correct horse battery staple"}`})
 	session := rec.Result().Cookies()[0]
 
-	rec = do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"laptop","expires_in_days":90}`, cookie: session, csrf: true})
+	rec = do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"laptop","expires_in_days":90` + ownerPassword + `}`, cookie: session, csrf: true})
 	var created map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	token, _ := created["token"].(string)
@@ -164,7 +168,10 @@ func TestAPITokenFlow(t *testing.T) {
 // signIn signs in as the owner and returns the session cookie.
 func signIn(t *testing.T, h http.Handler, r request) *http.Cookie {
 	t.Helper()
-	r.method, r.path, r.csrf = "POST", "/v1/auth/login", true
+	r.method, r.csrf = "POST", true
+	if r.path == "" {
+		r.path = "/v1/auth/login"
+	}
 	if r.body == "" {
 		r.body = ownerCreds
 	}
@@ -192,9 +199,11 @@ func TestSignInNeedsAPrivateConnection(t *testing.T) {
 		{"plain HTTP, allowed by the operator", auth.Transport{AllowPlainHTTP: true}, request{}, true, false},
 		{"direct HTTPS", auth.Transport{}, request{path: "https://tensora.example/v1/auth/login"}, true, true},
 		{"HTTPS through a trusted proxy", auth.Transport{TrustedProxies: []netip.Prefix{proxy}},
-			request{remote: "10.0.0.5:5000", header: map[string]string{"X-Forwarded-Proto": "https"}}, true, true},
+			request{remote: "10.0.0.5:5000", header: map[string]string{"X-Forwarded-For": "203.0.113.9", "X-Forwarded-Proto": "https"}}, true, true},
+		{"a trusted proxy that doesn't say who for", auth.Transport{TrustedProxies: []netip.Prefix{proxy}},
+			request{remote: "10.0.0.5:5000", header: map[string]string{"X-Forwarded-Proto": "https"}}, false, false},
 		{"plain HTTP through a trusted proxy", auth.Transport{TrustedProxies: []netip.Prefix{proxy}},
-			request{remote: "10.0.0.5:5000", header: map[string]string{"X-Forwarded-Proto": "http"}}, false, false},
+			request{remote: "10.0.0.5:5000", header: map[string]string{"X-Forwarded-For": "203.0.113.9", "X-Forwarded-Proto": "http"}}, false, false},
 		{"an untrusted peer claiming HTTPS", auth.Transport{},
 			request{header: map[string]string{"X-Forwarded-Proto": "https"}}, false, false},
 		{"a proxy on this machine, forwarding plain HTTP", auth.Transport{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}},
@@ -242,14 +251,53 @@ func TestSignInNeedsAPrivateConnection(t *testing.T) {
 	}
 }
 
+// Over HTTPS only the __Host- cookie counts: one with the other name may have been planted by a
+// plain-HTTP response, another port, or a sibling subdomain, so it's ignored, not trusted.
+func TestOverHTTPSOnlyTheHostCookieCounts(t *testing.T) {
+	h, _ := localServerWith(t, auth.Transport{})
+	secure := signIn(t, h, request{path: "https://tensora.example/v1/auth/login"})
+	if secure.Name != auth.SecureSessionCookie {
+		t.Fatalf("cookie over HTTPS = %s", secure.Name)
+	}
+	planted := &http.Cookie{Name: auth.SessionCookie, Value: "planted"}
+	if rec := do(t, h, request{method: "GET", path: "https://tensora.example/v1/auth/me", cookies: []*http.Cookie{planted, secure}}); rec.Code != http.StatusOK {
+		t.Errorf("with a planted plain cookie beside the real one: %d; want it ignored", rec.Code)
+	}
+	plain := &http.Cookie{Name: auth.SessionCookie, Value: secure.Value}
+	if rec := do(t, h, request{method: "GET", path: "https://tensora.example/v1/auth/me", cookie: plain}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the session under the plain name over HTTPS: %d; want 401", rec.Code)
+	}
+}
+
+// Making a token needs the password again: a token outlives the session that makes it.
+func TestMakingATokenNeedsThePassword(t *testing.T) {
+	h := localServer(t)
+	session := signIn(t, h, request{})
+	for name, body := range map[string]string{
+		"no password":    `{"name":"x"}`,
+		"wrong password": `{"name":"x","password":"wrong password!!"}`,
+	} {
+		if rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: body, cookie: session, csrf: true}); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d; want 403", name, rec.Code)
+		}
+	}
+}
+
+// A proxy on this machine that isn't listed can't be used to sign in: everyone behind it would
+// share one limit on guessing, and what it says about HTTPS can't be believed.
+func TestUnlistedProxyCantSignIn(t *testing.T) {
+	h, _ := localServerWith(t, auth.Transport{})
+	rec := do(t, h, request{method: "POST", path: "/v1/auth/login", body: ownerCreds, csrf: true, remote: "127.0.0.1:5000",
+		header: map[string]string{"X-Forwarded-For": "198.51.100.7", "X-Forwarded-Proto": "https"}})
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "TENSORA_TRUSTED_PROXIES") {
+		t.Errorf("sign-in through an unlisted local proxy: %d %s", rec.Code, rec.Body)
+	}
+}
+
 // Two session cookies mean one may have been planted by another page on this host: refuse both.
 func TestConflictingSessionCookiesAreRefused(t *testing.T) {
 	h := localServer(t)
 	session := signIn(t, h, request{})
-	planted := &http.Cookie{Name: auth.SecureSessionCookie, Value: "planted"}
-	if rec := do(t, h, request{method: "GET", path: "/v1/auth/me", cookies: []*http.Cookie{session, planted}}); rec.Code != http.StatusUnauthorized {
-		t.Errorf("two session cookies: %d; want 401", rec.Code)
-	}
 	twice := &http.Cookie{Name: auth.SessionCookie, Value: "planted"}
 	if rec := do(t, h, request{method: "GET", path: "/v1/auth/me", cookies: []*http.Cookie{twice, session}}); rec.Code != http.StatusUnauthorized {
 		t.Errorf("the same cookie twice: %d; want 401", rec.Code)
@@ -260,14 +308,14 @@ func TestConflictingSessionCookiesAreRefused(t *testing.T) {
 func TestTokensCantMakeTokensOrChangeThePassword(t *testing.T) {
 	h := localServer(t)
 	session := signIn(t, h, request{})
-	rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"script"}`, cookie: session, csrf: true})
+	rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"script"` + ownerPassword + `}`, cookie: session, csrf: true})
 	var created map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	token, _ := created["token"].(string)
 	if rec.Code != http.StatusCreated || token == "" {
 		t.Fatalf("create token: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"more"}`, bearer: token}); rec.Code != http.StatusForbidden {
+	if rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"more"` + ownerPassword + `}`, bearer: token}); rec.Code != http.StatusForbidden {
 		t.Errorf("a token making a token: %d; want 403", rec.Code)
 	}
 	if rec := do(t, h, request{method: "POST", path: "/v1/auth/password", bearer: token,
@@ -310,7 +358,7 @@ func TestTokensAreTheirOwnersOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := signIn(t, h, request{})
-	rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"laptop"}`, cookie: owner, csrf: true})
+	rec := do(t, h, request{method: "POST", path: "/v1/tokens", body: `{"name":"laptop"` + ownerPassword + `}`, cookie: owner, csrf: true})
 	var created map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	id, _ := created["id"].(string)

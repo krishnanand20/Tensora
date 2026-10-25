@@ -26,10 +26,13 @@ type workloadView struct {
 	GPUCount  int                 `json:"gpu_count"`
 	CreatedAt time.Time           `json:"created_at"`
 	UpdatedAt time.Time           `json:"updated_at"`
-	// Where it runs and on what (ADR-0009, ADR-0010). placed_class is absent until it's admitted,
-	// and differs from gpu_class only after an opt-in fallback.
+	// Where it runs and on what (ADR-0009, ADR-0010, ADR-0016). placed_class is absent until it's
+	// admitted, and differs from gpu_class only after an opt-in fallback. On node agents,
+	// machine_id and driver say which machine runs it and how.
 	Region      domain.Region `json:"region"`
 	PlacedClass string        `json:"placed_class,omitempty"`
+	MachineID   string        `json:"machine_id,omitempty"`
+	Driver      string        `json:"driver,omitempty"`
 }
 
 type listView[T any] struct {
@@ -84,13 +87,20 @@ type errorDetail struct {
 func toWorkloadView(w domain.Workload) workloadView {
 	if w.State == domain.StatePending || w.State == domain.StateQueued {
 		// Waiting to be placed again: a placement from an earlier run isn't where it will run.
-		w.PlacedClass = ""
+		w.PlacedClass, w.MachineID, w.Driver = "", uuid.Nil, ""
 	}
 	return workloadView{
 		ID: w.ID, Name: w.Name, Kind: w.Kind, State: w.State, ImageID: w.ImageID,
 		GPUClass: w.GPUClass, GPUCount: w.GPUCount, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
-		Region: w.Region, PlacedClass: w.PlacedClass,
+		Region: w.Region, PlacedClass: w.PlacedClass, MachineID: idOrEmpty(w.MachineID), Driver: w.Driver,
 	}
+}
+
+func idOrEmpty(id uuid.UUID) string {
+	if id == uuid.Nil {
+		return ""
+	}
+	return id.String()
 }
 
 func toCatalogView(c catalog.Catalog) catalogView {

@@ -13,7 +13,7 @@ This is the engineering plan. **What** each milestone must deliver is defined in
 | 4. Sharing | M4: invite-only sharing and community pools | Any |
 | 5. Ecosystem | M5: Windows, AMD, serverless API across pools | Any |
 
-## Phase 0: Foundations ← *we are here*
+## Phase 0: Foundations
 
 - [x] Repo structure, agent instructions (AGENTS.md and CLAUDE.md), CI, and docs
 - [x] Core platform skeleton (Go): API, controller, usage accounting, lifecycle, quotas, fake and Kubernetes backends
@@ -27,7 +27,7 @@ This is the engineering plan. **What** each milestone must deliver is defined in
 - [ ] **Choose the open-source licence** (Apache-2.0 recommended) and add `LICENSE`
 - [ ] Set the image registry (`ghcr.io/your-org` is a placeholder)
 
-## Phase 1: Solo (→ M1)
+## Phase 1: Solo (→ M1) ← *we are here*
 
 **Done when:** on a fresh Apple Silicon Mac and a fresh Linux box, one command installs Tensora,
 `tensora up` opens the dashboard, and a notebook and a model endpoint run on the local GPU (Metal or
@@ -44,7 +44,7 @@ Each step keeps `make lint test deploy-check build-all` green. Do the data-model
 | 3 | Domain | ✅ **Done.** `Region`, accelerator kinds (`nvidia`, `apple`, `amd`, `cpu`), sharing levels, `Machine` with validation, and placement fields on `Workload`. Tested: a workload can't enter a metered state before it's placed (`Transition` refuses), and a machine needs exactly one valid region. The controller records placement in the same transaction as admission, capacity is counted by placed class, and usage is accounted on the placed class and region. |
 | 4 | Catalog | ✅ **Done.** A `regions:` list (the first is the default; Solo has `local`). Classes have an `accelerator` and optional `regions`. Apple Silicon classes by unified-memory tier (`apple-silicon-32gb`; owners only, rule 4) and CPU classes (`cpu-4c-16g`, `cpu-16c-64g`). Images list runtimes in order: the endpoint image (`openai-endpoint`) uses vLLM on NVIDIA, MLX on Apple, and llama.cpp on anything. Create takes `region`; the controller reconciles one region (`TENSORA_REGION`). |
 | 5 | Auth | ✅ **Done.** `TENSORA_AUTH_MODE=local`: accounts with argon2id passwords; dashboard sessions (HttpOnly, SameSite=Strict cookie, CSRF header, 7 days); API tokens (`tsk_…`, shown once, stored as hashes, expiring or not, revocable); guessing limited per email-and-address pair and per address; passwords and cookies only over HTTPS or this machine (`TENSORA_TRUSTED_PROXIES`, `TENSORA_INSECURE_HTTP`); tokens can't make tokens or change the password; timelines name the credential; and `tensora setup` (with `-reset-password`) for the owner account. The dashboard's own first-run page arrives with `tensora up` (step 8). |
-| 6 | Agent | The agent protocol: mTLS, enrolment tokens, heartbeat, inventory, desired-state sync. Add the `agent` implementation of `cluster.Backend`, with an in-process agent for Solo. A machine's region comes from its enrolment token, never from what the agent reports. Choose the machine (with `Machine.CanHost`, extended to weigh the runtime's isolation) before applying anything. |
+| 6 | Agent | ✅ **Done** ([ADR-0016](adr/0016-agent-protocol-and-machine-placement.md)). `cluster.Backend` is runtime-neutral (`Run`, `Park`, `Observe`, `Delete` take a placed spec), and the controller places, then runs. The agent protocol is one long-polled `Sync`, whose desired state is computed from the store, so restarts are safe. The `agent` backend (`internal/cluster/agents`) and the in-process agent (`internal/agent`) report inventory (CPUs, memory, Apple Silicon GPUs through sysctl, NVIDIA through `nvidia-smi`) and heartbeats, and run what they're given through drivers (`sim` for development). Placement (`controller/placement.go`) chooses the machine and driver: region and sharing (`Machine.CanHost`), the trust matrix (`Machine.Permits`: weak isolation only for the owner's own workloads), and free devices, CPUs, and memory; VMs and notebooks return to their disk. Agents re-check the driver, isolation, and free GPUs, and delete data only for a workload listed for removal. A machine is found by the ID saved next to its database, and its owner and region come from its registration, never its agent. Until Phase 4's opt-in, workloads are placed only on their tenant's own machines. Migration `00005` adds machine CPUs and memory, and the workload's driver. The network transport, enrolment tokens, and agent certificates moved to Phase 2's first item. |
 | 7 | Drivers | `macos-native`: llama.cpp and MLX servers, and Jupyter in a uv-managed environment, all under a sandbox profile. `docker` (Linux): detect the NVIDIA toolkit and fall back to CPU. Driver code lives behind build tags. Workload web UIs (Jupyter, endpoint UIs) are served from their own hostname, never the dashboard's origin, so code in a workload can't act with the user's session ([tenancy](architecture/tenancy-and-isolation.md)). |
 | 8 | `tensora up` | Data directory per OS, embedded dashboard (`go:embed` of `web/dist`), binds to localhost, first-run account |
 | 9 | Web | Machines page; region and placed class on each workload; fallback opt-in on the launch form. No money anywhere. |
@@ -59,7 +59,7 @@ Each step keeps `make lint test deploy-check build-all` green. Do the data-model
 **Done when:** a class or small team runs one instance across mixed Mac and Linux machines, with
 users, quotas, VMs, fallbacks, and endpoint API keys.
 
-- [ ] Agents join over the network: outbound mTLS (works behind NAT); enrolment from the dashboard; machine health
+- [ ] Agents join over the network (ADR-0016): `POST /agent/v1/sync` over HTTPS with mutual TLS, outbound from the agent (works behind NAT); a certificate authority on the control plane; enrolment tokens from the dashboard, which fix the machine's owner and region; per-machine certificates and revocation; machine health on the dashboard; failing a running workload whose machine stays offline past a grace period
 - [ ] Users, invites, teams, and per-user quotas; usage reports (no money)
 - [ ] Activity log per tenant (ADR-0015): every API action by every user, with its request ID; tenant admins can read and export it
 - [ ] VMs: `libvirt` driver (Linux KVM, with VFIO GPU passthrough) and `macos-vz` driver (macOS guests with Metal, max 2 per Mac; Linux guests CPU-only)
@@ -114,8 +114,8 @@ community pool with fair share and abuse tools.
 |---|---|---|
 | **Final product name** | "Tensora" is a working name; several companies already use it | Before the first release |
 | **Open-source licence** | Apache-2.0 recommended | Before the first release |
-| Agent protocol | gRPC streams, or HTTPS with WebSocket. Either way the agent connects outbound with mTLS. | Phase 1 |
-| Sandbox for native macOS workloads | A macOS sandbox profile per workload, for trusted users only | Phase 1 |
+| ~~Agent protocol~~ | **Decided** ([ADR-0016](adr/0016-agent-protocol-and-machine-placement.md)): one long-polled `Sync`, over HTTPS with mutual TLS on the network, outbound from the agent | — |
+| Sandbox for native macOS workloads | A macOS sandbox profile per workload, for the machine owner's own workloads only | Phase 1 (step 7) |
 | Linux containers on Mac | Apple's containerization framework, or Lima | Phase 2 |
 | Remote access to workloads | A relay through the control plane (Solo and Lab); in a datacenter, a shared IP with a port per VM | Phase 2 |
 | Inference gateway implementation | Built into the Go control plane (Lab); Envoy-based or Go in a datacenter | Phase 2 |

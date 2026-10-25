@@ -4,16 +4,17 @@ Short records of decisions that are expensive to reverse. To write one, follow
 [docs/playbooks/write-an-adr.md](../playbooks/write-an-adr.md). Claude Code users can run `/new-adr`.
 
 ADRs are history, so they're never rewritten. When a later decision changes an earlier one, the earlier
-ADR gets a banner at the top saying what still applies. **Read the newest ADRs first:** 0011 to 0015
+ADR gets a banner at the top saying what still applies. **Read the newest ADRs first:** 0011 to 0016
 define today's product.
 
 | # | Decision | Status |
 |---|---|---|
 | [0011](0011-free-for-everyone.md) | **Free for everyone:** no pricing, no billing, open source | Accepted |
 | [0012](0012-deployment-profiles.md) | **Deployment profiles:** Solo, Lab, Datacenter | Accepted (SQLite store and local accounts built; the rest planned) |
-| [0013](0013-node-agent-and-apple-silicon.md) | **Node agent and drivers; Apple Silicon Macs as first-class hosts** | Accepted (machines, accelerators, Apple and CPU classes, and per-platform runtimes in code; agent planned) |
+| [0013](0013-node-agent-and-apple-silicon.md) | **Node agent and drivers; Apple Silicon Macs as first-class hosts** | Accepted (machines, accelerators, Apple and CPU classes, per-platform runtimes, and the in-process agent in code; real drivers planned) |
 | [0014](0014-sharing-idle-compute.md) | **Sharing idle compute:** private, invite-only, community pools | Accepted (sharing level stored per machine; enforcement planned) |
 | [0015](0015-logs-and-transparency.md) | **Logs and transparency:** complete, exportable, nothing hidden except secrets | Accepted (timeline, export, CLI built; output and activity logs planned) |
+| [0016](0016-agent-protocol-and-machine-placement.md) | **Agent protocol and machine placement:** one long-polled `Sync`, desired state from the store, a runtime-neutral backend, placement in the controller | Proposed (in-process agent, agent backend, and placement built; network transport Phase 2) |
 | [0001](0001-kubernetes-kubevirt-gpu-operator.md) | Kubernetes, KubeVirt, and the GPU Operator | Accepted; Datacenter profile only (0012) |
 | [0002](0002-k3s-single-node-first.md) | k3s with embedded etcd | Accepted; Datacenter profile only (0012) |
 | [0003](0003-language-split.md) | Go for the core platform, Python for the ML layer, TypeScript for the dashboard | Accepted |

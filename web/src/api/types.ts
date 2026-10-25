@@ -28,6 +28,9 @@ export interface Workload {
   region: string;
   /** What it was admitted on; absent until admitted, and different from gpu_class only after an opt-in fallback (ADR-0010). */
   placed_class?: string;
+  /** On node agents: the machine that runs it, and the driver (ADR-0016). */
+  machine_id?: string;
+  driver?: string;
 }
 
 export interface CreateWorkload {

@@ -33,8 +33,17 @@ type Config struct {
 	OIDCAudience    string
 	OIDCTenantClaim string
 
-	ClusterBackend        string // fake | kubernetes
-	FakeCapacity          map[string]int
+	ClusterBackend string // fake | kubernetes | agent
+	FakeCapacity   map[string]int
+	// MachineOwner is the tenant (slug) that owns this machine when the agent backend runs an agent
+	// in-process (Solo): TENSORA_MACHINE_OWNER, home by default, the tenant `tensora setup` makes.
+	MachineOwner string
+	// AgentDrivers are the in-process agent's drivers (TENSORA_AGENT_DRIVERS, comma-separated).
+	// Only sim exists so far, and only in dev; the real drivers are roadmap step 7.
+	AgentDrivers []string
+	// AgentStateDir keeps this machine's identity for the in-process agent (TENSORA_AGENT_STATE_DIR).
+	// Empty means the SQLite database's directory; it's required with Postgres.
+	AgentStateDir         string
 	UntrustedRuntimeClass string
 	StorageClass          string
 	ImagesNamespace       string
@@ -75,6 +84,8 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		OIDCAudience:          get("OIDC_AUDIENCE", "tensora-api"),
 		OIDCTenantClaim:       get("OIDC_TENANT_CLAIM", "tensora_tenant"),
 		ClusterBackend:        get("CLUSTER_BACKEND", "fake"),
+		MachineOwner:          get("MACHINE_OWNER", "home"),
+		AgentStateDir:         get("AGENT_STATE_DIR", ""),
 		UntrustedRuntimeClass: get("UNTRUSTED_RUNTIME_CLASS", "kata-qemu-nvidia-gpu"),
 		StorageClass:          get("STORAGE_CLASS", "tensora-block"),
 		ImagesNamespace:       get("IMAGES_NAMESPACE", "tensora-images"),
@@ -91,6 +102,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	}
 	if c.InsecureHTTP, err = strconv.ParseBool(get("INSECURE_HTTP", "false")); err != nil {
 		errs = append(errs, fmt.Errorf("TENSORA_INSECURE_HTTP must be true or false: %w", err))
+	}
+	for _, d := range strings.Split(get("AGENT_DRIVERS", ""), ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			c.AgentDrivers = append(c.AgentDrivers, d)
+		}
 	}
 	if c.FakeCapacity, err = parseCapacity(get("FAKE_CAPACITY", "l40s-48gb=4,a100-80gb=2")); err != nil {
 		errs = append(errs, fmt.Errorf("TENSORA_FAKE_CAPACITY: %w", err))
@@ -137,8 +153,26 @@ func (c Config) validate() error {
 			errs = append(errs, errors.New("TENSORA_CLUSTER_BACKEND=fake is not allowed in production"))
 		}
 	case "kubernetes":
+	case "agent":
+		if !domain.ValidSlug(c.MachineOwner) {
+			errs = append(errs, fmt.Errorf("TENSORA_MACHINE_OWNER must be a tenant slug, got %q", c.MachineOwner))
+		}
+		if db, err := c.Database(); err == nil && db.Driver == "postgres" && c.AgentStateDir == "" {
+			errs = append(errs, errors.New("TENSORA_AGENT_STATE_DIR is required with the agent backend and Postgres: it keeps this machine's identity"))
+		}
+		if c.AgentStateDir != "" && !filepath.IsAbs(c.AgentStateDir) {
+			errs = append(errs, errors.New("TENSORA_AGENT_STATE_DIR must be an absolute path"))
+		}
+		for _, d := range c.AgentDrivers {
+			switch {
+			case d != domain.DriverSim:
+				errs = append(errs, fmt.Errorf("TENSORA_AGENT_DRIVERS: unknown driver %q (only sim exists so far)", d))
+			case c.Env != "dev":
+				errs = append(errs, errors.New("TENSORA_AGENT_DRIVERS=sim runs nothing, so it's only for TENSORA_ENV=dev"))
+			}
+		}
 	default:
-		errs = append(errs, fmt.Errorf("TENSORA_CLUSTER_BACKEND must be fake or kubernetes, got %q", c.ClusterBackend))
+		errs = append(errs, fmt.Errorf("TENSORA_CLUSTER_BACKEND must be fake, kubernetes, or agent, got %q", c.ClusterBackend))
 	}
 	if c.Env != "dev" && c.DatabaseURL == "" {
 		errs = append(errs, errors.New("TENSORA_DATABASE_URL is required outside dev"))

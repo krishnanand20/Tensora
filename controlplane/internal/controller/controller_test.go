@@ -38,10 +38,8 @@ func newHarness(t *testing.T, capacity map[string]int) *harness {
 	clock := testutil.NewClock(testutil.T0)
 	b := fake.New(capacity)
 	logs := &bytes.Buffer{}
-	ctrl := controller.New(st, b, cat, controller.Options{
-		StorageClass: "tensora-block", ImagesNamespace: "tensora-images",
-		UntrustedRuntimeClass: "kata", ProvisionTimeout: 10 * time.Minute,
-	}, slog.New(slog.NewTextHandler(logs, nil)), clock.Now)
+	ctrl := controller.New(st, b, cat, controller.Options{ProvisionTimeout: 10 * time.Minute},
+		slog.New(slog.NewTextHandler(logs, nil)), clock.Now)
 	return &harness{t: t, st: st, svc: service.New(st, cat, clock.Now), ctrl: ctrl, backend: b, clock: clock, logs: logs}
 }
 
@@ -189,15 +187,17 @@ func TestWaitingReasonShowsFreeGPUsOnlyToTrustedTenants(t *testing.T) {
 
 func TestRuntimeErrorsAreNotedOnceWithoutRawDetails(t *testing.T) {
 	h := newHarness(t, map[string]int{"l40s-48gb": 1})
-	h.backend.FailApply(errors.New(`admission webhook denied t-acme/w-123: storageUri "s3://AKIA:hunter2@models/m"`))
+	h.backend.FailRun(errors.New(`admission webhook denied t-acme/w-123: storageUri "s3://AKIA:hunter2@models/m"`))
 	w := h.create(testutil.Acme, "nb", 1)
 	h.reconcile()
 	h.reconcile()
-	h.expect(testutil.Acme, w.ID, domain.StatePending)
+	// Placed first, then run (ADR-0016): it holds its GPU while the runtime is retried, and the
+	// provisioning timeout bounds how long.
+	h.expect(testutil.Acme, w.ID, domain.StateProvisioning)
 
 	reasons := h.reasons(testutil.Acme, w.ID)
-	if len(reasons) != 2 || !strings.Contains(reasons[1], "couldn't start it on the runtime; retrying") {
-		t.Fatalf("timeline = %q; want the creation and one retry note", reasons)
+	if len(reasons) != 3 || !strings.HasPrefix(reasons[1], "admitted:") || !strings.Contains(reasons[2], "couldn't start it on the runtime; retrying") {
+		t.Fatalf("timeline = %q; want the creation, the admission, and one retry note", reasons)
 	}
 	for _, r := range reasons {
 		if strings.Contains(r, "t-acme") || strings.Contains(r, "hunter2") || strings.Contains(r, "webhook") {
@@ -208,8 +208,9 @@ func TestRuntimeErrorsAreNotedOnceWithoutRawDetails(t *testing.T) {
 		t.Errorf("operator log must keep the error with credentials redacted:\n%s", logs)
 	}
 
-	h.backend.FailApply(nil)
-	h.reconcile()
+	h.backend.FailRun(nil)
+	h.reconcile() // runs it again
+	h.reconcile() // sees it ready
 	h.expect(testutil.Acme, w.ID, domain.StateRunning)
 }
 
@@ -387,5 +388,39 @@ func TestAdmissionNamesTheServer(t *testing.T) {
 	h.reconcile()
 	if !slices.Contains(h.reasons(testutil.Acme, w.ID), "admitted: 1 × l40s-48gb, served by vllm") {
 		t.Errorf("timeline = %q; want the server named at admission", h.reasons(testutil.Acme, w.ID))
+	}
+}
+
+// A running workload the runtime reports as stopped (shut down from inside, or by the runtime)
+// isn't running, so it fails with a reason instead of staying running and accounted.
+func TestRunningWorkloadThatStopsByItselfFails(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	w := h.create(testutil.Acme, "nb", 1)
+	h.reconcile()
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateRunning)
+	h.backend.SetObserved(w.ID, cluster.ObservedStopped)
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateFailed)
+	if r := h.reasons(testutil.Acme, w.ID); r[len(r)-1] != "it stopped by itself" {
+		t.Errorf("reason = %q", r[len(r)-1])
+	}
+}
+
+// A stopping workload whose runtime reports it failed (such as a machine offline too long) ends
+// stopped: it isn't running either way.
+func TestStoppingWorkloadThatFailedEndsStopped(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	w := h.create(testutil.Acme, "nb", 1)
+	h.reconcile()
+	h.reconcile()
+	if _, err := h.svc.StopWorkload(context.Background(), testutil.Acme, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.backend.SetObserved(w.ID, cluster.ObservedFailed)
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateStopped)
+	if r := h.reasons(testutil.Acme, w.ID); r[len(r)-1] != "stopped: forced by test" {
+		t.Errorf("reason = %q", r[len(r)-1])
 	}
 }

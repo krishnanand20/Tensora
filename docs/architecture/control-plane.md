@@ -6,11 +6,11 @@ One Go binary (`controlplane/`), `tensora`, whose subcommand picks the role.
 |---|---|---|---|
 | `tensora up` | API, controller, usage accounting, in-process agent, and dashboard in one process, using SQLite | Solo | Planned (Phase 1) |
 | `tensora api` | Authn/z, validation, quota checks, recording intent | Lab, Datacenter | Built |
-| `tensora controller` | Admission, placement, applying and observing workloads through a backend, lifecycle transitions | Lab; Datacenter (one per region) | Built (fake and Kubernetes backends) |
+| `tensora controller` | Admission, placement, running and observing workloads through a backend, lifecycle transitions; with the agent backend, also this machine's in-process agent | Lab; Datacenter (one per region) | Built (fake, Kubernetes, and agent backends) |
 | `tensora metering` | Usage accounting: turns lifecycle events into hourly usage records (no money, ADR-0011) | Lab, Datacenter | Built |
-| `tensora agent` | Node agent on each machine; runs workloads through OS drivers (ADR-0013) | Lab | Planned (Phase 1–2) |
+| `tensora agent` | Node agent on other machines, joining over the network (ADR-0013, ADR-0016) | Lab | Planned (Phase 2). The agent itself is built and runs in-process (below). |
 | `tensora migrate` | Applies the embedded SQL migrations | Lab (Postgres), Datacenter | Built |
-| `tensora dev` | Development all-in-one: in-memory store (or SQLite or Postgres via `TENSORA_DATABASE_URL`), fake backend, seeded users | Development | Built; runs on macOS and Linux |
+| `tensora dev` | Development all-in-one: in-memory store (or SQLite or Postgres via `TENSORA_DATABASE_URL`), fake backend (or the agent backend with `TENSORA_CLUSTER_BACKEND=agent`), seeded users | Development | Built; runs on macOS and Linux |
 | `tensora workloads [-all]`, `events <id>`, `export <id>` | CLI client for a running API: list, full timeline, complete log export ([logs](logs-and-transparency.md)) | Every profile | Built (launch, stop, and `logs --follow` planned) |
 
 ## Sources of truth ([ADR-0008](../adr/0008-postgres-intent-kubernetes-runtime.md), [ADR-0012](../adr/0012-deployment-profiles.md))
@@ -21,13 +21,30 @@ One Go binary (`controlplane/`), `tensora`, whose subcommand picks the role.
 
 ## Backends (AGENTS.md rule 2)
 
-All runtime access goes through `cluster.Backend`:
+All runtime access goes through `cluster.Backend`, which is runtime-neutral ([ADR-0016](../adr/0016-agent-protocol-and-machine-placement.md)):
+`Capacity`, `Run(spec)`, `Park(spec)`, `Observe(ref)`, and `Delete(ref)`. A spec is the placed workload with its
+class, image, and runtime, and on agents its machine and driver; each backend turns it into what its runtime needs.
 
-| Backend | Talks to | Status |
-|---|---|---|
-| `fake` | Nothing (in memory) | Built; used by `tensora dev` and tests |
-| `kubernetes` | A Kubernetes cluster, through server-side apply and an allowlist of kinds | Built |
-| `agent` | Node agents, which dial out to the control plane over mTLS | Planned ([ADR-0013](../adr/0013-node-agent-and-apple-silicon.md)) |
+| Backend | Talks to | Capacity | Status |
+|---|---|---|---|
+| `fake` | Nothing (in memory) | Units per class (`TENSORA_FAKE_CAPACITY`) | Built; used by `tensora dev` and tests |
+| `kubernetes` | A Kubernetes cluster, through server-side apply and an allowlist of kinds; builds manifests from specs | Units per class over Ready nodes; Kubernetes picks the node | Built |
+| `agent` (`internal/cluster/agents`) | Node agents, which sync with it (below) | The machines connected now: devices per class, usable CPUs and memory, drivers; the controller picks the machine | Built, with the in-process agent (Solo). Agents joining over the network: Phase 2. |
+
+**Agents** ([ADR-0016](../adr/0016-agent-protocol-and-machine-placement.md)) make one call, `Sync`. The agent sends
+the status of every workload it has (as codes from a fixed vocabulary) and its inventory when it changes. The
+backend answers with the machine's complete desired state as soon as that changes, or after 20 seconds (a long
+poll). Desired state is computed from the store on every sync, so a restart never makes an agent stop or delete
+anything:
+
+- provisioning or running: run;
+- deleting, or a stopped endpoint: remove, with everything it stored;
+- anything else: parked, keeping its disk.
+
+`Run`, `Park`, and `Delete` only wake the machine's agent. A machine that hasn't synced for 45 seconds is offline:
+it isn't offered for placement, and its workloads' status reads as unknown. In Solo the agent runs in the
+controller's process, on this machine, owned by the tenant `TENSORA_MACHINE_OWNER`. Over the network (Phase 2) the
+same call is `POST /agent/v1/sync` over HTTPS with mutual TLS.
 
 ## Workload lifecycle
 
@@ -81,7 +98,10 @@ vocabulary, never from raw runtime messages, and `service.CleanReason` cleans ev
 | user action | `stop requested by you@example.com (browser session)` |
 | queued (trusted tenant) | `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free` |
 | queued (untrusted tenant) | `waiting for l40s-48gb capacity: requested 2 GPU(s), not enough free right now` |
-| admitted | `admitted: 2 × l40s-48gb`, or for an endpoint `admitted: 1 × l40s-48gb, served by vllm` |
+| admitted | `admitted: 2 × l40s-48gb`, for an endpoint `admitted: 1 × l40s-48gb, served by vllm`, and on agents `admitted: 1 × apple-silicon-32gb on studio with macos-native` |
+| queued (no machine) | `waiting for a machine that can run apple-silicon-32gb to come online`, or `waiting for its machine to come online: its disk is there` |
+| machine offline (note) | `its machine is offline; waiting for it to reconnect` |
+| what an agent reports | A fixed reason per code: `starting on its machine`, `waiting for its machine's GPU to be free`, `it ran out of memory`, and so on; an unknown code reads `its machine reported a problem` |
 | retrying (note) | `couldn't start it on the runtime; retrying. The operator's log has the details under this workload's ID.` |
 | runtime unreachable (note) | `couldn't read its status from the runtime; retrying. …`, `couldn't check for free GPUs on the runtime; retrying. …` |
 | failure | A fixed reason from the backend (`model server not ready (RevisionFailed)`), the timeout, or `can't start: GPU class "x" is no longer offered by this installation` |
@@ -89,9 +109,18 @@ vocabulary, never from raw runtime messages, and `service.CleanReason` cleans ev
 ## Admission and placement
 
 - **Quota** (API, at create and start): GPUs held plus the request must not exceed the tenant's quota for that class. The quota row is locked, so concurrent creates serialize.
-- **Capacity** (controller): schedulable capacity per class, minus what the store says is allocated.
+- **Capacity** (controller): what the backend reports, minus what the store says is held.
+- **Placement** (controller, `internal/controller/placement.go`, the one place it's decided): on a cluster, the requested class. On agents, a machine and a driver:
+  - the machine is the tenant's own, until sharing lets a user choose another's (Phase 4), and it's in the workload's region (`Machine.CanHost`);
+  - the driver runs the workload's kind on the class's accelerator, and **weak isolation** (`macos-native`, plain `docker`, `sim`) is only for the machine owner's own workloads (`Machine.Permits`, the trust matrix). A driver's isolation comes from `domain.LookupDriver`, never from what an agent reports;
+  - the class's devices, CPUs, and memory are free on the machine. An NVIDIA or AMD device matches the class listing its model (catalog `models`); a Mac's GPU matches the largest Apple class its unified memory holds;
+  - a VM or notebook that has run before goes back to the machine holding its disk, with the driver holding its data, and waits for them;
+  - a driver's per-machine limit holds (`macos-vz`: two macOS VMs per Mac).
+- **Agents check too:** an agent refuses a driver it doesn't have, weak isolation for a workload that needs strong, a notebook or VM asked to move to another driver, and starting a workload while any other is still active on the GPU it needs. It deletes data only for a workload listed for removal; one it wasn't told about is stopped and kept.
+- **Machine identity:** the in-process agent's machine is found by the ID saved in `machine-id` next to the SQLite database (or in `TENSORA_AGENT_STATE_DIR`), never by hostname, so renaming the Mac changes only its label. Its owner and region never change.
+- **After a restart**, the agent backend reports that it's settling until every machine in its region has reconnected (at most 45 seconds), and the controller admits nothing meanwhile.
 - **Order:** FIFO with backfill. *Known gap:* large requests can starve, so aging is planned.
-- *Planned:* **region** (ADR-0009), **fallbacks** (ADR-0010), **sharing levels and the trust matrix** (ADR-0014, which decides which machines a user's workload may land on), and **fair share** from usage accounting.
+- *Planned:* **fallbacks** (ADR-0010), **invite lists** (ADR-0014; an invite-only machine counts as private until then), and **fair share** from usage accounting.
 - **Backstop:** in the Datacenter profile, each tenant namespace also has a GPU `ResourceQuota`.
 
 ## Reconcile loop
@@ -100,8 +129,8 @@ vocabulary, never from raw runtime messages, and `service.CleanReason` cleans ev
 
 | Step | Picks up | Does |
 |---|---|---|
-| admit | pending, queued | Capacity check; apply the workload through the backend; go to `provisioning`, or `queued` if there's no room |
-| observe | provisioning, running | Ready means `running`. A failure, vanished objects, or a provisioning timeout releases resources and goes to `failed`. |
+| admit | pending, queued | Place it (above) and go to `provisioning` in one transaction, then `Run` it; or go to `queued`, with the reason, if there's no room |
+| observe | provisioning, running | Ready means `running`. Provisioning but absent from the runtime: `Run` again (it's idempotent). A failure, a workload that vanished, or a provisioning timeout releases resources and goes to `failed`. An unknown status (machine offline) is noted and decides nothing, except that provisioning still times out. |
 | park | stopping | Halt the VM, scale the notebook to 0, or remove the endpoint. Go to `stopped` once observed. |
 | remove | deleting | Delete everything belonging to the workload, including volumes, then go to `deleted`. |
 
@@ -117,7 +146,7 @@ vocabulary, never from raw runtime messages, and `service.CleanReason` cleans ev
 
 Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, a default-deny NetworkPolicy, Gateway ingress, and image-clone RBAC.
 
-**Agents** (planned, ADR-0013):
+**Agents** (ADR-0013; the drivers are roadmap step 7, except `sim`, which runs nothing and is for development only):
 
 | Kind | Mac | Linux |
 |---|---|---|
@@ -135,11 +164,11 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 - Async actions return **202** and the current state.
 - Another tenant's object is always **404**.
 - IDs are UUIDv7. Runtime object names derive from IDs, never from user input.
-- Workload responses include `region` and, once admitted, `placed_class`. `gpu_class` is the class requested; the two differ only after an opt-in fallback.
+- Workload responses include `region` and, once admitted, `placed_class`, and on agents `machine_id` and `driver`. `gpu_class` is the class requested; the two differ only after an opt-in fallback.
 - Create takes an optional `region`, checked against the catalog's regions (the first is the default). The class must be offered there, and the image must have a runtime for the class's accelerator.
 - *Planned:*
   - Create takes `fallback` and `fallback_after`.
-  - Responses include `machine` once agents place workloads on machines.
+  - A `/v1/machines` resource with machine names (roadmap step 9).
   - `POST` accepts `Idempotency-Key` (the `idempotency_keys` table exists), and every 503 carries `Retry-After`.
 
 ## Failure modes
@@ -150,7 +179,8 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 | Store down | API not ready (503); the controller pauses; workloads keep running | |
 | Runtime unreachable (Kubernetes API, or an agent) | Admission and observation stop for that runtime | Each affected workload gets one note in its timeline (`couldn't check for free GPUs`, `couldn't read its status`). A provisioning workload still fails at the provisioning timeout. |
 | A GPU class or image removed from the catalog | Waiting workloads fail with `can't start: … is no longer offered by this installation` | *Known gap:* a running or stopping workload of that class can't be parked, because releasing it rebuilds its objects from the catalog. Its timeline says so, and the operator has to restore the entry. Planned: release from what the runtime already has. |
-| Agent offline (laptop closed, machine asleep) | Its workloads become unavailable, and go to `failed` after a grace period | Planned (Phase 2) |
+| Agent offline (laptop closed, machine asleep) | It isn't offered for placement. Its workloads' status reads as unknown, noted once in their timelines (`its machine is offline; waiting for it to reconnect`); a provisioning one still fails at the timeout. After 10 minutes offline, a running workload fails (`its machine has been offline for over 10m0s`) and a stopping one is stopped, so neither stays accounted or holds quota; the machine stops them when it returns. VMs and notebooks that ran there wait for it (`waiting for its machine to come online: its disk is there`). | Built |
+| A running workload stops by itself (shut down from inside, or by its runtime) | It fails: `it stopped by itself` | Built |
 | Node or machine lost | Its workloads go to `failed` | |
 | One region down | Only that region is affected | ADR-0009 |
 | GPU busy | `queued`, or placed on an opted-in fallback | ADR-0010 |
@@ -166,7 +196,7 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 
 ## Next resources
 
-- **Machines** (agents): enrolment, inventory, health, sharing level (Phases 1–2, 4). The `machines` table and its store methods exist; nothing creates machines yet.
+- **Machines** (agents): the in-process agent registers this machine and reports its inventory (built). Enrolment of other machines and health on the dashboard (Phase 2), the `/v1/machines` API and page (roadmap step 9), and sharing levels (Phase 4).
 - **Users, teams, invites**: local accounts and quotas (Phase 2)
 - **Models:** `tensora-ml ingest` validates, then caches per machine or region (Phases 2–3)
 - **Access:** a relay through the control plane to notebooks, endpoints, and VM SSH (Phase 2)

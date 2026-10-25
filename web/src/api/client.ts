@@ -102,8 +102,9 @@ export const api = {
   changePassword: (current_password: string, new_password: string) =>
     request<PasswordChanged>("POST", "/v1/auth/password", { current_password, new_password }),
   listTokens: () => request<List<ApiToken>>("GET", "/v1/tokens"),
-  createToken: (name: string, expires_in_days: number) =>
-    request<CreatedApiToken>("POST", "/v1/tokens", { name, expires_in_days }),
+  /** Needs the current password: a token outlives the session that makes it. */
+  createToken: (name: string, expires_in_days: number, password: string) =>
+    request<CreatedApiToken>("POST", "/v1/tokens", { name, expires_in_days, password }),
   revokeToken: (id: string) => request<unknown>("DELETE", `/v1/tokens/${encodeURIComponent(id)}`),
   listWorkloads: (includeDeleted = false) =>
     request<List<Workload>>("GET", includeDeleted ? "/v1/workloads?include_deleted=true" : "/v1/workloads"),

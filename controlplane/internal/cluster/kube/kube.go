@@ -1,4 +1,5 @@
-// Package kube is the real cluster.Backend: client-go with server-side apply.
+// Package kube is the Kubernetes cluster.Backend (the Datacenter profile): client-go with
+// server-side apply. It turns specs into objects with the pure builders in cluster/manifests.
 package kube
 
 import (
@@ -6,7 +7,6 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +19,7 @@ import (
 
 	"github.com/tensora/tensora/controlplane/internal/catalog"
 	"github.com/tensora/tensora/controlplane/internal/cluster"
+	"github.com/tensora/tensora/controlplane/internal/cluster/manifests"
 	"github.com/tensora/tensora/controlplane/internal/domain"
 )
 
@@ -52,14 +53,23 @@ var (
 	cleanup = []schema.GroupVersionResource{vmGVR, isvcGVR, stsGVR, svcGVR, pvcGVR}
 )
 
+// Options are cluster settings the manifests need (TENSORA_STORAGE_CLASS, TENSORA_IMAGES_NAMESPACE,
+// TENSORA_UNTRUSTED_RUNTIME_CLASS).
+type Options struct {
+	StorageClass          string
+	ImagesNamespace       string
+	UntrustedRuntimeClass string
+}
+
 type Backend struct {
 	dyn     dynamic.Interface
 	core    kubernetes.Interface
 	catalog *catalog.Catalog
+	opts    Options
 }
 
 // New uses in-cluster config, falling back to KUBECONFIG / ~/.kube/config.
-func New(cat *catalog.Catalog) (*Backend, error) {
+func New(cat *catalog.Catalog, opts Options) (*Backend, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		cfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
@@ -76,10 +86,59 @@ func New(cat *catalog.Catalog) (*Backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Backend{dyn: dyn, core: core, catalog: cat}, nil
+	return &Backend{dyn: dyn, core: core, catalog: cat, opts: opts}, nil
 }
 
-func (b *Backend) Apply(ctx context.Context, objs []cluster.Manifest) error {
+// Run applies the tenant's namespace-level objects and the workload's objects.
+func (b *Backend) Run(ctx context.Context, s cluster.Spec) error {
+	objs, err := manifests.Workload(s.Workload, b.context(s), true)
+	if err != nil {
+		return err
+	}
+	tenant := manifests.Tenant(s.TenantSlug, QuotaResources(b.catalog, s.Quotas), b.opts.ImagesNamespace)
+	return b.apply(ctx, append(tenant, objs...))
+}
+
+// Park applies the workload's parked form: VMs halted, notebooks scaled to zero, disks kept.
+func (b *Backend) Park(ctx context.Context, s cluster.Spec) error {
+	objs, err := manifests.Workload(s.Workload, b.context(s), false)
+	if err != nil {
+		return err
+	}
+	return b.apply(ctx, objs)
+}
+
+func (b *Backend) context(s cluster.Spec) manifests.Context {
+	return manifests.Context{
+		TenantSlug:            s.TenantSlug,
+		Tier:                  s.Tier,
+		GPU:                   s.Class,
+		Image:                 s.Image,
+		Runtime:               s.Runtime,
+		StorageClass:          b.opts.StorageClass,
+		ImagesNamespace:       b.opts.ImagesNamespace,
+		UntrustedRuntimeClass: b.opts.UntrustedRuntimeClass,
+	}
+}
+
+// QuotaResources turns per-class quotas into ResourceQuota limits on the extended resources those
+// classes consume. Classes sharing nvidia.com/gpu are summed (it's a backstop only).
+func QuotaResources(cat *catalog.Catalog, quotas []domain.Quota) map[string]int {
+	out := map[string]int{}
+	for _, q := range quotas {
+		gc, ok := cat.GPUClass(q.GPUClass)
+		if !ok || gc.ContainerResource == "" { // Apple and CPU classes don't run on Kubernetes
+			continue
+		}
+		out[gc.ContainerResource] += q.MaxGPUs
+		if gc.VMDeviceName != "" {
+			out[gc.VMDeviceName] += q.MaxGPUs
+		}
+	}
+	return out
+}
+
+func (b *Backend) apply(ctx context.Context, objs []cluster.Manifest) error {
 	for _, m := range objs {
 		u := &unstructured.Unstructured{Object: m}
 		gvk := u.GroupVersionKind()
@@ -100,7 +159,8 @@ func (b *Backend) Apply(ctx context.Context, objs []cluster.Manifest) error {
 	return nil
 }
 
-func (b *Backend) Observe(ctx context.Context, ns string, id uuid.UUID, kind domain.WorkloadKind) (cluster.Observed, string, error) {
+func (b *Backend) Observe(ctx context.Context, ref cluster.Ref) (cluster.Observed, string, error) {
+	ns, id, kind := cluster.TenantNamespace(ref.TenantSlug), ref.ID, ref.Kind
 	var gvr schema.GroupVersionResource
 	var judge func(*unstructured.Unstructured) (cluster.Observed, string)
 	switch kind {
@@ -127,8 +187,9 @@ func (b *Backend) Observe(ctx context.Context, ns string, id uuid.UUID, kind dom
 	return o, reason, nil
 }
 
-func (b *Backend) Delete(ctx context.Context, ns string, id uuid.UUID) error {
-	sel := metav1.ListOptions{LabelSelector: cluster.LabelWorkloadID + "=" + id.String()}
+func (b *Backend) Delete(ctx context.Context, ref cluster.Ref) error {
+	ns := cluster.TenantNamespace(ref.TenantSlug)
+	sel := metav1.ListOptions{LabelSelector: cluster.LabelWorkloadID + "=" + ref.ID.String()}
 	background := metav1.DeletePropagationBackground
 	for _, gvr := range cleanup {
 		ri := b.dyn.Resource(gvr).Namespace(ns)
@@ -149,10 +210,11 @@ func (b *Backend) Delete(ctx context.Context, ns string, id uuid.UUID) error {
 	return nil
 }
 
-func (b *Backend) Capacity(ctx context.Context) (map[string]int, error) {
+// Capacity is schedulable GPUs per class across Ready, uncordoned nodes; Kubernetes picks the node.
+func (b *Backend) Capacity(ctx context.Context) (cluster.Capacity, error) {
 	nodes, err := b.core.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("list nodes: %w", err)
+		return cluster.Capacity{}, fmt.Errorf("list nodes: %w", err)
 	}
 	out := map[string]int{}
 	for i := range nodes.Items {
@@ -164,7 +226,7 @@ func (b *Backend) Capacity(ctx context.Context) (map[string]int, error) {
 			out[gc.ID] += nodeCapacity(n, gc)
 		}
 	}
-	return out, nil
+	return cluster.Capacity{Classes: out}, nil
 }
 
 // ---- pure helpers (unit-tested)

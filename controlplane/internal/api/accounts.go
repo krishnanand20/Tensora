@@ -76,14 +76,15 @@ func (s *Server) sessionCookie(r *http.Request, value string, maxAge int) *http.
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	client := s.local.Transport.Client(r)
 	var in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
+	client := ""
 	err := func() error {
 		// Also for sign-in: otherwise another site could sign a visitor into the attacker's account.
-		if err := s.local.CheckSignIn(r); err != nil {
+		var err error
+		if client, err = s.local.CheckSignIn(r); err != nil {
 			return err
 		}
 		if err := decodeJSON(r, &in); err != nil {
@@ -108,7 +109,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		// Failed and refused sign-ins are logged for the operator (never the password).
 		email, _ := domain.NormalizeEmail(in.Email)
 		s.log.WarnContext(r.Context(), "sign-in refused", append(requestInfoFrom(r.Context()).logAttrs(),
-			"client", client, "email", email, "reason", userMessage(err))...)
+			"client", client, "peer", r.RemoteAddr, "email", email, "reason", userMessage(err))...)
 		s.writeError(w, r, err)
 	}
 }
@@ -145,8 +146,12 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, p domain
 	if err := decodeJSON(r, &in); err != nil {
 		return err
 	}
+	client, err := s.local.CheckPassword(r)
+	if err != nil {
+		return err
+	}
 	session, _ := s.local.SessionValue(r)
-	live, err := s.svc.ChangePassword(r.Context(), p, in.Current, in.New, session, s.local.Transport.Client(r))
+	live, err := s.svc.ChangePassword(r.Context(), p, in.Current, in.New, session, client)
 	if err != nil {
 		return err
 	}
@@ -174,6 +179,7 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, p domain.Pr
 	var in struct {
 		Name          string `json:"name"`
 		ExpiresInDays int    `json:"expires_in_days"` // 0: never
+		Password      string `json:"password"`        // the current one: a token outlives the session
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		return err
@@ -181,7 +187,11 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, p domain.Pr
 	if in.ExpiresInDays < 0 || in.ExpiresInDays > 366 {
 		return domain.Errorf(domain.CodeInvalid, "expires_in_days must be between 0 (never) and 366")
 	}
-	token, t, err := s.svc.CreateAPIToken(r.Context(), p, in.Name, time.Duration(in.ExpiresInDays)*24*time.Hour)
+	client, err := s.local.CheckPassword(r)
+	if err != nil {
+		return err
+	}
+	token, t, err := s.svc.CreateAPIToken(r.Context(), p, in.Name, time.Duration(in.ExpiresInDays)*24*time.Hour, in.Password, client)
 	if err != nil {
 		return err
 	}

@@ -34,13 +34,15 @@ type Local struct {
 
 func NewLocal(r PrincipalResolver, t Transport) *Local { return &Local{resolver: r, Transport: t} }
 
-// SessionValue returns the request's session cookie, refusing a request that carries more than
-// one (one may have been planted by another page on this host) and a connection that isn't
-// private enough for it.
+// SessionValue returns the request's session cookie, refusing a connection that isn't private
+// enough for it. Over HTTPS only the __Host- cookie counts, so a cookie with the other name,
+// planted by a plain-HTTP response, another port, or a sibling subdomain, is ignored. A request
+// carrying the counted cookie more than once (one may have been planted) is refused.
 func (l *Local) SessionValue(r *http.Request) (string, error) {
+	name := l.Transport.SessionCookieName(r)
 	var values []string
 	for _, c := range r.Cookies() {
-		if (c.Name == SessionCookie || c.Name == SecureSessionCookie) && c.Value != "" {
+		if c.Name == name && c.Value != "" {
 			values = append(values, c.Value)
 		}
 	}
@@ -49,25 +51,34 @@ func (l *Local) SessionValue(r *http.Request) (string, error) {
 		return "", domain.Errorf(domain.CodeUnauthenticated, "sign in, or send an API token")
 	case len(values) > 1:
 		return "", domain.Errorf(domain.CodeUnauthenticated, "conflicting session cookies; sign in again")
-	case !l.Transport.Private(r):
-		return "", errPlainHTTP
+	}
+	if err := l.Transport.CheckPrivate(r); err != nil {
+		return "", err
 	}
 	return values[0], nil
 }
 
-var errPlainHTTP = domain.Errorf(domain.CodeForbidden,
-	"signing in needs HTTPS or this machine; on a network you trust, the operator can set TENSORA_INSECURE_HTTP=true")
-
-// CheckSignIn refuses a sign-in that can't be made safely: from another site (no CSRF header), or
-// over plain HTTP from another machine.
-func (l *Local) CheckSignIn(r *http.Request) error {
+// CheckSignIn refuses a sign-in that can't be made safely: from another site (no CSRF header), over
+// plain HTTP from another machine, or through a proxy that can't be checked. It returns the
+// caller's address, for slowing down guessing.
+func (l *Local) CheckSignIn(r *http.Request) (string, error) {
 	if err := RequireCSRF(r); err != nil {
-		return err
+		return "", err
 	}
-	if !l.Transport.Private(r) {
-		return errPlainHTTP
+	return l.CheckPassword(r)
+}
+
+// CheckPassword refuses a password sent over a connection that isn't private, or from a caller
+// whose address can't be told, and returns that address.
+func (l *Local) CheckPassword(r *http.Request) (string, error) {
+	if err := l.Transport.CheckPrivate(r); err != nil {
+		return "", err
 	}
-	return nil
+	client, ok := l.Transport.Client(r)
+	if !ok {
+		return "", errUnknownClient
+	}
+	return client.String(), nil
 }
 
 func (l *Local) Authenticate(r *http.Request) (domain.Principal, error) {

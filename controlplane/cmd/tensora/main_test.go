@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/tensora/tensora/controlplane/internal/config"
+	"github.com/tensora/tensora/controlplane/internal/domain"
 	"github.com/tensora/tensora/controlplane/internal/store/memstore"
 	"github.com/tensora/tensora/controlplane/internal/testutil"
 )
@@ -135,5 +138,46 @@ func testutilCatalogPath(t *testing.T) string {
 			t.Fatal("images/catalog.yaml not found")
 		}
 		dir = parent
+	}
+}
+
+func TestMachineNameIsASlug(t *testing.T) {
+	name := machineName()
+	if !domain.ValidSlug(name) {
+		t.Errorf("machineName() = %q; want a slug", name)
+	}
+}
+
+// This machine's ID is kept next to the SQLite database, written once, owner-only.
+func TestMachineIDFile(t *testing.T) {
+	dir := t.TempDir()
+	path, err := machineIDFile(config.Config{DatabaseURL: "sqlite:" + filepath.Join(dir, "tensora.db")})
+	if err != nil || path != filepath.Join(dir, "machine-id") {
+		t.Fatalf("machineIDFile = %q, %v", path, err)
+	}
+	if id, err := readMachineID(path); err != nil || id != uuid.Nil {
+		t.Fatalf("before the first start: %v, %v", id, err)
+	}
+	id := uuid.New()
+	if err := writeMachineID(path, id); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readMachineID(path); err != nil || got != id {
+		t.Errorf("read back %v, %v", got, err)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v; want 0600", fi.Mode().Perm())
+	}
+	if err := writeMachineID(path, uuid.New()); err == nil {
+		t.Error("an existing machine ID was replaced")
+	}
+	if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readMachineID(path); err == nil {
+		t.Error("a garbled machine ID was accepted")
+	}
+	if path, err := machineIDFile(config.Config{}); err != nil || path != "" {
+		t.Errorf("in-memory store: %q, %v; want nothing kept", path, err)
 	}
 }

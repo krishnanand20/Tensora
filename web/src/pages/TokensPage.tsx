@@ -21,7 +21,8 @@ export function TokensPage() {
   const tokens = useQuery({ queryKey: ["tokens"], queryFn: api.listTokens });
   const [created, setCreated] = useState<CreatedApiToken | null>(null);
   const create = useMutation({
-    mutationFn: ({ name, days }: { name: string; days: number }) => api.createToken(name, days),
+    mutationFn: ({ name, days, password }: { name: string; days: number; password: string }) =>
+      api.createToken(name, days, password),
     onSuccess: (t) => {
       setCreated(t);
       void queryClient.invalidateQueries({ queryKey: ["tokens"] });
@@ -35,7 +36,11 @@ export function TokensPage() {
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    create.mutate({ name: String(f.get("name")).trim(), days: Number(f.get("days")) });
+    create.mutate({
+      name: String(f.get("name")).trim(),
+      days: Number(f.get("days")),
+      password: String(f.get("password")),
+    });
     e.currentTarget.reset();
   }
 
@@ -75,6 +80,10 @@ export function TokensPage() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Your password
+            <input name="password" type="password" required autoComplete="current-password" />
           </label>
         </div>
         {create.isError && <p className="error">{create.error.message}</p>}

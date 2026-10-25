@@ -172,22 +172,51 @@ func TestWaitingWorkloadShowsNoStalePlacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Placed on acme's own machine, with a driver (ADR-0016).
+	machine := uuid.New()
+	transition := func(states ...domain.State) {
+		t.Helper()
+		if err := st.InTx(ctx, func(q store.Queries) error {
+			for _, to := range states {
+				if err := service.Transition(ctx, q, &w, to, "test", testutil.T0); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	err = st.InTx(ctx, func(q store.Queries) error {
-		if err := q.SetPlacement(ctx, id, "l40s-48gb", uuid.Nil); err != nil {
+		acme, err := q.TenantBySlug(ctx, "acme")
+		if err != nil {
 			return err
 		}
-		w.PlacedClass = "l40s-48gb"
-		for _, to := range []domain.State{domain.StateProvisioning, domain.StateFailed, domain.StatePending} {
-			if err := service.Transition(ctx, q, &w, to, "test", testutil.T0); err != nil {
-				return err
-			}
+		if err := q.CreateMachine(ctx, domain.Machine{ID: machine, TenantID: acme.ID, Name: "acme-box", Region: domain.RegionLocal,
+			OS: "linux", Arch: "amd64", Sharing: domain.SharingPrivate, CreatedAt: testutil.T0}); err != nil {
+			return err
 		}
+		if err := q.SetPlacement(ctx, id, "l40s-48gb", machine, domain.DriverDocker); err != nil {
+			return err
+		}
+		w.PlacedClass, w.MachineID, w.Driver = "l40s-48gb", machine, domain.DriverDocker
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, body := call(t, h, "GET", "/v1/workloads/"+id.String(), "acme", ""); body["state"] != "pending" || body["placed_class"] != nil {
-		t.Errorf("waiting workload view = %v; want no placed_class", body)
+	transition(domain.StateProvisioning)
+	if _, body := call(t, h, "GET", "/v1/workloads/"+id.String(), "acme", ""); body["machine_id"] != machine.String() || body["driver"] != "docker" {
+		t.Errorf("placed workload view = %v; want its machine and driver", body)
+	}
+	transition(domain.StateFailed, domain.StatePending)
+	if _, body := call(t, h, "GET", "/v1/workloads/"+id.String(), "acme", ""); body["state"] != "pending" ||
+		body["placed_class"] != nil || body["machine_id"] != nil || body["driver"] != nil {
+		t.Errorf("waiting workload view = %v; want no placement", body)
+	}
+	// The export keeps the stored placement, so it stays complete.
+	if _, body := call(t, h, "GET", "/v1/workloads/"+id.String()+"/export", "acme", ""); body["last_placed_class"] != "l40s-48gb" ||
+		body["last_machine_id"] != machine.String() || body["last_driver"] != "docker" {
+		t.Errorf("export = %v; want the last placement", body)
 	}
 }

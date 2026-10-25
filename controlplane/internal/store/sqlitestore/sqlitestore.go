@@ -388,6 +388,13 @@ func scanUser(row scanner) (domain.User, error) {
 // LockUsers needs nothing here: transactions already run one at a time.
 func (q *queries) LockUsers(context.Context) error { return nil }
 
+// LockUser only checks the user exists: SQLite runs one transaction at a time.
+func (q *queries) LockUser(ctx context.Context, id uuid.UUID) error {
+	var one int
+	err := q.db.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, id).Scan(&one)
+	return mapErr(err, "user")
+}
+
 func (q *queries) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := q.db.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n)
@@ -504,14 +511,14 @@ func (q *queries) RevokeAPIToken(ctx context.Context, userID, id uuid.UUID, at t
 
 // ---- machines
 
-const machineCols = `id, tenant_id, name, region, os, arch, accelerators, sharing, last_seen_at, created_at`
+const machineCols = `id, tenant_id, name, region, os, arch, cpus, memory_mib, accelerators, sharing, last_seen_at, created_at`
 
-const machineSelect = `id, tenant_id, name, region, os, arch, accelerators, sharing, COALESCE(last_seen_at, ''), created_at`
+const machineSelect = `id, tenant_id, name, region, os, arch, cpus, memory_mib, accelerators, sharing, COALESCE(last_seen_at, ''), created_at`
 
 func scanMachine(row scanner) (domain.Machine, error) {
 	var m domain.Machine
 	var region, sharing, accelerators, lastSeen string
-	err := row.Scan(&m.ID, &m.TenantID, &m.Name, &region, &m.OS, &m.Arch, &accelerators, &sharing, &lastSeen, timeCol{&m.CreatedAt})
+	err := row.Scan(&m.ID, &m.TenantID, &m.Name, &region, &m.OS, &m.Arch, &m.CPUs, &m.MemoryMiB, &accelerators, &sharing, &lastSeen, timeCol{&m.CreatedAt})
 	if err != nil {
 		return m, err
 	}
@@ -540,9 +547,51 @@ func (q *queries) CreateMachine(ctx context.Context, m domain.Machine) error {
 	if !m.LastSeenAt.IsZero() {
 		lastSeen = ts(m.LastSeenAt)
 	}
-	_, err = q.db.ExecContext(ctx, `INSERT INTO machines (`+machineCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.TenantID, m.Name, string(m.Region), m.OS, m.Arch, string(raw), string(m.Sharing), lastSeen, ts(m.CreatedAt))
+	_, err = q.db.ExecContext(ctx, `INSERT INTO machines (`+machineCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.TenantID, m.Name, string(m.Region), m.OS, m.Arch, m.CPUs, m.MemoryMiB, string(raw), string(m.Sharing), lastSeen, ts(m.CreatedAt))
 	return mapErr(err, "machine")
+}
+
+func (q *queries) MachinesInRegion(ctx context.Context, region domain.Region) ([]domain.Machine, error) {
+	return collect(ctx, q, scanMachine, `SELECT `+machineSelect+` FROM machines WHERE region = ? ORDER BY name, id`, string(region))
+}
+
+func (q *queries) MachineByID(ctx context.Context, id uuid.UUID) (domain.Machine, error) {
+	m, err := scanMachine(q.db.QueryRowContext(ctx, `SELECT `+machineSelect+` FROM machines WHERE id = ?`, id))
+	return m, mapErr(err, "machine")
+}
+
+func (q *queries) UpdateMachineInventory(ctx context.Context, m domain.Machine) error {
+	accelerators := m.Accelerators
+	if accelerators == nil {
+		accelerators = []domain.Accelerator{}
+	}
+	raw, err := json.Marshal(accelerators)
+	if err != nil {
+		return err
+	}
+	var lastSeen any
+	if !m.LastSeenAt.IsZero() {
+		lastSeen = ts(m.LastSeenAt)
+	}
+	res, err := q.db.ExecContext(ctx, `UPDATE machines SET os = ?, arch = ?, cpus = ?, memory_mib = ?, accelerators = ?,
+		last_seen_at = ? WHERE id = ?`, m.OS, m.Arch, m.CPUs, m.MemoryMiB, string(raw), lastSeen, m.ID)
+	if err != nil {
+		return mapErr(err, "machine")
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return store.NotFound("machine")
+	}
+	return nil
+}
+
+func (q *queries) WorkloadsOnMachine(ctx context.Context, machineID uuid.UUID) ([]domain.Workload, error) {
+	return q.workloads(ctx, `SELECT `+workloadSelect+` FROM workloads
+		WHERE machine_id = ? AND state <> 'deleted' ORDER BY created_at, id`, machineID)
 }
 
 func (q *queries) GetMachine(ctx context.Context, tenantID, id uuid.UUID) (domain.Machine, error) {
@@ -557,11 +606,11 @@ func (q *queries) ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domai
 // ---- workloads
 
 const workloadCols = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
-	region, machine_id, placed_class, fallback, fallback_after_s`
+	region, machine_id, placed_class, driver, fallback, fallback_after_s`
 
 // workloadSelect reads workloadCols, with NULL placement read back as "not placed".
 const workloadSelect = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
-	region, COALESCE(machine_id, ''), COALESCE(placed_class, ''), fallback, fallback_after_s`
+	region, COALESCE(machine_id, ''), COALESCE(placed_class, ''), COALESCE(driver, ''), fallback, fallback_after_s`
 
 func scanWorkload(row scanner) (domain.Workload, error) {
 	var w domain.Workload
@@ -569,7 +618,7 @@ func scanWorkload(row scanner) (domain.Workload, error) {
 	var fallbackAfter int64
 	err := row.Scan(&w.ID, &w.TenantID, &w.Name, &kind, &state, &w.ImageID, &w.GPUClass,
 		&w.GPUCount, &params, &w.CreatedBy, timeCol{&w.CreatedAt}, timeCol{&w.UpdatedAt},
-		&region, &w.MachineID, &w.PlacedClass, &fallback, &fallbackAfter)
+		&region, &w.MachineID, &w.PlacedClass, &w.Driver, &fallback, &fallbackAfter)
 	if err != nil {
 		return w, err
 	}
@@ -612,10 +661,10 @@ func (q *queries) CreateWorkload(ctx context.Context, w domain.Workload) error {
 		return err
 	}
 	_, err = q.db.ExecContext(ctx, `INSERT INTO workloads (`+workloadCols+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)`,
 		w.ID, w.TenantID, w.Name, string(w.Kind), string(w.State), w.ImageID, w.GPUClass,
 		w.GPUCount, string(rawParams), w.CreatedBy, ts(w.CreatedAt), ts(w.UpdatedAt),
-		string(w.Region), nullID(w.MachineID), w.PlacedClass, string(rawFallback), int64(w.FallbackAfter/time.Second))
+		string(w.Region), nullID(w.MachineID), w.PlacedClass, w.Driver, string(rawFallback), int64(w.FallbackAfter/time.Second))
 	return mapErr(err, "workload")
 }
 
@@ -662,7 +711,7 @@ func (q *queries) WorkloadsInStates(ctx context.Context, region domain.Region, s
 		WHERE region = ? AND state IN (SELECT value FROM json_each(?)) ORDER BY created_at, id`, string(region), statesJSON(states))
 }
 
-func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error {
+func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID, driver string) error {
 	var w domain.Workload
 	var region string
 	err := q.db.QueryRowContext(ctx, `SELECT tenant_id, region FROM workloads WHERE id = ?`, id).Scan(&w.TenantID, &region)
@@ -670,17 +719,20 @@ func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass st
 		return mapErr(err, "workload")
 	}
 	w.Region = domain.Region(region)
+	if machineID == uuid.Nil && driver != "" {
+		return domain.ErrDriverWithoutMachine
+	}
 	if machineID != uuid.Nil {
 		m, err := scanMachine(q.db.QueryRowContext(ctx, `SELECT `+machineSelect+` FROM machines WHERE id = ?`, machineID))
 		if err != nil {
 			return mapErr(err, "machine")
 		}
-		if err := m.CanHost(w); err != nil {
+		if err := m.CheckPlacement(w, driver); err != nil {
 			return err
 		}
 	}
-	_, err = q.db.ExecContext(ctx, `UPDATE workloads SET placed_class = NULLIF(?, ''), machine_id = ? WHERE id = ?`,
-		placedClass, nullID(machineID), id)
+	_, err = q.db.ExecContext(ctx, `UPDATE workloads SET placed_class = NULLIF(?, ''), machine_id = ?, driver = NULLIF(?, '') WHERE id = ?`,
+		placedClass, nullID(machineID), driver, id)
 	return mapErr(err, "machine")
 }
 

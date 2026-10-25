@@ -106,7 +106,7 @@ func TestMeterOnceAccountsClosedHoursExactlyOnce(t *testing.T) {
 			return err
 		}
 		// Admitted on an opt-in fallback class, not the one requested.
-		if err := q.SetPlacement(ctx, w.ID, "a100-80gb", uuid.Nil); err != nil {
+		if err := q.SetPlacement(ctx, w.ID, "a100-80gb", uuid.Nil, ""); err != nil {
 			return err
 		}
 		w.PlacedClass = "a100-80gb"
@@ -181,7 +181,7 @@ func TestUnplacedWorkloadsAreAccountedOnlyOncePlaced(t *testing.T) {
 	if n, err := m.MeterOnce(ctx); err != nil || n != 0 {
 		t.Fatalf("unplaced: wrote %d, %v; want nothing yet", n, err)
 	}
-	if err := st.InTx(ctx, func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "l40s-48gb", uuid.Nil) }); err != nil {
+	if err := st.InTx(ctx, func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "l40s-48gb", uuid.Nil, "") }); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := m.MeterOnce(ctx); err != nil || n != 1 {

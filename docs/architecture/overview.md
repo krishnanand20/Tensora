@@ -55,7 +55,7 @@ Moving up a profile is a backup and restore (`tensora backup`, `tensora restore`
 | Hardware | Your Macs, PCs, and servers | GPU servers with BMC, NVMe, and 25 GbE | [hardware/](../hardware/bill-of-materials.md) |
 | OS and virtualization | macOS (Virtualization framework); Linux (KVM) | Ubuntu 24.04, KVM through KubeVirt | `infra/` (Datacenter) |
 | GPU access | Metal on Macs; NVIDIA driver and container toolkit on Linux | NVIDIA GPU Operator | `deploy/platform/gpu-operator` |
-| Runtime | **Node agent** with drivers: `macos-native`, `macos-vz`, `macos-container`, `docker`, `libvirt` (planned) | k3s, KubeVirt, CDI, KServe ([ADR-0001](../adr/0001-kubernetes-kubevirt-gpu-operator.md)) | `controlplane/`, `deploy/` |
+| Runtime | **Node agent** (built; in-process in Solo, ADR-0016) with drivers: `macos-native`, `macos-vz`, `macos-container`, `docker`, `libvirt` (planned) | k3s, KubeVirt, CDI, KServe ([ADR-0001](../adr/0001-kubernetes-kubevirt-gpu-operator.md)) | `controlplane/`, `deploy/` |
 | Model serving | MLX, llama.cpp, vLLM | KServe + `tensora-vllm` (CPU variant planned) | `deploy/charts/cluster-config` |
 | Store | SQLite, or Postgres for larger Labs | Postgres HA | `controlplane/internal/store` |
 | Networking | Agents dial out over mTLS; a relay for remote access | Cilium, MetalLB, Gateway API, WireGuard ([ADR-0007](../adr/0007-gateway-api-on-cilium.md)) | [networking.md](networking.md) |

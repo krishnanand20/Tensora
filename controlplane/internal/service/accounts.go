@@ -3,6 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"maps"
+	"net/netip"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -97,14 +101,55 @@ func (s *Service) SetupOwner(ctx context.Context, in SetupInput) (domain.User, e
 	return u, err
 }
 
-// Sign-in limits (per 15 minutes). The strict one is per email and caller pair, so nobody can lock
-// the owner out just by knowing their email; the looser one per caller address bounds guessing
-// across emails. Together with hashSlots, which caps how fast passwords are checked at all, online
-// guessing of a 12+ character password isn't practical.
+// Sign-in limits (per 15 minutes). The strict one is per account and caller pair, so nobody can
+// lock the owner out just by knowing their email. The looser one per caller (an IPv4 address or an
+// IPv6 /64) bounds guessing across accounts and lets each caller check only a couple of passwords
+// at a time. A third, looser still, applies to an IPv6 /48, which one person can easily hold whole,
+// without letting one subscriber on a shared /48 block the rest. hashSlots caps how fast passwords
+// are checked at all, and CheckNewPassword refuses short and common passwords. That keeps online
+// guessing slow, but someone with many addresses can still guess slowly: passwords must not be
+// guessable.
 const (
-	maxPairFailures   = 10
-	maxClientFailures = 30
+	maxPairFailures    = 10
+	maxClientFailures  = 30
+	maxClientInFlight  = 2
+	maxNetworkFailures = 100
+	maxNetworkInFlight = 4
 )
+
+// limiterKeys turns a caller's address into its key (an IPv4 address or an IPv6 /64) and, for
+// IPv6, its network's (the /48; empty for IPv4).
+func limiterKeys(client string) (caller, network string) {
+	a, err := netip.ParseAddr(client)
+	if err != nil || !a.Is6() {
+		return client, ""
+	}
+	p64, _ := a.Prefix(64)
+	p48, _ := a.Prefix(48)
+	return p64.String(), p48.String()
+}
+
+// beginAttempt reserves a password check for account (an email, or a user ID) from client, under
+// the pair, caller, and network limits. The returned func ends it.
+func (s *Service) beginAttempt(now time.Time, account, client string) (func(failed bool), error) {
+	caller, network := limiterKeys(client)
+	limits := []limit{
+		{key: "pair:" + account + "|" + caller, max: maxPairFailures},
+		{key: "client:" + caller, max: maxClientFailures, maxInFlight: maxClientInFlight},
+	}
+	if network != "" {
+		limits = append(limits, limit{key: "network:" + network, max: maxNetworkFailures, maxInFlight: maxNetworkInFlight})
+	}
+	keys := make([]string, len(limits))
+	for i, l := range limits {
+		keys[i] = l.key
+	}
+	wait, ok := s.logins.begin(now, limits...)
+	if !ok {
+		return nil, domain.Errorf(domain.CodeTooManyRequests, "too many attempts; try again in %d minute(s)", int(wait.Minutes())+1)
+	}
+	return func(failed bool) { s.logins.end(s.now().UTC(), failed, keys...) }, nil
+}
 
 // errWrongPassword is the same for an unknown email and a wrong password, so sign-in doesn't
 // reveal which accounts exist.
@@ -131,18 +176,17 @@ func (s *Service) withHashSlot(ctx context.Context, fn func()) error {
 // a cookie. client identifies the caller (its address) for slowing down guessing.
 func (s *Service) Login(ctx context.Context, email, password, client string) (string, error) {
 	dummy := s.dummy.get() // made before anything else, so the first sign-in costs the same for every email
+	if len(password) > credential.MaxPasswordBytes {
+		return "", errWrongPassword // it can't match, so it isn't checked or counted
+	}
 	now := s.now().UTC()
 	email, emailOK := domain.NormalizeEmail(email)
-	pair, perClient := "pair:"+email+"|"+client, "client:"+client
-	wait, ok := s.logins.begin(now, limit{pair, maxPairFailures}, limit{perClient, maxClientFailures})
-	if !ok {
-		return "", domain.Errorf(domain.CodeTooManyRequests, "too many failed sign-ins; try again in %d minute(s)", int(wait.Minutes())+1)
+	end, err := s.beginAttempt(now, email, client)
+	if err != nil {
+		return "", err
 	}
 	failed := true // until the password checks out; counted when the attempt ends
-	defer func() { s.logins.end(s.now().UTC(), failed, pair, perClient) }()
-	if len(password) > credential.MaxPasswordBytes {
-		return "", errWrongPassword
-	}
+	defer func() { end(failed) }()
 
 	var u domain.User
 	found := false
@@ -178,7 +222,8 @@ func (s *Service) Login(ctx context.Context, email, password, client string) (st
 	if !u.DisabledAt.IsZero() {
 		return "", domain.Errorf(domain.CodeForbidden, "this account is disabled")
 	}
-	s.logins.reset(pair)
+	caller, _ := limiterKeys(client)
+	s.logins.reset("pair:" + email + "|" + caller) // a success clears this pair's failures only
 
 	// Hashes made with older parameters are upgraded, so every account costs the same to check.
 	rehashed := ""
@@ -191,7 +236,11 @@ func (s *Service) Login(ctx context.Context, email, password, client string) (st
 	}
 	err = s.store.InTx(ctx, func(q store.Queries) error {
 		// The password was checked outside this transaction. If it changed meanwhile, or the
-		// account was disabled, the old password no longer opens a session.
+		// account was disabled, the old password no longer opens a session. The lock makes a
+		// password change wait for this session, so its "sign out everywhere" includes it.
+		if err := q.LockUser(ctx, u.ID); err != nil {
+			return err
+		}
 		current, err := q.UserByID(ctx, u.ID)
 		if err != nil {
 			return err
@@ -307,24 +356,24 @@ func requireSession(p domain.Principal) error {
 	return nil
 }
 
-// ChangePassword checks the current password, sets a new one, and signs the user out of every
-// other session. currentSession is the caller's session token, which stays signed in. It returns
-// how many API tokens still work, so the user can revoke them too if the password leaked.
-func (s *Service) ChangePassword(ctx context.Context, p domain.Principal, current, next, currentSession, client string) (int, error) {
+// checkPassword verifies the signed-in user's password before something a stolen session alone
+// mustn't do, slowing down guessing as sign-in does.
+func (s *Service) checkPassword(ctx context.Context, p domain.Principal, password, client string) (domain.User, error) {
 	if err := requireSession(p); err != nil {
-		return 0, err
+		return domain.User{}, err
 	}
-	now := s.now().UTC()
-	byUser, perClient := "password:"+p.UserID.String(), "client:"+client
-	wait, ok := s.logins.begin(now, limit{byUser, maxPairFailures}, limit{perClient, maxClientFailures})
-	if !ok {
-		return 0, domain.Errorf(domain.CodeTooManyRequests, "too many wrong passwords; try again in %d minute(s)", int(wait.Minutes())+1)
+	wrong := domain.Errorf(domain.CodeForbidden, "your current password is wrong")
+	if len(password) > credential.MaxPasswordBytes {
+		return domain.User{}, wrong
+	}
+	// Per user and caller, like sign-in: someone holding a stolen session can't use up the owner's
+	// attempts from another address.
+	end, err := s.beginAttempt(s.now().UTC(), "user:"+p.UserID.String(), client)
+	if err != nil {
+		return domain.User{}, err
 	}
 	failed := true
-	defer func() { s.logins.end(s.now().UTC(), failed, byUser, perClient) }()
-	if len(current) > credential.MaxPasswordBytes {
-		return 0, domain.Errorf(domain.CodeForbidden, "the current password is wrong")
-	}
+	defer func() { end(failed) }()
 	var u domain.User
 	if err := s.store.InTx(ctx, func(q store.Queries) error {
 		var err error
@@ -332,17 +381,28 @@ func (s *Service) ChangePassword(ctx context.Context, p domain.Principal, curren
 		return err
 	}); err != nil {
 		failed = false
-		return 0, err
+		return domain.User{}, err
 	}
 	matched := false
-	if err := s.withHashSlot(ctx, func() { matched = credential.VerifyPassword(u.PasswordHash, current) }); err != nil {
+	if err := s.withHashSlot(ctx, func() { matched = credential.VerifyPassword(u.PasswordHash, password) }); err != nil {
 		failed = false
-		return 0, err
+		return domain.User{}, err
 	}
 	if !matched {
-		return 0, domain.Errorf(domain.CodeForbidden, "the current password is wrong")
+		return domain.User{}, wrong
 	}
 	failed = false
+	return u, nil
+}
+
+// ChangePassword checks the current password, sets a new one, and signs the user out of every
+// other session. currentSession is the caller's session token, which stays signed in. It returns
+// how many API tokens still work, so the user can revoke them too if the password leaked.
+func (s *Service) ChangePassword(ctx context.Context, p domain.Principal, current, next, currentSession, client string) (int, error) {
+	u, err := s.checkPassword(ctx, p, current, client)
+	if err != nil {
+		return 0, err
+	}
 	if err := credential.CheckNewPassword(next, u.Email); err != nil {
 		return 0, domain.Errorf(domain.CodeInvalid, "%v", err)
 	}
@@ -354,8 +414,12 @@ func (s *Service) ChangePassword(ctx context.Context, p domain.Principal, curren
 	if hashErr != nil {
 		return 0, hashErr
 	}
+	now := s.now().UTC()
 	live := 0
-	err := s.store.InTx(ctx, func(q store.Queries) error {
+	err = s.store.InTx(ctx, func(q store.Queries) error {
+		if err := q.LockUser(ctx, u.ID); err != nil {
+			return err
+		}
 		latest, err := q.UserByID(ctx, u.ID)
 		if err != nil {
 			return err
@@ -409,6 +473,9 @@ func (s *Service) ResetPassword(ctx context.Context, email, password string) (do
 		if err != nil {
 			return err
 		}
+		if err := q.LockUser(ctx, u.ID); err != nil { // waits for a sign-in in progress, then signs it out too
+			return err
+		}
 		if err := q.SetPasswordHash(ctx, u.ID, hash); err != nil {
 			return err
 		}
@@ -418,8 +485,10 @@ func (s *Service) ResetPassword(ctx context.Context, email, password string) (do
 }
 
 // CreateAPIToken makes a token for the caller. The token is returned once and never stored; ttl
-// zero means it doesn't expire.
-func (s *Service) CreateAPIToken(ctx context.Context, p domain.Principal, name string, ttl time.Duration) (string, domain.APIToken, error) {
+// zero means it doesn't expire. A token outlives the session that makes it, and survives a password
+// change, so making one needs the password again: a stolen session, or a script running on the
+// dashboard's origin, can't make one by itself.
+func (s *Service) CreateAPIToken(ctx context.Context, p domain.Principal, name string, ttl time.Duration, password, client string) (string, domain.APIToken, error) {
 	if err := requireSession(p); err != nil {
 		return "", domain.APIToken{}, err
 	}
@@ -428,6 +497,9 @@ func (s *Service) CreateAPIToken(ctx context.Context, p domain.Principal, name s
 	}
 	if ttl < 0 || ttl > maxTokenTTL {
 		return "", domain.APIToken{}, domain.Errorf(domain.CodeInvalid, "a token can last at most 366 days (or not expire)")
+	}
+	if _, err := s.checkPassword(ctx, p, password, client); err != nil {
+		return "", domain.APIToken{}, err
 	}
 	token, hash, err := credential.NewToken(TokenPrefix)
 	if err != nil {
@@ -487,21 +559,27 @@ func (d *dummyHash) get() string {
 }
 
 // loginLimiter slows down password guessing. An attempt is counted as it starts, so attempts made
-// in parallel can't slip past the limit while each is still being checked.
+// in parallel can't slip past the limit while each is still being checked. Only attempts whose
+// password was actually checked are recorded as failures, so how fast failures can be recorded,
+// and how much memory they take, is bounded by hashSlots; the map is capped as well.
 type loginLimiter struct {
-	mu       sync.Mutex
-	failures map[string][]time.Time
-	inFlight map[string]int
+	mu        sync.Mutex
+	failures  map[string][]time.Time // newest last
+	inFlight  map[string]int
+	lastSweep time.Time
 }
 
 type limit struct {
-	key string
-	max int
+	key         string
+	max         int // failures in the window plus attempts in progress
+	maxInFlight int // attempts in progress at once; 0 means only max applies
 }
 
 const (
-	loginWindow    = 15 * time.Minute
-	maxLimiterKeys = 10000
+	loginWindow     = 15 * time.Minute
+	maxLimiterKeys  = 20000
+	maxFailuresKept = 2 * maxNetworkFailures // more than any limit, so the count stays exact
+	sweepEvery      = time.Minute
 )
 
 func newLoginLimiter() *loginLimiter {
@@ -524,12 +602,17 @@ func (l *loginLimiter) begin(now time.Time, limits ...limit) (time.Duration, boo
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, lim := range limits {
+		inFlight := l.inFlight[lim.key]
+		if lim.maxInFlight > 0 && inFlight >= lim.maxInFlight {
+			return time.Second, false
+		}
 		r := l.recent(lim.key, now)
-		if len(r)+l.inFlight[lim.key] >= lim.max {
+		if len(r)+inFlight >= lim.max {
 			if len(r) == 0 {
 				return time.Second, false // only attempts in progress: try again shortly
 			}
-			return loginWindow - now.Sub(r[0]), false
+			// Wait until enough failures leave the window.
+			return loginWindow - now.Sub(r[max(0, len(r)+inFlight-lim.max)]), false
 		}
 	}
 	for _, lim := range limits {
@@ -542,20 +625,46 @@ func (l *loginLimiter) begin(now time.Time, limits ...limit) (time.Duration, boo
 func (l *loginLimiter) end(now time.Time, failed bool, keys ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.failures) > maxLimiterKeys { // bound memory: forget keys with nothing recent
-		for k := range l.failures {
-			if len(l.recent(k, now)) == 0 {
-				delete(l.failures, k)
-			}
-		}
-	}
 	for _, k := range keys {
 		if l.inFlight[k]--; l.inFlight[k] <= 0 {
 			delete(l.inFlight, k)
 		}
 		if failed {
-			l.failures[k] = append(l.recent(k, now), now)
+			f := append(l.recent(k, now), now)
+			l.failures[k] = f[max(0, len(f)-maxFailuresKept):]
 		}
+	}
+	if now.Sub(l.lastSweep) >= sweepEvery || len(l.failures) > maxLimiterKeys {
+		l.sweep(now)
+	}
+}
+
+// sweep forgets keys with no recent failures. If too many are left, it forgets the least recently
+// failed, pair keys first: the per-caller keys still bound guessing.
+func (l *loginLimiter) sweep(now time.Time) {
+	l.lastSweep = now
+	for k, f := range l.failures {
+		if len(f) == 0 || now.Sub(f[len(f)-1]) >= loginWindow {
+			delete(l.failures, k)
+		}
+	}
+	if len(l.failures) <= maxLimiterKeys {
+		return
+	}
+	keys := slices.Collect(maps.Keys(l.failures))
+	slices.SortFunc(keys, func(a, b string) int {
+		ac, bc := strings.HasPrefix(a, "client:"), strings.HasPrefix(b, "client:")
+		if ac != bc {
+			if ac {
+				return 1
+			}
+			return -1
+		}
+		fa, fb := l.failures[a], l.failures[b]
+		return fa[len(fa)-1].Compare(fb[len(fb)-1])
+	})
+	for _, k := range keys[:len(keys)-maxLimiterKeys*9/10] {
+		delete(l.failures, k)
 	}
 }
 

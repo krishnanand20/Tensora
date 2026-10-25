@@ -104,3 +104,30 @@ func TestNormalizeEmail(t *testing.T) {
 		}
 	}
 }
+
+// Weak isolation (native macOS, plain containers) is only for the machine owner's own workloads;
+// anyone else's need a VM or a sandboxed container. Unknown drivers are refused.
+func TestPermits(t *testing.T) {
+	owner, guest := uuid.New(), uuid.New()
+	m := Machine{Name: "mac", TenantID: owner, Region: RegionLocal, Sharing: SharingCommunity}
+	for _, tt := range []struct {
+		tenant uuid.UUID
+		driver string
+		want   Code
+	}{
+		{owner, DriverMacOSNative, ""},
+		{owner, DriverDocker, ""},
+		{guest, DriverMacOSNative, CodeForbidden},
+		{guest, DriverDocker, CodeForbidden},
+		{guest, DriverSim, CodeForbidden},
+		{guest, DriverMacOSVZ, ""},
+		{guest, DriverLibvirt, ""},
+		{guest, DriverMacOSContainer, ""},
+		{owner, "made-up", CodeInvalid},
+	} {
+		code, _ := CodeOf(m.Permits(Workload{TenantID: tt.tenant}, tt.driver))
+		if code != tt.want {
+			t.Errorf("tenant owner=%v, driver %s: code %q, want %q", tt.tenant == owner, tt.driver, code, tt.want)
+		}
+	}
+}
