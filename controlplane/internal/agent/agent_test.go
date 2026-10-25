@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -43,7 +44,7 @@ func newAgent(t *testing.T) (*agent.Agent, *conn, *sim.Driver) {
 }
 
 func gpuWorkload(mode protocol.Mode) protocol.Desired {
-	return protocol.Desired{ID: uuid.New(), Mode: mode, Kind: domain.KindNotebook, Driver: domain.DriverSim,
+	return protocol.Desired{ID: uuid.New(), Mode: mode, Attempt: 1, Kind: domain.KindNotebook, Driver: domain.DriverSim,
 		Accelerator: domain.AcceleratorApple, Devices: 1, VCPUs: 6, MemoryMiB: 24576}
 }
 
@@ -148,7 +149,7 @@ func TestGPUStaysBusyUntilItsWorkloadStops(t *testing.T) {
 		}
 		owner := gpuWorkload(protocol.ModeRun)
 		a.Apply(ctx, []protocol.Desired{owner})
-		leaving := protocol.Desired{ID: owner.ID, Mode: mode, Kind: owner.Kind, Driver: owner.Driver} // no devices described
+		leaving := protocol.Desired{ID: owner.ID, Mode: mode, Attempt: 1, Kind: owner.Kind, Driver: owner.Driver} // no devices described
 		guest := gpuWorkload(protocol.ModeRun)
 		a.Apply(ctx, []protocol.Desired{leaving, guest})
 		if got := statuses(t, a, c)[guest.ID]; got.Code != protocol.CodeDevicesBusy {
@@ -167,12 +168,13 @@ func TestAgentNeverSwitchesDriversForData(t *testing.T) {
 	if _, err := a.Sync(ctx, 0, true); err != nil {
 		t.Fatal(err)
 	}
-	nb := protocol.Desired{ID: uuid.New(), Mode: protocol.ModeRun, Kind: domain.KindNotebook, Driver: domain.DriverSim, Accelerator: domain.AcceleratorCPU}
+	nb := protocol.Desired{ID: uuid.New(), Mode: protocol.ModeRun, Attempt: 1, Kind: domain.KindNotebook, Driver: domain.DriverSim, Accelerator: domain.AcceleratorCPU}
 	ep := nb
 	ep.ID, ep.Kind = uuid.New(), domain.KindEndpoint
 	a.Apply(ctx, []protocol.Desired{nb, ep})
+	// Placed again with another driver: a new attempt.
 	nb.Driver, ep.Driver = domain.DriverMacOSNative, domain.DriverMacOSNative
-	nb.Mode = protocol.ModeRun
+	nb.Attempt, ep.Attempt = 2, 2
 	a.Apply(ctx, []protocol.Desired{nb, ep})
 	got := statuses(t, a, c)
 	if got[nb.ID].Code != protocol.CodeInvalid {
@@ -284,7 +286,7 @@ func TestAWorkloadHeldTwiceIsSortedOut(t *testing.T) {
 	ep.Kind = domain.KindEndpoint
 	_ = first.Run(ctx, ep)
 	moved := ep
-	moved.Driver = domain.DriverMacOSNative
+	moved.Driver, moved.Attempt = domain.DriverMacOSNative, 2
 	_ = second.Run(ctx, moved)
 
 	other := gpuWorkload(protocol.ModeRun)
@@ -297,5 +299,139 @@ func TestAWorkloadHeldTwiceIsSortedOut(t *testing.T) {
 	}
 	if got := statuses(t, a, c)[moved.ID]; got.State != protocol.StateReady || got.Code != "" {
 		t.Errorf("the endpoint, once held only by its driver: %+v; want it running, not waiting on itself", got)
+	}
+}
+
+// An attempt is started at most once: a workload that failed isn't started again until a new
+// attempt, so the control plane's decision to fail it is never overtaken by a restart.
+func TestAgentStartsEachAttemptOnce(t *testing.T) {
+	a, c, d := newAgent(t)
+	ctx := context.Background()
+	w := gpuWorkload(protocol.ModeRun)
+	a.Apply(ctx, []protocol.Desired{w})
+	d.Crash(w.ID)
+	a.Apply(ctx, []protocol.Desired{w}) // the same attempt, still asked to run
+	if got := statuses(t, a, c)[w.ID]; got.State != protocol.StateFailed || got.Attempt != 1 {
+		t.Errorf("after a crash, the same attempt: %+v; want it left failed", got)
+	}
+	w.Attempt = 2
+	a.Apply(ctx, []protocol.Desired{w})
+	if got := statuses(t, a, c)[w.ID]; got.State != protocol.StateReady || got.Attempt != 2 {
+		t.Errorf("a new attempt: %+v; want it running again", got)
+	}
+}
+
+// broken fails to start anything, with a code.
+type broken struct{ agent.Driver }
+
+func (broken) Run(context.Context, protocol.Desired) error {
+	return agent.WithCode(protocol.CodeImage, errors.New("pull failed"))
+}
+
+// A failure to start is the answer for as long as that attempt is asked for: applying again (any
+// nudge for another workload does) doesn't forget it.
+func TestStartFailuresAreKept(t *testing.T) {
+	c := &conn{}
+	a := agent.New(c, []agent.Driver{broken{sim.New(domain.AcceleratorApple)}}, macInventory, "test", slog.New(slog.DiscardHandler))
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	w := gpuWorkload(protocol.ModeRun)
+	a.Apply(ctx, []protocol.Desired{w})
+	a.Apply(ctx, []protocol.Desired{w})
+	if got := statuses(t, a, c)[w.ID]; got.State != protocol.StateFailed || got.Code != protocol.CodeImage || got.Attempt != 1 {
+		t.Errorf("after applying again: %+v; want the start failure, for attempt 1", got)
+	}
+}
+
+// failingConn fails its first sync.
+type failingConn struct {
+	conn
+	failed bool
+}
+
+func (c *failingConn) Sync(ctx context.Context, req protocol.SyncRequest) (protocol.SyncResponse, error) {
+	if !c.failed {
+		c.failed = true
+		c.sent = append(c.sent, req)
+		return protocol.SyncResponse{}, errors.New("unreachable")
+	}
+	return c.conn.Sync(ctx, req)
+}
+
+// An inventory counts as sent only once a sync succeeds: one cut short or failed is sent again.
+func TestInventoryIsSentUntilReceived(t *testing.T) {
+	c := &failingConn{}
+	a := agent.New(c, []agent.Driver{sim.New(domain.AcceleratorApple)}, macInventory, "test", slog.New(slog.DiscardHandler))
+	ctx := context.Background()
+	if _, err := a.Sync(ctx, 0, false); err == nil {
+		t.Fatal("the first sync should fail")
+	}
+	if _, err := a.Sync(ctx, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if c.sent[0].Inventory == nil || c.sent[1].Inventory == nil {
+		t.Error("an inventory whose sync failed wasn't sent again")
+	}
+	if _, err := a.Sync(ctx, 0, false); err != nil || c.sent[2].Inventory != nil {
+		t.Errorf("an inventory received was sent again: %v", err)
+	}
+}
+
+// lingering is a driver whose Stop takes a while: a stopped workload stays progressing.
+type lingering struct{ *sim.Driver }
+
+func (lingering) Stop(context.Context, uuid.UUID) error { return nil }
+
+// A workload still running another attempt is stopped before the new attempt starts, and its GPU
+// counts as taken until it has: another workload never starts on it meanwhile, whatever the new
+// attempt asks for.
+func TestAnotherAttemptStopsFirst(t *testing.T) {
+	ctx := context.Background()
+	for _, slowStop := range []bool{false, true} {
+		c := &conn{}
+		d := sim.New(domain.AcceleratorApple, domain.AcceleratorCPU)
+		var drv agent.Driver = d
+		if slowStop {
+			drv = lingering{d}
+		}
+		a := agent.New(c, []agent.Driver{drv}, macInventory, "test", slog.New(slog.DiscardHandler))
+		if _, err := a.Sync(ctx, 0, true); err != nil {
+			t.Fatal(err)
+		}
+		w := gpuWorkload(protocol.ModeRun) // attempt 1, on the Mac's GPU
+		a.Apply(ctx, []protocol.Desired{w})
+		again := w // attempt 2, on CPU this time
+		again.Attempt, again.Accelerator, again.Devices = 2, domain.AcceleratorCPU, 0
+		x := gpuWorkload(protocol.ModeRun)
+		a.Apply(ctx, []protocol.Desired{again, x})
+		got := statuses(t, a, c)
+		if slowStop {
+			if got[x.ID].Code != protocol.CodeDevicesBusy || got[w.ID].State != protocol.StateProgressing {
+				t.Errorf("while the old attempt is still stopping: w %+v, x %+v; want w waiting and x refused the GPU", got[w.ID], got[x.ID])
+			}
+			continue
+		}
+		if got[w.ID].Attempt != 2 || got[w.ID].State != protocol.StateReady || got[x.ID].State != protocol.StateReady {
+			t.Errorf("once the old attempt stopped: w %+v, x %+v; want both running, w as attempt 2", got[w.ID], got[x.ID])
+		}
+	}
+}
+
+// Attempts are compared for equality: after a database restore, a store's attempt can be lower
+// than the one a driver last ran, and it still runs.
+func TestALowerAttemptStillRuns(t *testing.T) {
+	a, c, _ := newAgent(t)
+	ctx := context.Background()
+	w := gpuWorkload(protocol.ModeRun)
+	w.Attempt = 3
+	a.Apply(ctx, []protocol.Desired{w})
+	w.Mode = protocol.ModePark
+	a.Apply(ctx, []protocol.Desired{w})
+	w.Mode, w.Attempt = protocol.ModeRun, 2
+	a.Apply(ctx, []protocol.Desired{w})
+	if got := statuses(t, a, c)[w.ID]; got.Attempt != 2 || got.State != protocol.StateReady {
+		t.Errorf("attempt 2 after attempt 3: %+v; want it running", got)
 	}
 }

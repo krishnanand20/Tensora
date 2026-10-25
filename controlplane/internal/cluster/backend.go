@@ -42,17 +42,21 @@ type Spec struct {
 	Quotas     []domain.Quota  // the tenant's quotas, for Kubernetes' ResourceQuota backstop
 }
 
-// Ref names a workload in its runtime.
+// Ref names a workload in its runtime, and says what the store expects of it: its state and
+// attempt, so a backend can tell an answer from a report about an earlier attempt.
 type Ref struct {
 	ID         uuid.UUID
 	TenantSlug string
 	Kind       domain.WorkloadKind
 	MachineID  uuid.UUID // the agent machine, or uuid.Nil
+	State      domain.State
+	Attempt    int64
 }
 
 // Ref is the spec's workload's Ref.
 func (s Spec) Ref() Ref {
-	return Ref{ID: s.Workload.ID, TenantSlug: s.TenantSlug, Kind: s.Workload.Kind, MachineID: s.Workload.MachineID}
+	w := s.Workload
+	return Ref{ID: w.ID, TenantSlug: s.TenantSlug, Kind: w.Kind, MachineID: w.MachineID, State: w.State, Attempt: w.Attempt}
 }
 
 // Capacity is where a backend can place workloads: units per class in a cluster that schedules
@@ -80,6 +84,12 @@ type MachineCapacity struct {
 type Driver struct {
 	Name         string
 	Accelerators []domain.AcceleratorKind
+}
+
+// Leader is a Backend that needs to know when its controller starts leading its region, such as the
+// agent backend, whose machines' agents sync only with a leader.
+type Leader interface {
+	Lead()
 }
 
 type Backend interface {

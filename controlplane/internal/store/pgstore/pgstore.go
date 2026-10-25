@@ -348,6 +348,23 @@ func (q *queries) MachinesInRegion(ctx context.Context, region domain.Region) ([
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.Machine, error) { return scanMachine(r) })
 }
 
+func (q *queries) TakeLease(ctx context.Context, name, holder string, now time.Time, ttl time.Duration) (bool, error) {
+	var got string
+	err := q.db.QueryRow(ctx, `INSERT INTO leases (name, holder, expires_at) VALUES ($1, $2, $3)
+		ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at
+		WHERE leases.holder = EXCLUDED.holder OR leases.expires_at <= $4
+		RETURNING holder`, name, holder, now.Add(ttl), now).Scan(&got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (q *queries) ReleaseLease(ctx context.Context, name, holder string) error {
+	_, err := q.db.Exec(ctx, `DELETE FROM leases WHERE name = $1 AND holder = $2`, name, holder)
+	return err
+}
+
 func (q *queries) MachineByID(ctx context.Context, id uuid.UUID) (domain.Machine, error) {
 	m, err := scanMachine(q.db.QueryRow(ctx, `SELECT `+machineCols+` FROM machines WHERE id = $1`, id))
 	return m, mapErr(err, "machine")
@@ -394,11 +411,11 @@ func (q *queries) ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domai
 // ---- workloads
 
 const workloadCols = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
-	region, machine_id, placed_class, driver, fallback, fallback_after_s`
+	region, machine_id, placed_class, driver, attempt, fallback, fallback_after_s`
 
 // workloadSelect reads workloadCols, with NULL placement read back as "not placed".
 const workloadSelect = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
-	region, COALESCE(machine_id, ` + nilUUID + `), COALESCE(placed_class, ''), COALESCE(driver, ''), fallback, fallback_after_s`
+	region, COALESCE(machine_id, ` + nilUUID + `), COALESCE(placed_class, ''), COALESCE(driver, ''), attempt, fallback, fallback_after_s`
 
 func scanWorkload(row pgx.Row) (domain.Workload, error) {
 	var w domain.Workload
@@ -406,7 +423,7 @@ func scanWorkload(row pgx.Row) (domain.Workload, error) {
 	var fallbackAfter int64
 	err := row.Scan(&w.ID, &w.TenantID, &w.Name, &kind, &state, &w.ImageID, &w.GPUClass,
 		&w.GPUCount, &w.Params, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt,
-		&region, &w.MachineID, &w.PlacedClass, &w.Driver, &w.Fallback, &fallbackAfter)
+		&region, &w.MachineID, &w.PlacedClass, &w.Driver, &w.Attempt, &w.Fallback, &fallbackAfter)
 	w.Kind, w.State, w.Region = domain.WorkloadKind(kind), domain.State(state), domain.Region(region)
 	w.FallbackAfter = time.Duration(fallbackAfter) * time.Second
 	return w, err
@@ -432,10 +449,10 @@ func (q *queries) CreateWorkload(ctx context.Context, w domain.Workload) error {
 		fallback = []string{}
 	}
 	_, err := q.db.Exec(ctx, `INSERT INTO workloads (`+workloadCols+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, ''), NULLIF($16, ''), $17, $18)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, ''), NULLIF($16, ''), $17, $18, $19)`,
 		w.ID, w.TenantID, w.Name, string(w.Kind), string(w.State), w.ImageID, w.GPUClass,
 		w.GPUCount, params, w.CreatedBy, w.CreatedAt, w.UpdatedAt,
-		string(w.Region), nullID(w.MachineID), w.PlacedClass, w.Driver, fallback, int64(w.FallbackAfter/time.Second))
+		string(w.Region), nullID(w.MachineID), w.PlacedClass, w.Driver, w.Attempt, fallback, int64(w.FallbackAfter/time.Second))
 	return mapErr(err, "workload")
 }
 
@@ -499,7 +516,7 @@ func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass st
 			return err
 		}
 	}
-	_, err = q.db.Exec(ctx, `UPDATE workloads SET placed_class = NULLIF($2, ''), machine_id = $3, driver = NULLIF($4, '') WHERE id = $1`,
+	_, err = q.db.Exec(ctx, `UPDATE workloads SET placed_class = NULLIF($2, ''), machine_id = $3, driver = NULLIF($4, ''), attempt = attempt + 1 WHERE id = $1`,
 		id, placedClass, nullID(machineID), driver)
 	return mapErr(err, "machine")
 }

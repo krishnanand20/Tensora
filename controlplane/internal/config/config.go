@@ -42,7 +42,7 @@ type Config struct {
 	// Only sim exists so far, and only in dev; the real drivers are roadmap step 7.
 	AgentDrivers []string
 	// AgentStateDir keeps this machine's identity for the in-process agent (TENSORA_AGENT_STATE_DIR).
-	// Empty means the SQLite database's directory; it's required with Postgres.
+	// Empty means the SQLite database's directory.
 	AgentStateDir         string
 	UntrustedRuntimeClass string
 	StorageClass          string
@@ -157,8 +157,11 @@ func (c Config) validate() error {
 		if !domain.ValidSlug(c.MachineOwner) {
 			errs = append(errs, fmt.Errorf("TENSORA_MACHINE_OWNER must be a tenant slug, got %q", c.MachineOwner))
 		}
-		if db, err := c.Database(); err == nil && db.Driver == "postgres" && c.AgentStateDir == "" {
-			errs = append(errs, errors.New("TENSORA_AGENT_STATE_DIR is required with the agent backend and Postgres: it keeps this machine's identity"))
+		if db, err := c.Database(); err == nil && db.Driver == "postgres" {
+			// With Postgres, controllers on several hosts could share a region, and each would see
+			// only its own machine's agent. One control plane serves every agent once agents join
+			// over the network (Phase 2, ADR-0016).
+			errs = append(errs, errors.New("TENSORA_CLUSTER_BACKEND=agent runs with SQLite (Solo) until agents join over the network (Phase 2)"))
 		}
 		if c.AgentStateDir != "" && !filepath.IsAbs(c.AgentStateDir) {
 			errs = append(errs, errors.New("TENSORA_AGENT_STATE_DIR must be an absolute path"))

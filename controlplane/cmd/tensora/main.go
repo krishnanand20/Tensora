@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tensora/tensora/controlplane/internal/agent"
+	"github.com/tensora/tensora/controlplane/internal/agent/drivers/hostlock"
 	"github.com/tensora/tensora/controlplane/internal/agent/drivers/inventory"
 	"github.com/tensora/tensora/controlplane/internal/agent/drivers/sim"
 	"github.com/tensora/tensora/controlplane/internal/api"
@@ -269,11 +270,11 @@ func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *cat
 		return nil, fmt.Errorf("TENSORA_REGION %q isn't in the catalog's regions", cfg.Region)
 	}
 	var backend cluster.Backend
-	var localAgent func(context.Context) error
+	var hub *agents.Hub
 	switch cfg.ClusterBackend {
 	case "agent":
-		hub := agents.New(st, cat, agents.Options{Region: cfg.Region, AllowSim: cfg.Env == "dev"}, log.With("component", "agents"), nil)
-		backend, localAgent = hub, runLocalAgent(cfg, log, st, hub)
+		hub = agents.New(st, cat, agents.Options{Region: cfg.Region, AllowSim: cfg.Env == "dev"}, log.With("component", "agents"), nil)
+		backend = hub
 	case "kubernetes":
 		b, err := kube.New(cat, kube.Options{
 			StorageClass:          cfg.StorageClass,
@@ -292,16 +293,29 @@ func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *cat
 		ProvisionTimeout: cfg.ProvisionTimeout,
 	}, log.With("component", "controller"), nil)
 	run := func(ctx context.Context) error { return ctrl.Run(ctx, cfg.ControllerInterval) }
-	if localAgent == nil {
-		return run, nil
+	if hub == nil {
+		return func(ctx context.Context) error {
+			defer ctrl.Release(ctx)
+			return run(ctx)
+		}, nil
 	}
-	return func(ctx context.Context) error { return runAll(ctx, run, localAgent) }, nil
+	return func(ctx context.Context) error {
+		defer ctrl.Release(ctx) // only once this machine's agent has stopped too
+		return runAll(ctx, run, runLocalAgent(cfg, log, st, hub, ctrl.Leading()))
+	}, nil
 }
 
 // runLocalAgent registers this machine, owned by TENSORA_MACHINE_OWNER, and runs its agent in this
-// process (Solo, ADR-0016). It waits for the owner's tenant, which `tensora setup` creates.
-func runLocalAgent(cfg config.Config, log *slog.Logger, st store.Store, hub *agents.Hub) func(context.Context) error {
+// process (Solo, ADR-0016), once this process's controller leads its region: a standby's agent
+// would sync with a controller that isn't reconciling. It waits for the owner's tenant, which
+// `tensora setup` creates.
+func runLocalAgent(cfg config.Config, log *slog.Logger, st store.Store, hub *agents.Hub, leading <-chan struct{}) func(context.Context) error {
 	return func(ctx context.Context) error {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-leading:
+		}
 		log = log.With("component", "agent")
 		name := machineName()
 		idFile, err := machineIDFile(cfg)
@@ -311,6 +325,14 @@ func runLocalAgent(cfg config.Config, log *slog.Logger, st store.Store, hub *age
 		known, err := readMachineID(idFile)
 		if err != nil {
 			return err
+		}
+		if idFile != "" {
+			// One agent per machine, whatever the lease's timing: another may still be stopping.
+			release, err := waitForHostLock(ctx, filepath.Join(filepath.Dir(idFile), "agent.lock"), log)
+			if err != nil || release == nil {
+				return err
+			}
+			defer release()
 		}
 		warned := false
 		for {
@@ -364,7 +386,39 @@ func machineIDFile(cfg config.Config) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("agent state directory: %w", err)
 	}
+	// Whoever can write machine-id decides which machine this agent acts as, so the directory gets
+	// the same rule as the database's: no one else may write to it.
+	di, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("agent state directory: %w", err)
+	}
+	if di.Mode().Perm()&0o022 != 0 {
+		return "", fmt.Errorf("agent state directory %s can be written by other users (mode %v); run: chmod go-w %s", dir, di.Mode().Perm(), dir)
+	}
 	return filepath.Join(dir, "machine-id"), nil
+}
+
+// waitForHostLock takes this machine's agent lock, waiting while another agent (one still
+// stopping) holds it. It returns a nil release if ctx ends first.
+func waitForHostLock(ctx context.Context, path string, log *slog.Logger) (func(), error) {
+	warned := false
+	for {
+		release, err := hostlock.Acquire(path)
+		switch {
+		case err == nil:
+			return release, nil
+		case !errors.Is(err, hostlock.ErrHeld):
+			return nil, err
+		case !warned:
+			log.Warn("another agent is still running for this machine; waiting for it to stop")
+			warned = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // readMachineID returns the ID saved by an earlier start, or uuid.Nil before the first.
@@ -372,10 +426,17 @@ func readMachineID(path string) (uuid.UUID, error) {
 	if path == "" {
 		return uuid.Nil, nil
 	}
-	raw, err := os.ReadFile(path) //nolint:gosec // the path comes from operator config
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return uuid.Nil, nil
 	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("read this machine's ID: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return uuid.Nil, fmt.Errorf("%s must be a regular file only its owner can read and write (not a symlink); run: chmod 600 %s", path, path)
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // the path comes from operator config
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("read this machine's ID: %w", err)
 	}

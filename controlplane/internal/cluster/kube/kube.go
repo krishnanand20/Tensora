@@ -78,6 +78,10 @@ func New(cat *catalog.Catalog, opts Options) (*Backend, error) {
 			return nil, fmt.Errorf("kubernetes config: %w", err)
 		}
 	}
+	// client-go's default (5 requests a second) would make a pass over many workloads take minutes.
+	if cfg.QPS == 0 {
+		cfg.QPS, cfg.Burst = 50, 100
+	}
 	dyn, err := dynamic.NewForConfig(cfg)
 	if err != nil {
 		return nil, err

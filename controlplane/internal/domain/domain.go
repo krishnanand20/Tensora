@@ -80,6 +80,7 @@ type Workload struct {
 	PlacedClass   string        // the class it was admitted on; empty until first admitted
 	MachineID     uuid.UUID     // the agent machine it runs on; uuid.Nil until placed on one
 	Driver        string        // the agent driver that runs it (ADR-0016); empty on Kubernetes
+	Attempt       int64         // how many times it's been admitted; each admission is a new attempt (ADR-0016)
 	Fallback      []string      // other classes, or "cpu", the user accepts, in order; empty means wait
 	FallbackAfter time.Duration // how long to wait for GPUClass before trying Fallback
 }

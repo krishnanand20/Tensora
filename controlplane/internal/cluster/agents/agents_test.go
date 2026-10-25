@@ -76,6 +76,7 @@ func (f fixture) placeOn(t *testing.T, m domain.Machine, tenant domain.Tenant, k
 			return err
 		}
 		w.PlacedClass, w.MachineID, w.Driver = class, m.ID, driver
+		w.Attempt++ // as SetPlacement counts it
 		if state != domain.StatePending {
 			w.State = state
 			return q.UpdateWorkloadState(ctx, w.ID, domain.StatePending, state, testutil.T0)
@@ -159,7 +160,10 @@ func TestInventoryIsCheckedAndDriversFiltered(t *testing.T) {
 	ctx := context.Background()
 	bad := mac()
 	bad.UsableMemoryMiB = bad.MemoryMiB + 1
-	if _, err := f.hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: bad}); err == nil {
+	if _, err := f.hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: bad}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := f.hub.Capacity(ctx); len(c.Machines) != 0 {
 		t.Error("more usable memory than the machine has was accepted")
 	}
 	if _, err := f.hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: 99}); err == nil {
@@ -227,35 +231,59 @@ func TestSyncWaitsForAChange(t *testing.T) {
 func TestObserveSaysWhatTheAgentReported(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	ready, failed, odd, missing := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	ref := func(id uuid.UUID) cluster.Ref { return cluster.Ref{ID: id, MachineID: f.machine.ID} }
-
-	if obs, reason, _ := f.hub.Observe(ctx, ref(ready)); obs != cluster.ObservedProgressing || reason != "" {
-		t.Errorf("before the machine syncs, just after a restart: %s %q; want progressing, with nothing to say yet", obs, reason)
+	var ws []domain.Workload
+	for range 4 {
+		ws = append(ws, f.place(t, f.owner, domain.KindNotebook, "cpu-2c-8g", domain.StateProvisioning))
 	}
-	_, err := f.hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: mac(), Statuses: []protocol.Status{
-		{ID: ready, State: protocol.StateReady},
-		{ID: failed, State: protocol.StateFailed, Code: protocol.CodeOutOfMemory},
-		{ID: odd, State: "exploded", Code: "rm -rf / at t-acme"},
-	}})
+	ready, failed, odd, missing := ws[0], ws[1], ws[2], ws[3]
+	ref := func(w domain.Workload) cluster.Ref {
+		return cluster.Ref{ID: w.ID, Kind: w.Kind, MachineID: f.machine.ID, State: w.State, Attempt: w.Attempt}
+	}
+
+	if obs, reason, _ := f.hub.Observe(ctx, ref(ready)); obs != cluster.ObservedUnknown || reason != "" {
+		t.Errorf("before the machine syncs, just after a restart: %s %q; want unknown, with nothing to say yet", obs, reason)
+	}
+	conn := f.hub.Conn(f.machine.ID)
+	first, err := conn.Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: mac()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[uuid.UUID]struct {
+	if obs, _, _ := f.hub.Observe(ctx, ref(missing)); obs != cluster.ObservedProgressing {
+		t.Errorf("before the agent applied its run: %s; want progressing, not absent", obs)
+	}
+	_, err = conn.Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Generation: first.Generation, Applied: first.Generation,
+		Statuses: []protocol.Status{
+			{ID: ready.ID, Attempt: 1, State: protocol.StateReady},
+			{ID: failed.ID, Attempt: 1, State: protocol.StateFailed, Code: protocol.CodeOutOfMemory},
+			{ID: odd.ID, Attempt: 1, State: "exploded", Code: "rm -rf / at t-acme"},
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		w      domain.Workload
 		obs    cluster.Observed
 		reason string
 	}{
-		ready:   {cluster.ObservedReady, ""},
-		failed:  {cluster.ObservedFailed, "it ran out of memory"},
-		odd:     {cluster.ObservedFailed, "starting on its machine"},
-		missing: {cluster.ObservedAbsent, ""},
+		{ready, cluster.ObservedReady, ""},
+		{failed, cluster.ObservedFailed, "it ran out of memory"},
+		{odd, cluster.ObservedFailed, "its machine reported a problem"},
+		{missing, cluster.ObservedAbsent, ""},
 	} {
-		obs, reason, err := f.hub.Observe(ctx, ref(id))
+		want := tt
+		obs, reason, err := f.hub.Observe(ctx, ref(tt.w))
 		if err != nil || obs != want.obs || reason != want.reason {
 			t.Errorf("Observe = %s %q %v; want %s %q", obs, reason, err, want.obs, want.reason)
 		}
 	}
-	if obs, _, _ := f.hub.Observe(ctx, cluster.Ref{ID: ready}); obs != cluster.ObservedAbsent {
+	// A report about what the store no longer expects isn't the answer: after the workload is
+	// stopped, its "ready" doesn't answer the stop.
+	stopping := ready
+	stopping.State = domain.StateStopping
+	if obs, _, _ := f.hub.Observe(ctx, ref(stopping)); obs != cluster.ObservedProgressing {
+		t.Errorf("a report about running, read for a stop: %s; want progressing", obs)
+	}
+	if obs, _, _ := f.hub.Observe(ctx, cluster.Ref{ID: ready.ID}); obs != cluster.ObservedAbsent {
 		t.Errorf("a workload never placed on a machine: %s; want absent", obs)
 	}
 	if got := protocol.Reason("rm -rf / at t-acme"); got != "its machine reported a problem" {
@@ -328,10 +356,17 @@ func TestInventoryMustFitTheMachine(t *testing.T) {
 			inv.Accelerators = append(inv.Accelerators, domain.Accelerator{Kind: domain.AcceleratorNVIDIA, Model: "NVIDIA L40S", Count: 1})
 		},
 	} {
+		hub := agents.New(f.st, testutil.Catalog(t), agents.Options{PollTimeout: time.Millisecond, AllowSim: true}, slog.New(slog.DiscardHandler), nil)
 		inv := mac()
 		change(inv)
-		if _, err := f.hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: inv}); err == nil {
-			t.Errorf("%s: accepted", name)
+		// Refused, but the machine still gets its desired state, so stops and removals reach it;
+		// it isn't placeable, and it's asked for a report again.
+		resp, err := hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: inv})
+		if err != nil || !resp.SendInventory {
+			t.Errorf("%s: %+v, %v; want desired state and a request for a new report", name, resp, err)
+		}
+		if c, _ := hub.Capacity(ctx); len(c.Machines) != 0 {
+			t.Errorf("%s: the machine is offered for placement", name)
 		}
 	}
 	// A driver for another OS is dropped.
@@ -380,5 +415,75 @@ func TestRegisterLocal(t *testing.T) {
 	fresh := uuid.New() // an ID from a database that was replaced
 	if m, err := agents.RegisterLocal(ctx, f.st, fresh, "internal", "laptop", "darwin", "arm64", domain.RegionLocal, testutil.T0); err != nil || m.ID != fresh {
 		t.Errorf("a saved ID this database doesn't have = %+v, %v; want it registered with that ID", m, err)
+	}
+}
+
+// A standby that takes over late gives machines the reconnect window from when it starts leading,
+// not from when its process started: it doesn't read their absence as their being lost.
+func TestALateLeaderLetsMachinesReconnect(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	clock := testutil.NewClock(testutil.T0)
+	hub := agents.New(f.st, testutil.Catalog(t), agents.Options{AllowSim: true}, slog.New(slog.DiscardHandler), clock.Now)
+	clock.Advance(time.Hour) // standing by
+	hub.Lead()
+	if obs, reason, _ := hub.Observe(ctx, cluster.Ref{ID: uuid.New(), MachineID: f.machine.ID}); obs != cluster.ObservedUnknown || reason != "" {
+		t.Errorf("just after taking over: %s %q; want unknown, deciding nothing", obs, reason)
+	}
+	if c, _ := hub.Capacity(ctx); !c.Settling {
+		t.Error("just after taking over, before the machine reconnects: want settling")
+	}
+}
+
+// A refused report waits for a change like any other sync, instead of being asked for again at
+// once in a tight loop.
+func TestRefusedReportsDontSpin(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	hub := agents.New(f.st, testutil.Catalog(t), agents.Options{PollTimeout: 200 * time.Millisecond, AllowSim: true}, slog.New(slog.DiscardHandler), nil)
+	bad := mac()
+	bad.Accelerators[0].Count = 2
+	first, err := hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: bad})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := hub.Conn(f.machine.ID).Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Generation: first.Generation, Inventory: bad}); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took < 150*time.Millisecond {
+		t.Errorf("an up-to-date agent with a refused report was answered after %s; want it to wait", took)
+	}
+}
+
+// A status from before the agent applied a workload's latest change isn't the answer: an old
+// failure doesn't fail a restart.
+func TestStaleStatusesAreNotTheAnswer(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	w := f.place(t, f.owner, domain.KindNotebook, "cpu-2c-8g", domain.StateProvisioning)
+	conn := f.hub.Conn(f.machine.ID)
+	failed := []protocol.Status{{ID: w.ID, Attempt: w.Attempt, State: protocol.StateFailed, Code: protocol.CodeExited}}
+	resp, err := conn.Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Inventory: mac(), Statuses: failed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := cluster.Ref{ID: w.ID, Kind: w.Kind, MachineID: f.machine.ID, State: w.State, Attempt: w.Attempt}
+	if obs, _, _ := f.hub.Observe(ctx, ref); obs != cluster.ObservedProgressing {
+		t.Errorf("before the agent applied the run: %s; want progressing", obs)
+	}
+	if _, err := conn.Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Generation: resp.Generation, Applied: resp.Generation, Statuses: failed}); err != nil {
+		t.Fatal(err)
+	}
+	if obs, reason, _ := f.hub.Observe(ctx, ref); obs != cluster.ObservedFailed || reason != "it exited unexpectedly" {
+		t.Errorf("after the agent applied it: %s %q; want the failure", obs, reason)
+	}
+	// A status about an earlier attempt doesn't answer this one, even once applied.
+	earlier := []protocol.Status{{ID: w.ID, Attempt: w.Attempt - 1, State: protocol.StateFailed, Code: protocol.CodeExited}}
+	if _, err := conn.Sync(ctx, protocol.SyncRequest{Version: protocol.Version, Generation: resp.Generation, Applied: resp.Generation, Statuses: earlier}); err != nil {
+		t.Fatal(err)
+	}
+	if obs, _, _ := f.hub.Observe(ctx, ref); obs != cluster.ObservedProgressing {
+		t.Errorf("a failure from an earlier attempt: %s; want progressing", obs)
 	}
 }

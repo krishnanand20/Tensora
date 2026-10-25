@@ -49,8 +49,10 @@ memory, and GPU (an Apple Silicon GPU through sysctl, NVIDIA GPUs through `nvidi
 controller places on it. Until the real drivers land (roadmap step 7), `TENSORA_AGENT_DRIVERS=sim` simulates them
 in dev: `TENSORA_CLUSTER_BACKEND=agent TENSORA_AGENT_DRIVERS=sim TENSORA_MACHINE_OWNER=internal go run ./cmd/tensora dev`,
 then launch on `apple-silicon-32gb` (or whichever tier this Mac's memory holds) or a CPU class with `X-Dev-Tenant: internal`.
-The machine's ID is saved in `machine-id` next to the SQLite database (`TENSORA_AGENT_STATE_DIR` with Postgres), so
-a new hostname is only a new label; with the in-memory store nothing is saved. To keep data between restarts without Postgres, use a SQLite
+The machine's ID is saved in `machine-id` next to the SQLite database (or in `TENSORA_AGENT_STATE_DIR`), so a new
+hostname is only a new label; with the in-memory store nothing is saved. The agent backend runs with SQLite until
+agents join over the network (Phase 2). Only one controller reconciles a region: another started for the same
+region stands by until the first stops (a lease in the store). To keep data between restarts without Postgres, use a SQLite
 file: `TENSORA_DATABASE_URL=sqlite:$PWD/tensora.db go run ./cmd/tensora dev`. It's created readable by you
 only and migrated when opened, and the path in use is logged at startup. The file and its `-wal` and `-shm`
 files must stay owner-only, in a directory other users can't write to; otherwise Tensora refuses to start

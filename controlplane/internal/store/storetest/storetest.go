@@ -26,6 +26,58 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("ErrorsAndCrossTenantReads", func(t *testing.T) { testErrorsAndCrossTenant(t, newStore(t)) })
 	t.Run("MachinesAndPlacement", func(t *testing.T) { testMachinesAndPlacement(t, newStore(t)) })
 	t.Run("LocalAccounts", func(t *testing.T) { testLocalAccounts(t, newStore(t)) })
+	t.Run("Leases", func(t *testing.T) { testLeases(t, newStore(t)) })
+}
+
+// One holder at a time: a lease is free once it expires, and only its holder renews it early.
+func testLeases(t *testing.T, st store.Store) {
+	ctx := context.Background()
+	take := func(holder string, at time.Time) bool {
+		t.Helper()
+		var ok bool
+		tx(t, st, func(q store.Queries) error {
+			var err error
+			ok, err = q.TakeLease(ctx, "controller:local", holder, at, time.Minute)
+			return err
+		})
+		return ok
+	}
+	if !take("a", t0) {
+		t.Fatal("a free lease wasn't taken")
+	}
+	if take("b", t0.Add(30*time.Second)) {
+		t.Error("b took a's lease before it expired")
+	}
+	if !take("a", t0.Add(50*time.Second)) {
+		t.Error("a couldn't renew its own lease")
+	}
+	if take("b", t0.Add(100*time.Second)) {
+		t.Error("b took a's renewed lease before it expired")
+	}
+	if !take("b", t0.Add(111*time.Second)) {
+		t.Error("b couldn't take an expired lease")
+	}
+	if take("a", t0.Add(112*time.Second)) {
+		t.Error("a took back a lease b holds")
+	}
+	var other bool
+	tx(t, st, func(q store.Queries) error {
+		var err error
+		other, err = q.TakeLease(ctx, "controller:eu-fra-1", "a", t0.Add(112*time.Second), time.Minute)
+		return err
+	})
+	if !other {
+		t.Error("a lease for another region is separate")
+	}
+	// Only its holder releases a lease; then anyone can take it at once.
+	tx(t, st, func(q store.Queries) error { return q.ReleaseLease(ctx, "controller:local", "a") })
+	if take("a", t0.Add(113*time.Second)) {
+		t.Error("a released b's lease")
+	}
+	tx(t, st, func(q store.Queries) error { return q.ReleaseLease(ctx, "controller:local", "b") })
+	if !take("a", t0.Add(114*time.Second)) {
+		t.Error("a released lease wasn't free")
+	}
 }
 
 // SchemaColumns and SchemaIndexes are every table's columns and every named index that both
@@ -40,12 +92,13 @@ var (
 			"sharing", "tenant_id",
 		},
 		"workloads": {
-			"created_at", "created_by", "driver", "fallback", "fallback_after_s", "gpu_class", "gpu_count", "id",
+			"attempt", "created_at", "created_by", "driver", "fallback", "fallback_after_s", "gpu_class", "gpu_count", "id",
 			"image_id", "kind", "machine_id", "name", "params", "placed_class", "region", "state", "tenant_id", "updated_at",
 		},
 		"workload_events":  {"at", "from_state", "id", "reason", "to_state", "workload_id"},
 		"usage_records":    {"created_at", "gpu_class", "gpu_count", "machine_id", "period_start", "region", "seconds", "tenant_id", "workload_id"},
 		"idempotency_keys": {"created_at", "idempotency_key", "request_hash", "response_body", "response_status", "subject", "tenant_id"},
+		"leases":           {"expires_at", "holder", "name"},
 		"users":            {"created_at", "disabled_at", "email", "id", "password_hash", "tenant_id"},
 		"sessions":         {"created_at", "expires_at", "token_hash", "user_id"},
 		"api_tokens":       {"created_at", "expires_at", "id", "last_used_at", "name", "prefix", "revoked_at", "token_hash", "user_id"},
@@ -428,8 +481,8 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 	})
 	tx(t, st, func(q store.Queries) error {
 		got, err := q.GetWorkload(ctx, a.ID, w.ID)
-		if err != nil || got.PlacedClass != "a100-80gb" || got.MachineID != m.ID || got.Driver != domain.DriverMacOSNative {
-			t.Errorf("placed workload = %+v, %v", got, err)
+		if err != nil || got.PlacedClass != "a100-80gb" || got.MachineID != m.ID || got.Driver != domain.DriverMacOSNative || got.Attempt != 1 {
+			t.Errorf("placed workload = %+v, %v; want the placement and its first attempt", got, err)
 		}
 		if on, err := q.WorkloadsOnMachine(ctx, m.ID); err != nil || len(on) != 1 || on[0].ID != w.ID {
 			t.Errorf("WorkloadsOnMachine = %+v, %v; want the placed workload", on, err)

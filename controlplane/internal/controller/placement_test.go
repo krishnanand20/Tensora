@@ -214,3 +214,32 @@ func TestUnknownMachinesAreIgnored(t *testing.T) {
 		t.Error("placed on a machine outside the store's region")
 	}
 }
+
+// A workload holding capacity whose class left the catalog is counted as holding everything on its
+// machine: what it holds can't be known, and guessing low would put someone else on its GPU.
+func TestUnknownClassesHoldTheirMachine(t *testing.T) {
+	cat := testutil.Catalog(t)
+	f := machines()
+	apple, _ := cat.GPUClass("apple-silicon-32gb")
+	retired := domain.Workload{TenantID: f.owner, MachineID: f.mac.ID, GPUClass: "retired-class", PlacedClass: "retired-class",
+		GPUCount: 1, State: domain.StateRunning, Driver: domain.DriverMacOSNative}
+	p := newPool(cat, f.capacity, []domain.Machine{f.mac}, []domain.Workload{retired})
+	w := domain.Workload{ID: uuid.New(), TenantID: f.owner, Region: domain.RegionLocal, Kind: domain.KindNotebook, GPUClass: apple.ID, GPUCount: 1}
+	if _, _, _, ok := p.choose(w, apple); ok {
+		t.Error("placed beside a workload whose size is unknown")
+	}
+}
+
+// A VM or notebook whose machine still has its driver but no longer offers its class says so.
+func TestWaitingForAClassOnItsMachine(t *testing.T) {
+	cat := testutil.Catalog(t)
+	f := machines()
+	apple, _ := cat.GPUClass("apple-silicon-32gb")
+	f.capacity.Machines[0].Devices = map[string]int{} // the Mac's GPU isn't reported this time
+	p := newPool(cat, f.capacity, []domain.Machine{f.mac}, nil)
+	nb := domain.Workload{ID: uuid.New(), TenantID: f.owner, Region: domain.RegionLocal, Kind: domain.KindNotebook, GPUClass: apple.ID,
+		GPUCount: 1, MachineID: f.mac.ID, Driver: domain.DriverMacOSNative}
+	if _, _, why, ok := p.choose(nb, apple); ok || why != "waiting for its machine to offer apple-silicon-32gb again: its disk is there" {
+		t.Errorf("ok=%v why=%q", ok, why)
+	}
+}

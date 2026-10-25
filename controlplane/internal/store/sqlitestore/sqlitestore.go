@@ -556,6 +556,23 @@ func (q *queries) MachinesInRegion(ctx context.Context, region domain.Region) ([
 	return collect(ctx, q, scanMachine, `SELECT `+machineSelect+` FROM machines WHERE region = ? ORDER BY name, id`, string(region))
 }
 
+func (q *queries) TakeLease(ctx context.Context, name, holder string, now time.Time, ttl time.Duration) (bool, error) {
+	var got string
+	err := q.db.QueryRowContext(ctx, `INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)
+		ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+		WHERE leases.holder = excluded.holder OR leases.expires_at <= ?
+		RETURNING holder`, name, holder, ts(now.Add(ttl)), ts(now)).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (q *queries) ReleaseLease(ctx context.Context, name, holder string) error {
+	_, err := q.db.ExecContext(ctx, `DELETE FROM leases WHERE name = ? AND holder = ?`, name, holder)
+	return err
+}
+
 func (q *queries) MachineByID(ctx context.Context, id uuid.UUID) (domain.Machine, error) {
 	m, err := scanMachine(q.db.QueryRowContext(ctx, `SELECT `+machineSelect+` FROM machines WHERE id = ?`, id))
 	return m, mapErr(err, "machine")
@@ -606,11 +623,11 @@ func (q *queries) ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domai
 // ---- workloads
 
 const workloadCols = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
-	region, machine_id, placed_class, driver, fallback, fallback_after_s`
+	region, machine_id, placed_class, driver, attempt, fallback, fallback_after_s`
 
 // workloadSelect reads workloadCols, with NULL placement read back as "not placed".
 const workloadSelect = `id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, params, created_by, created_at, updated_at,
-	region, COALESCE(machine_id, ''), COALESCE(placed_class, ''), COALESCE(driver, ''), fallback, fallback_after_s`
+	region, COALESCE(machine_id, ''), COALESCE(placed_class, ''), COALESCE(driver, ''), attempt, fallback, fallback_after_s`
 
 func scanWorkload(row scanner) (domain.Workload, error) {
 	var w domain.Workload
@@ -618,7 +635,7 @@ func scanWorkload(row scanner) (domain.Workload, error) {
 	var fallbackAfter int64
 	err := row.Scan(&w.ID, &w.TenantID, &w.Name, &kind, &state, &w.ImageID, &w.GPUClass,
 		&w.GPUCount, &params, &w.CreatedBy, timeCol{&w.CreatedAt}, timeCol{&w.UpdatedAt},
-		&region, &w.MachineID, &w.PlacedClass, &w.Driver, &fallback, &fallbackAfter)
+		&region, &w.MachineID, &w.PlacedClass, &w.Driver, &w.Attempt, &fallback, &fallbackAfter)
 	if err != nil {
 		return w, err
 	}
@@ -661,10 +678,10 @@ func (q *queries) CreateWorkload(ctx context.Context, w domain.Workload) error {
 		return err
 	}
 	_, err = q.db.ExecContext(ctx, `INSERT INTO workloads (`+workloadCols+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)`,
 		w.ID, w.TenantID, w.Name, string(w.Kind), string(w.State), w.ImageID, w.GPUClass,
 		w.GPUCount, string(rawParams), w.CreatedBy, ts(w.CreatedAt), ts(w.UpdatedAt),
-		string(w.Region), nullID(w.MachineID), w.PlacedClass, w.Driver, string(rawFallback), int64(w.FallbackAfter/time.Second))
+		string(w.Region), nullID(w.MachineID), w.PlacedClass, w.Driver, w.Attempt, string(rawFallback), int64(w.FallbackAfter/time.Second))
 	return mapErr(err, "workload")
 }
 
@@ -731,7 +748,7 @@ func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass st
 			return err
 		}
 	}
-	_, err = q.db.ExecContext(ctx, `UPDATE workloads SET placed_class = NULLIF(?, ''), machine_id = ?, driver = NULLIF(?, '') WHERE id = ?`,
+	_, err = q.db.ExecContext(ctx, `UPDATE workloads SET placed_class = NULLIF(?, ''), machine_id = ?, driver = NULLIF(?, ''), attempt = attempt + 1 WHERE id = ?`,
 		placedClass, nullID(machineID), driver, id)
 	return mapErr(err, "machine")
 }

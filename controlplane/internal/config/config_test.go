@@ -141,10 +141,10 @@ func TestAgentBackend(t *testing.T) {
 	for name, kv := range map[string]map[string]string{
 		"sim outside dev": {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_AGENT_DRIVERS": "sim", "TENSORA_ENV": "production",
 			"TENSORA_DATABASE_URL": "sqlite:/var/lib/tensora/tensora.db", "TENSORA_AUTH_MODE": "local"},
-		"an unknown driver":                  {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_AGENT_DRIVERS": "docker"},
-		"a bad owner":                        {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_MACHINE_OWNER": "My Lab"},
-		"Postgres without a state directory": {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_DATABASE_URL": "postgres://db/tensora"},
-		"a relative state directory":         {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_AGENT_STATE_DIR": "state"},
+		"an unknown driver": {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_AGENT_DRIVERS": "docker"},
+		"a bad owner":       {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_MACHINE_OWNER": "My Lab"},
+		"Postgres, until agents join over the network": {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_DATABASE_URL": "postgres://db/tensora"},
+		"a relative state directory":                   {"TENSORA_CLUSTER_BACKEND": "agent", "TENSORA_AGENT_STATE_DIR": "state"},
 	} {
 		if _, err := FromEnv(env(kv)); err == nil {
 			t.Errorf("%s: accepted", name)

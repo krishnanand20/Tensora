@@ -24,17 +24,22 @@ type Conn interface {
 // SyncRequest is an agent's report.
 type SyncRequest struct {
 	Version int `json:"version"`
-	// Generation is the desired state the agent last applied; 0 when it starts. The control plane
+	// Generation is the desired state the agent last received; 0 when it starts. The control plane
 	// answers at once when it has a newer one, and otherwise waits for one.
 	Generation uint64 `json:"generation"`
+	// Applied is the desired state the agent last finished applying. A workload's status from
+	// before the desired state that last changed it is stale: the control plane reads it as still
+	// in progress, never as the answer (such as an old failure after a restart).
+	Applied uint64 `json:"applied"`
 	// Inventory is sent when the agent starts, when it changes, and when the control plane asks.
 	Inventory *Inventory `json:"inventory,omitempty"`
 	// Statuses lists every workload the agent has, and those it refused: complete, every time.
 	Statuses []Status `json:"statuses"`
 }
 
-// SyncResponse is the machine's complete desired state. Anything the agent has that isn't listed,
-// or is listed with ModeRemove, is removed with its data.
+// SyncResponse is the machine's complete desired state. A workload listed with ModeRemove is removed
+// with its data; one the agent has that isn't listed is stopped and kept, never removed, because a
+// list can leave one out only by mistake.
 type SyncResponse struct {
 	Generation    uint64    `json:"generation"`
 	Workloads     []Desired `json:"workloads"`
@@ -75,8 +80,11 @@ const (
 
 // Desired is one workload the machine should run, park, or remove.
 type Desired struct {
-	ID          uuid.UUID              `json:"id"`
-	Mode        Mode                   `json:"mode"`
+	ID   uuid.UUID `json:"id"`
+	Mode Mode      `json:"mode"`
+	// Attempt counts the workload's admissions. An agent runs each attempt at most once: one that
+	// ended (failed, or stopped by itself) isn't started again until a new attempt.
+	Attempt     int64                  `json:"attempt"`
 	Kind        domain.WorkloadKind    `json:"kind"`
 	Driver      string                 `json:"driver"`
 	Accelerator domain.AcceleratorKind `json:"accelerator"`
@@ -114,9 +122,10 @@ const (
 // Status is one workload's state, with a code from a fixed vocabulary. The control plane turns
 // codes into the reasons owners read; an agent's own words never reach a timeline (rule 14).
 type Status struct {
-	ID    uuid.UUID `json:"id"`
-	State State     `json:"state"`
-	Code  Code      `json:"code,omitempty"`
+	ID      uuid.UUID `json:"id"`
+	Attempt int64     `json:"attempt"` // the attempt the driver last ran it for
+	State   State     `json:"state"`
+	Code    Code      `json:"code,omitempty"`
 }
 
 // Code says why a workload is in its state.
@@ -161,4 +170,24 @@ func Reason(code Code) string {
 		return "its machine couldn't remove it yet; retrying"
 	}
 	return "its machine reported a problem"
+}
+
+// ProgressReason is the text an owner reads for a workload still in progress with code, or empty
+// when there's nothing worth saying (it's starting, stopping, or being removed as usual).
+func ProgressReason(code Code) string {
+	switch code {
+	case "", CodeStarting:
+		return ""
+	}
+	return Reason(code)
+}
+
+// FailureReason is the text an owner reads for a workload that failed with code. A failure without
+// a known code, which a hostile or buggy agent could send, reads as a problem, never as "starting".
+func FailureReason(code Code) string {
+	switch code {
+	case "", CodeStarting, CodeDevicesBusy, CodeRemovingFailed:
+		return Reason("unknown")
+	}
+	return Reason(code)
 }

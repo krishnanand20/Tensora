@@ -74,10 +74,13 @@ func newPool(cat *catalog.Catalog, capacity cluster.Capacity, machines []domain.
 	}
 	for _, w := range holding {
 		for _, s := range p.machines {
-			if s.m.ID == w.MachineID {
-				if g, ok := cat.GPUClass(classOf(w)); ok {
-					s.take(g, w.GPUCount, w.Driver)
-				}
+			if s.m.ID != w.MachineID {
+				continue
+			}
+			if g, ok := cat.GPUClass(classOf(w)); ok {
+				s.take(g, w.GPUCount, w.Driver)
+			} else {
+				s.saturate(w.Driver) // its class left the catalog: what it holds is unknown, so assume all of it
 			}
 		}
 	}
@@ -106,6 +109,17 @@ func (s *slot) take(g catalog.GPUClass, n int, driver string) {
 	s.devices[g.ID] -= devices
 	s.vcpus -= vcpus
 	s.memMiB -= mem
+	if driver != "" {
+		s.running[driver]++
+	}
+}
+
+// saturate marks everything on s as taken, by a workload whose size isn't known.
+func (s *slot) saturate(driver string) {
+	for class := range s.devices {
+		s.devices[class] = 0
+	}
+	s.vcpus, s.memMiB = 0, 0
 	if driver != "" {
 		s.running[driver]++
 	}
@@ -177,9 +191,10 @@ func (p *pool) choose(w domain.Workload, g catalog.GPUClass) (placement, int, st
 	if diskBound && len(candidates) == 0 {
 		return placement{}, 0, "waiting for its machine to come online: its disk is there", false
 	}
-	free, eligible := 0, false
+	free, eligible, driverFound := 0, false, false
 	for _, s := range candidates {
 		driver, ok := s.driverFor(w, g)
+		driverFound = driverFound || ok
 		if !ok || !s.offers(g) {
 			continue
 		}
@@ -191,8 +206,10 @@ func (p *pool) choose(w domain.Workload, g catalog.GPUClass) (placement, int, st
 		}
 	}
 	switch {
-	case !eligible && keepsDriver(w):
+	case !eligible && keepsDriver(w) && !driverFound:
 		return placement{}, 0, fmt.Sprintf("waiting for its machine to offer the %s driver again: its disk is there", w.Driver), false
+	case !eligible && diskBound:
+		return placement{}, 0, fmt.Sprintf("waiting for its machine to offer %s again: its disk is there", g.ID), false
 	case !eligible:
 		return placement{}, 0, fmt.Sprintf("waiting for a machine that can run %s to come online", g.ID), false
 	}

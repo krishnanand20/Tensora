@@ -82,6 +82,18 @@ map to fixed reasons in the control plane, and unknown codes read "its machine r
 ## Consequences
 
 - Restarting the control plane is safe, and placement rules live in one function with unit tests.
+- One controller reconciles a region at a time, through a lease in the store (`controller:<region>`); another
+  stands by. Each hub sees only the agents that sync with it, so until agents join over the network the
+  agent backend runs with SQLite (one host).
+- Agents apply desired state beside their sync loop, and every driver call has a time limit, so a long
+  driver call never makes a busy machine look offline; anything worth reporting cuts a waiting sync
+  short, so the long poll never delays news; drivers return promptly and report long work as
+  progressing. A report says which desired state it was applied from (`Applied`): a workload's status
+  from before the desired state that last changed its mode is read as still in progress, so an old
+  failure never answers a restart. Each admission is a new attempt, which an agent starts at most once;
+  a status answers only the attempt and mode the store expects, once the agent has applied them.
+- One controller leads a region: it renews its lease in the background and steps down if it can't, and
+  the in-process agent runs only in the leader, behind an OS lock that allows one agent per machine.
 - Every runtime action is now "place, then run". When a runtime is down, workloads hold their capacity
   while provisioning, and the provisioning timeout fails them, instead of waiting in pending indefinitely.
 - The Kubernetes backend takes the manifest options (storage class, images namespace, sandbox runtime

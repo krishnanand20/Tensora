@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -422,5 +423,127 @@ func TestStoppingWorkloadThatFailedEndsStopped(t *testing.T) {
 	h.expect(testutil.Acme, w.ID, domain.StateStopped)
 	if r := h.reasons(testutil.Acme, w.ID); r[len(r)-1] != "stopped: forced by test" {
 		t.Errorf("reason = %q", r[len(r)-1])
+	}
+}
+
+// One controller reconciles a region at a time: a second stands by, and takes over once the first
+// stops and its lease expires.
+func TestOneControllerPerRegion(t *testing.T) {
+	st := testutil.SeededStore(t)
+	cat := testutil.Catalog(t)
+	log := slog.New(slog.DiscardHandler)
+	opts := controller.Options{ProvisionTimeout: time.Minute, LeaseTTL: 100 * time.Millisecond}
+	first := controller.New(st, fake.New(nil), cat, opts, log, nil)
+	second := controller.New(st, fake.New(nil), cat, opts, log, nil)
+	ctx1, stop1 := context.WithCancel(context.Background())
+	ctx2, stop2 := context.WithCancel(context.Background())
+	defer stop2()
+	go func() { _ = first.Run(ctx1, 10*time.Millisecond) }()
+	select {
+	case <-first.Leading():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first controller never led")
+	}
+	done := make(chan error, 1)
+	go func() { done <- second.Run(ctx2, 10*time.Millisecond) }()
+	select {
+	case <-second.Leading():
+		t.Fatal("a second controller led while the first held the lease")
+	case <-time.After(300 * time.Millisecond):
+	}
+	stop1()
+	select {
+	case <-second.Leading():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the standby never took over")
+	}
+	stop2()
+	if err := <-done; err != nil {
+		t.Errorf("the standby, stopped: %v", err)
+	}
+}
+
+// leaseStore lets a test take a controller's lease away, or make renewing it fail.
+type leaseStore struct {
+	store.Store
+	mode atomic.Value // "", "taken", or "failing"
+}
+
+type leaseQueries struct {
+	store.Queries
+	mode string
+}
+
+func (q leaseQueries) TakeLease(ctx context.Context, name, holder string, now time.Time, ttl time.Duration) (bool, error) {
+	switch q.mode {
+	case "taken":
+		return false, nil
+	case "failing":
+		return false, errors.New("database unreachable")
+	}
+	return q.Queries.TakeLease(ctx, name, holder, now, ttl)
+}
+
+func (s *leaseStore) InTx(ctx context.Context, fn func(store.Queries) error) error {
+	mode, _ := s.mode.Load().(string)
+	return s.Store.InTx(ctx, func(q store.Queries) error { return fn(leaseQueries{q, mode}) })
+}
+
+// A controller that loses its lease, or can't renew it in time, stops, so it never reconciles
+// beside one that took over.
+func TestAControllerThatLosesItsLeaseStops(t *testing.T) {
+	for _, mode := range []string{"taken", "failing"} {
+		st := &leaseStore{Store: testutil.SeededStore(t)}
+		c := controller.New(st, fake.New(nil), testutil.Catalog(t),
+			controller.Options{ProvisionTimeout: time.Minute, LeaseTTL: 90 * time.Millisecond}, slog.New(slog.DiscardHandler), nil)
+		done := make(chan error, 1)
+		go func() { done <- c.Run(context.Background(), time.Hour) }() // passes are rare: renewing is separate
+		<-c.Leading()
+		st.mode.Store(mode)
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "lost the region's lease") {
+				t.Errorf("%s: err = %v", mode, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: the controller kept running after losing its lease", mode)
+		}
+	}
+}
+
+// An unknown status decides nothing, not even the provisioning timeout (the backend reports a lost
+// machine as failed in the end).
+func TestUnknownStatusDecidesNothing(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	w := h.create(testutil.Acme, "nb", 1)
+	h.backend.SetObserved(w.ID, cluster.ObservedUnknown)
+	h.reconcile()
+	h.clock.Advance(time.Hour)
+	h.reconcile()
+	h.expect(testutil.Acme, w.ID, domain.StateProvisioning)
+	if r := h.reasons(testutil.Acme, w.ID); r[len(r)-1] != "forced by test" {
+		t.Errorf("the last entry = %q; want the backend's reason as a note", r[len(r)-1])
+	}
+}
+
+// leader records when its controller starts leading.
+type leader struct {
+	*fake.Backend
+	led chan struct{}
+}
+
+func (l leader) Lead() { close(l.led) }
+
+// A backend that needs to know is told when its controller starts leading, before its first pass.
+func TestBackendsHearWhenTheirControllerLeads(t *testing.T) {
+	b := leader{fake.New(nil), make(chan struct{})}
+	c := controller.New(testutil.SeededStore(t), b, testutil.Catalog(t), controller.Options{ProvisionTimeout: time.Minute}, slog.New(slog.DiscardHandler), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = c.Run(ctx, time.Hour) }()
+	select {
+	case <-b.led:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the backend never heard its controller lead")
 	}
 }

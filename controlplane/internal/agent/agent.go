@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,7 +26,11 @@ import (
 
 // Driver runs workloads one way (ADR-0013): natively on macOS, in containers, or in VMs. Run, Stop,
 // and Remove must return promptly: long work, such as pulling an image, carries on in the
-// background and shows as progressing in Statuses. The agent gives each call driverTimeout.
+// background and shows as progressing in Statuses. The agent gives each call driverTimeout, and
+// Statuses statusTimeout. Stop leaves a workload stopped, not failed, even one that had crashed.
+// Attempts: before Run returns, the workload's status carries d.Attempt (so an old attempt's
+// failure is never reported for the new one), and Statuses reports each workload's attempt,
+// kept across agent restarts (so an attempt that ended is never started again).
 type Driver interface {
 	// Name is the driver's name in domain.LookupDriver.
 	Name() string
@@ -52,10 +57,18 @@ type Agent struct {
 	version   string
 	log       *slog.Logger
 
-	mu      sync.Mutex
-	inv     protocol.Inventory // the last detected
-	invAt   time.Time
-	refused map[uuid.UUID]protocol.Status // given but not run, reported until the next desired state
+	mu       sync.Mutex
+	inv      protocol.Inventory // the last detected
+	invAt    time.Time
+	invSent  protocol.Inventory            // the last the control plane received
+	refused  map[uuid.UUID]protocol.Status // given but not run, reported until the next desired state
+	applied  uint64                        // the desired state last applied
+	reported string                        // digest of the statuses last reported
+	// started is the attempt the agent last started each workload for. An attempt is started at
+	// most once: one that ended (failed, stopped by itself, gone) isn't restarted until a new one.
+	// startFailed keeps why an attempt couldn't start, reported for as long as it's asked for.
+	started     map[uuid.UUID]int64
+	startFailed map[uuid.UUID]protocol.Status
 }
 
 const (
@@ -64,40 +77,78 @@ const (
 	maxRetry       = 30 * time.Second
 	// driverTimeout bounds every driver call, so one stuck call can't stall the machine.
 	driverTimeout = 2 * time.Minute
+	// statusTimeout bounds reading the drivers' statuses, which every sync does.
+	statusTimeout = 30 * time.Second
+	// statusEvery is how often the agent looks for status changes to report between syncs.
+	statusEvery = 2 * time.Second
 )
 
+// desiredState is one desired state and the generation it came with.
+type desiredState struct {
+	gen       uint64
+	workloads []protocol.Desired
+}
+
 func New(conn protocol.Conn, drivers []Driver, inventory Inventory, version string, log *slog.Logger) *Agent {
-	return &Agent{conn: conn, drivers: drivers, inventory: inventory, version: version, log: log, refused: map[uuid.UUID]protocol.Status{}}
+	return &Agent{conn: conn, drivers: drivers, inventory: inventory, version: version, log: log,
+		refused: map[uuid.UUID]protocol.Status{}, started: map[uuid.UUID]int64{}, startFailed: map[uuid.UUID]protocol.Status{}}
 }
 
 // Run syncs until ctx is cancelled, retrying with backoff when the control plane can't be reached.
 // Applying runs separately, on the latest desired state, so the agent keeps reporting while a
-// driver works: a busy machine never looks offline.
+// driver works: a busy machine never looks offline. Anything worth reporting (a desired state
+// applied, a workload's status changing) cuts the waiting sync short, so the control plane hears
+// it at once rather than when the long poll ends.
 func (a *Agent) Run(ctx context.Context) error {
 	a.log.Info("agent started", "drivers", len(a.drivers))
-	latest := make(chan []protocol.Desired, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
+	latest := make(chan desiredState, 1)
+	kick := make(chan struct{}, 1)
+	report := func() {
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+	}
+	var workers sync.WaitGroup
+	workers.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case desired := <-latest:
-				a.Apply(ctx, desired)
+			case d := <-latest:
+				if a.Apply(ctx, d.workloads) {
+					a.mu.Lock()
+					a.applied = d.gen
+					a.mu.Unlock()
+					report()
+				}
 			}
 		}
-	}()
+	})
+	workers.Go(func() { a.watch(ctx, report) })
+	defer workers.Wait()
 	var gen uint64
 	sendInventory := true
 	wait := firstRetry
 	for {
-		resp, err := a.Sync(ctx, gen, sendInventory)
-		select {
-		case <-ctx.Done():
-			<-done
+		attempt, cancel := context.WithCancel(ctx)
+		kicked := make(chan bool, 1)
+		go func() {
+			select {
+			case <-kick:
+				cancel()
+				kicked <- true
+			case <-attempt.Done():
+				kicked <- false
+			}
+		}()
+		resp, err := a.Sync(attempt, gen, sendInventory)
+		cancel()
+		if <-kicked && ctx.Err() == nil {
+			continue // something changed: report it now
+		}
+		if ctx.Err() != nil {
 			return nil // stopping
-		default:
 		}
 		if err != nil {
 			a.log.Warn("sync failed; retrying", "err", redact.Secrets(err.Error()), "in", wait)
@@ -114,8 +165,60 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-latest:
 		default:
 		}
-		latest <- resp.Workloads
+		latest <- desiredState{gen: resp.Generation, workloads: resp.Workloads}
 	}
+}
+
+// watch looks at the drivers' statuses every statusEvery, and calls report when they differ from
+// what was last reported, such as a workload that finished starting.
+func (a *Agent) watch(ctx context.Context, report func()) {
+	ticker := time.NewTicker(statusEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		statuses, err := a.statuses(ctx)
+		if err != nil {
+			continue
+		}
+		a.mu.Lock()
+		changed := digest(a.reportable(statuses)) != a.reported
+		a.mu.Unlock()
+		if changed {
+			report()
+		}
+	}
+}
+
+// reportable is what a report says about statuses: refusals override what the drivers have, for a
+// workload the control plane asked for. Call with a.mu held.
+func (a *Agent) reportable(statuses map[uuid.UUID]held) []protocol.Status {
+	var out []protocol.Status
+	for id, st := range statuses {
+		if refused, ok := a.refused[id]; ok {
+			st.Status = refused
+		}
+		out = append(out, st.Status)
+	}
+	for id, st := range a.refused {
+		if _, ok := statuses[id]; !ok {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// digest identifies a set of statuses, whatever their order.
+func digest(statuses []protocol.Status) string {
+	lines := make([]string, len(statuses))
+	for i, st := range statuses {
+		lines[i] = fmt.Sprintf("%s %d %s %s", st.ID, st.Attempt, st.State, st.Code)
+	}
+	slices.Sort(lines)
+	return strings.Join(lines, "\n")
 }
 
 // Sync sends one report: every workload's status, and the inventory when it changed or is asked for.
@@ -128,26 +231,27 @@ func (a *Agent) Sync(ctx context.Context, gen uint64, sendInventory bool) (proto
 	if changed || sendInventory {
 		req.Inventory = &inv
 	}
+	// Applied is read before the statuses, so they're never older than what it claims.
+	a.mu.Lock()
+	req.Applied = a.applied
+	a.mu.Unlock()
 	statuses, err := a.statuses(ctx)
 	if err != nil {
 		return protocol.SyncResponse{}, err
 	}
 	a.mu.Lock()
-	for id, st := range statuses {
-		// A refusal is what the control plane needs to hear about a workload it asked for, even
-		// one a driver still has (such as a notebook it asked to move to another driver).
-		if refused, ok := a.refused[id]; ok {
-			st.Status = refused
-		}
-		req.Statuses = append(req.Statuses, st.Status)
-	}
-	for id, st := range a.refused {
-		if _, ok := statuses[id]; !ok {
-			req.Statuses = append(req.Statuses, st)
-		}
-	}
+	// A refusal is what the control plane needs to hear about a workload it asked for, even one a
+	// driver still has (such as a notebook it asked to move to another driver).
+	req.Statuses = a.reportable(statuses)
+	a.reported = digest(req.Statuses)
 	a.mu.Unlock()
-	return a.conn.Sync(ctx, req)
+	resp, err := a.conn.Sync(ctx, req)
+	if err == nil && req.Inventory != nil {
+		a.mu.Lock()
+		a.invSent = *req.Inventory // only now: a sync cut short or failed must send it again
+		a.mu.Unlock()
+	}
+	return resp, err
 }
 
 // detect refreshes the inventory every few minutes and reports whether it changed.
@@ -156,7 +260,9 @@ func (a *Agent) detect(ctx context.Context) (protocol.Inventory, bool, error) {
 	cached, at := a.inv, a.invAt
 	a.mu.Unlock()
 	if !at.IsZero() && time.Since(at) < inventoryEvery {
-		return cached, false, nil
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return cached, !reflect.DeepEqual(cached, a.invSent), nil
 	}
 	inv, err := a.inventory(ctx)
 	if err != nil {
@@ -168,7 +274,7 @@ func (a *Agent) detect(ctx context.Context) (protocol.Inventory, bool, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	changed := !reflect.DeepEqual(inv, a.inv)
+	changed := !reflect.DeepEqual(inv, a.invSent)
 	a.inv, a.invAt = inv, time.Now()
 	return inv, changed, nil
 }
@@ -187,7 +293,9 @@ type held struct {
 func (a *Agent) statuses(ctx context.Context) (map[uuid.UUID]held, error) {
 	out := map[uuid.UUID]held{}
 	for _, d := range a.drivers {
-		sts, err := d.Statuses(ctx)
+		callCtx, cancel := context.WithTimeout(ctx, statusTimeout)
+		sts, err := d.Statuses(callCtx)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("driver %s: %w", d.Name(), err)
 		}
@@ -218,29 +326,38 @@ func (a *Agent) driver(name string) Driver {
 // Apply converges the machine to the desired state: removals and parks first, which free GPUs,
 // then runs. A workload the drivers have that isn't listed is stopped and kept, never removed: the
 // list can leave one out only by mistake (another machine's identity, a different database), and
-// deleting data is never the safe guess. The operator's log says so.
-func (a *Agent) Apply(ctx context.Context, desired []protocol.Desired) {
+// deleting data is never the safe guess. The operator's log says so. It reports whether it went
+// through the whole list; one cut short (it couldn't read the drivers, or it's stopping) doesn't
+// count as applied.
+func (a *Agent) Apply(ctx context.Context, desired []protocol.Desired) bool {
 	refused := map[uuid.UUID]protocol.Status{}
 	defer func() {
 		a.mu.Lock()
 		a.refused = refused
 		a.mu.Unlock()
 	}()
+	listed := map[uuid.UUID]protocol.Desired{}
 	refuse := func(id uuid.UUID, state protocol.State, code protocol.Code) {
-		refused[id] = protocol.Status{ID: id, State: state, Code: code}
+		// For the attempt asked for, so the control plane never takes it for an older one's.
+		refused[id] = protocol.Status{ID: id, Attempt: listed[id].Attempt, State: state, Code: code}
 	}
 	have, err := a.statuses(ctx)
 	if err != nil {
 		a.log.Error("can't read workloads; nothing applied", "err", redact.Secrets(err.Error()))
-		return
+		return false
 	}
 	order := map[protocol.Mode]int{protocol.ModeRemove: 0, protocol.ModePark: 1, protocol.ModeRun: 2}
 	desired = slices.Clone(desired)
 	slices.SortStableFunc(desired, func(x, y protocol.Desired) int { return order[x.Mode] - order[y.Mode] })
 
-	listed := map[uuid.UUID]protocol.Desired{}
 	for _, d := range desired {
 		listed[d.ID] = d
+	}
+	for id := range a.started {
+		if _, ok := listed[id]; !ok {
+			delete(a.started, id)
+			delete(a.startFailed, id)
+		}
 	}
 	for id, h := range have {
 		if _, ok := listed[id]; !ok && active(h.State) {
@@ -250,6 +367,9 @@ func (a *Agent) Apply(ctx context.Context, desired []protocol.Desired) {
 		}
 	}
 	for _, d := range desired {
+		if ctx.Err() != nil {
+			return false
+		}
 		h, has := have[d.ID]
 		switch d.Mode {
 		case protocol.ModeRemove:
@@ -294,8 +414,31 @@ func (a *Agent) Apply(ctx context.Context, desired []protocol.Desired) {
 			}
 			h, has = current[d.ID] // now held by drv alone, if at all
 		}
-		if has && active(h.State) {
+		if has && active(h.State) && h.Attempt == d.Attempt {
 			continue // already running; it was checked when it started
+		}
+		if has && active(h.State) {
+			// Still running from another attempt, whose GPUs and spec may not be this one's: it
+			// stops first (keeping its data), and this attempt starts through every check once it
+			// has.
+			a.stop(ctx, h, refuse)
+			current, err := a.statuses(ctx)
+			if err != nil {
+				refuse(d.ID, protocol.StateProgressing, protocol.CodeDriverProblem)
+				continue
+			}
+			if h, has = current[d.ID]; has && active(h.State) {
+				refuse(d.ID, protocol.StateProgressing, "") // still stopping; started on a later pass
+				continue
+			}
+		}
+		if began, ok := a.started[d.ID]; (ok && began == d.Attempt) || (has && h.Attempt == d.Attempt) {
+			// This attempt was started and has ended: the control plane decides what's next. If it
+			// couldn't start at all, that's still the answer.
+			if failure, ok := a.startFailed[d.ID]; ok && failure.Attempt == d.Attempt {
+				refused[d.ID] = failure
+			}
+			continue
 		}
 		if !slices.Contains(drv.Accelerators(), d.Accelerator) || !slices.Contains(spec.Kinds, d.Kind) {
 			refuse(d.ID, protocol.StateFailed, protocol.CodeInvalid)
@@ -312,19 +455,30 @@ func (a *Agent) Apply(ctx context.Context, desired []protocol.Desired) {
 				continue
 			}
 		}
-		callCtx, cancel := context.WithTimeout(ctx, driverTimeout)
-		err := drv.Run(callCtx, d)
-		cancel()
-		if err != nil {
-			a.log.Error("driver couldn't run a workload", "workload", d.ID, "driver", d.Driver, "err", redact.Secrets(err.Error()))
-			code := protocol.CodeDriverProblem
-			var c codedError
-			if errors.As(err, &c) {
-				code = c.code
-			}
-			refuse(d.ID, protocol.StateFailed, code)
-		}
+		a.start(ctx, drv, d, refuse)
 	}
+	return true
+}
+
+// start runs one attempt of a workload, once: a failure to start is kept, and reported for as long
+// as that attempt is asked for.
+func (a *Agent) start(ctx context.Context, drv Driver, d protocol.Desired, refuse func(uuid.UUID, protocol.State, protocol.Code)) {
+	a.started[d.ID] = d.Attempt
+	delete(a.startFailed, d.ID)
+	callCtx, cancel := context.WithTimeout(ctx, driverTimeout)
+	err := drv.Run(callCtx, d)
+	cancel()
+	if err == nil {
+		return
+	}
+	a.log.Error("driver couldn't run a workload", "workload", d.ID, "driver", d.Driver, "err", redact.Secrets(err.Error()))
+	code := protocol.CodeDriverProblem
+	var c codedError
+	if errors.As(err, &c) {
+		code = c.code
+	}
+	refuse(d.ID, protocol.StateFailed, code)
+	a.startFailed[d.ID] = protocol.Status{ID: d.ID, Attempt: d.Attempt, State: protocol.StateFailed, Code: code}
 }
 
 func (a *Agent) stop(ctx context.Context, h held, refuse func(uuid.UUID, protocol.State, protocol.Code)) {
@@ -373,10 +527,11 @@ func (a *Agent) removeFrom(ctx context.Context, d Driver, id uuid.UUID, refuse f
 
 func active(s protocol.State) bool { return s == protocol.StateProgressing || s == protocol.StateReady }
 
-// freeDevices is how many devices of kind no active workload holds. Only a workload listed to run,
-// with its devices described and held by one driver, counts as holding just its own; any other
-// active workload (not listed, being parked or removed, described without devices, or held twice)
-// is assumed to hold them all until it stops: two users never share a GPU.
+// freeDevices is how many devices of kind no active workload holds. Only a workload running the
+// attempt it's listed to run, with its devices described and held by one driver, counts as holding
+// just its own; any other active workload (not listed, being parked or removed, described without
+// devices, held twice, or still running another attempt) is assumed to hold them all until it
+// stops: two users never share a GPU.
 func (a *Agent) freeDevices(kind domain.AcceleratorKind, current map[uuid.UUID]held, listed map[uuid.UUID]protocol.Desired) int {
 	a.mu.Lock()
 	total := 0
@@ -393,7 +548,7 @@ func (a *Agent) freeDevices(kind domain.AcceleratorKind, current map[uuid.UUID]h
 		}
 		d, ok := listed[id]
 		switch {
-		case !ok || d.Mode != protocol.ModeRun || d.Accelerator == "" || len(h.others) > 0:
+		case !ok || d.Mode != protocol.ModeRun || d.Accelerator == "" || len(h.others) > 0 || h.Attempt != d.Attempt:
 			return 0
 		case d.Accelerator == kind:
 			used += d.Devices

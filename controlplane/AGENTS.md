@@ -23,6 +23,7 @@ internal/service/       business operations, tenant-scoped; Transition() is the 
 internal/api/           HTTP handlers (stdlib net/http); thin, and calls the service only
 internal/auth/          authenticators: Local (API tokens and session cookies, with the CSRF check), OIDC (JWT), and Dev (header)
 internal/credential/    argon2id password hashing, and random tokens stored only as SHA-256 hashes
+internal/redact/        removes credentials from URIs and free text; imports nothing internal, so the agent can use it
 internal/client/        Go client for the /v1 API, used by the CLI commands (and tests); keeps exports byte-for-byte
 internal/cluster/       Backend interface (runtime-neutral: Capacity, Run, Park, Observe, Delete), labels, CheckJSONTypes
   manifests/            pure builders that return Kubernetes objects as map[string]any
@@ -34,6 +35,7 @@ internal/agent/         the node agent: syncs with the control plane and runs wo
   protocol/             the Sync messages, status codes, and the fixed reasons they map to
   drivers/sim/          a driver that runs nothing (development and tests only)
   drivers/inventory/    CPUs, memory, and GPUs, per OS behind build tags
+  drivers/hostlock/     one agent per machine: an OS lock (flock) on its state directory
 internal/metering/      usage accounting: events → metered intervals → hourly usage records (no money)
 internal/devseed/       dev tenants (acme and globex untrusted, internal trusted)
 internal/testutil/      fixtures: real catalog, seeded store, manual clock
@@ -61,7 +63,7 @@ told); and `domain` imports nothing internal.
 - **Time:** inject `now func() time.Time`, never call `time.Now()` inside logic, and store UTC.
 - **Errors:** expected failures are `domain.Errorf(code, ...)`, and their message is shown to users. Wrap everything else with `%w`; it becomes a logged 500.
 - **Logging:** `log/slog` with key-value pairs. Never log passwords, tokens, session values, SSH keys, agent certificates, or model URIs that carry credentials.
-- **Credentials:** store only hashes (`credential.HashPassword`, `credential.HashToken`), and show a new API token only in the response that creates it. Hash passwords outside any store transaction: argon2id is slow on purpose, and SQLite runs one transaction at a time. Errors that may echo inputs (runtime and Kubernetes errors) go through `service.RedactSecrets` first. Request-scoped lines use `requestInfoFrom(ctx).logAttrs()` in `api`: the request ID, plus the tenant and subject once authenticated.
+- **Credentials:** store only hashes (`credential.HashPassword`, `credential.HashToken`), and show a new API token only in the response that creates it. Hash passwords outside any store transaction: argon2id is slow on purpose, and SQLite runs one transaction at a time. Errors that may echo inputs (runtime, Kubernetes, and driver errors) go through `redact.Secrets` (or its wrapper `service.RedactSecrets`) first. Request-scoped lines use `requestInfoFrom(ctx).logAttrs()` in `api`: the request ID, plus the tenant and subject once authenticated.
 - **Transparency** (rule 14, ADR-0015): every controller decision gets a specific, human-readable `reason` in `service.Transition` (for example `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free`, not `queued`). A decision that doesn't change state, such as a retry, gets a note (`service.Note`). New fields a user supplied belong in the export. If a field can hold a secret, redact it in `service.ExportWorkload` and add a `Redaction` entry; never drop data silently.
 - **Reasons are a fixed vocabulary.** Never put raw runtime messages or errors into a reason: they can name internal objects, describe other tenants' use of the cluster, or echo credentials. `cluster.Backend.Observe` returns fixed text, and the raw error goes to the operator's log. Only trusted tenants see free-capacity counts.
 - **Agents are not trusted with policy** (ADR-0016). A machine's owner and region come from its registration, never from its agent. A driver's isolation comes from `domain.LookupDriver`, never from the agent. Inventory is bounded and validated (`Machine.Validate`, `agents.checkInventory`) before it's stored. What an agent reports reaches a timeline only as a fixed reason (`protocol.Reason`), never as its own text. Desired state is computed from the store, never kept only in memory.

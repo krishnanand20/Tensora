@@ -107,12 +107,19 @@ type Queries interface {
 	// a recorded placement, so capacity is never under-counted.
 	GPUsAllocated(ctx context.Context, region domain.Region) (map[string]int, error)
 	// SetPlacement records what a workload was admitted on: its class and, on agents, its machine
-	// and driver (uuid.Nil and "" for none). The machine must be allowed to host it with that driver
+	// and driver (uuid.Nil and "" for none), and counts a new attempt. The machine must be allowed to host it with that driver
 	// (domain.Machine.CanHost and Permits). Call it in the transaction that moves the workload to
 	// provisioning.
 	SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID, driver string) error
 	// WorkloadsForMetering returns workloads that are metered now or had an event at or after since.
 	WorkloadsForMetering(ctx context.Context, since time.Time) ([]domain.Workload, error)
+
+	// Leases, system-wide (controllers only). TakeLease takes or renews the lease name for holder
+	// until now+ttl, and reports whether holder has it: it's free, expired, or already holder's.
+	TakeLease(ctx context.Context, name, holder string, now time.Time, ttl time.Duration) (bool, error)
+	// ReleaseLease gives up holder's lease name, if holder has it, so a standby needn't wait for it
+	// to expire.
+	ReleaseLease(ctx context.Context, name, holder string) error
 
 	// Events (append-only) and usage.
 	AppendEvent(ctx context.Context, e domain.Event) error

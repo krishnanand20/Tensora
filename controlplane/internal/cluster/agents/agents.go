@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -76,6 +77,38 @@ type session struct {
 	generation    uint64 // bumped whenever the machine's desired state may have changed
 	wake          chan struct{}
 	statusesKnown bool // a sync has reported the agent's complete status
+	// inventoryRefused means the last report didn't fit the machine: it isn't offered for placement.
+	inventoryRefused bool
+	refusedReport    *protocol.Inventory // the last refused report, logged once
+	// applied is the generation the agent last finished applying. sent is each workload's attempt
+	// and mode in the desired state last sent, and sentAt the generation that first sent them. A
+	// status answers the store only for the attempt and mode it expects, once the agent has
+	// applied them; until then it's stale (an old failure after a restart, an old "ready" after
+	// a stop), and absence means nothing yet.
+	applied uint64
+	sent    map[uuid.UUID]instruction
+	sentAt  map[uuid.UUID]uint64
+}
+
+// instruction is what a desired state told an agent to do with one workload.
+type instruction struct {
+	attempt int64
+	mode    protocol.Mode
+}
+
+// modeFor is what the agent should do with a workload of kind in state: run it while it's admitted,
+// remove it when it's being deleted (and an endpoint whenever it's not running, as it keeps
+// nothing), and otherwise park it, keeping its disk.
+func modeFor(kind domain.WorkloadKind, state domain.State) protocol.Mode {
+	switch {
+	case state == domain.StateDeleting || state == domain.StateDeleted:
+		return protocol.ModeRemove
+	case state == domain.StateProvisioning || state == domain.StateRunning:
+		return protocol.ModeRun
+	case kind == domain.KindEndpoint:
+		return protocol.ModeRemove
+	}
+	return protocol.ModePark
 }
 
 func New(st store.Store, cat *catalog.Catalog, opts Options, log *slog.Logger, now func() time.Time) *Hub {
@@ -94,11 +127,30 @@ func New(st store.Store, cat *catalog.Catalog, opts Options, log *slog.Logger, n
 	if opts.LostAfter <= 0 {
 		opts.LostAfter = defaultLostAfter
 	}
-	return &Hub{store: st, catalog: cat, opts: opts, log: log, now: now, started: now().UTC(), sessions: map[uuid.UUID]*session{}}
+	return &Hub{store: st, catalog: cat, opts: opts, log: log, now: now, started: now(), sessions: map[uuid.UUID]*session{}}
 }
 
+// Session times keep Go's monotonic clock reading (no .UTC(), which strips it), so a change of the
+// wall clock can't make a machine look offline or lost. Only the stored LastSeenAt is UTC.
+
 // starting reports whether machines may still be reconnecting after the hub started.
-func (h *Hub) starting() bool { return h.now().UTC().Sub(h.started) < h.opts.OfflineAfter }
+func (h *Hub) starting() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.startingLocked()
+}
+
+// startingLocked is starting, for callers holding h.mu.
+func (h *Hub) startingLocked() bool { return h.now().Sub(h.started) < h.opts.OfflineAfter }
+
+// Lead starts the reconnect window when the hub's controller starts leading its region: machines'
+// agents sync only with a leader, so a standby that takes over late must not read their absence
+// until then as their being lost (cluster.Leader).
+func (h *Hub) Lead() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.started = h.now()
+}
 
 // Conn is the in-process connection for machine id's agent (Solo). Phase 2's HTTPS transport
 // calls Sync the same way, with the machine taken from its client certificate.
@@ -147,7 +199,7 @@ func (h *Hub) Sync(ctx context.Context, id uuid.UUID, req protocol.SyncRequest) 
 		return protocol.SyncResponse{}, domain.Errorf(domain.CodeForbidden, "machine %s is in region %s, not this control plane's %s", m.Name, m.Region, h.opts.Region)
 	}
 	s := h.session(id)
-	now := h.now().UTC()
+	now := h.now()
 
 	statuses := map[uuid.UUID]protocol.Status{}
 	for _, st := range req.Statuses {
@@ -159,7 +211,7 @@ func (h *Hub) Sync(ctx context.Context, id uuid.UUID, req protocol.SyncRequest) 
 		statuses[st.ID] = st
 	}
 	h.mu.Lock()
-	s.statuses, s.statusesKnown, s.lastSync = statuses, true, now
+	s.statuses, s.statusesKnown, s.lastSync, s.applied = statuses, true, now, req.Applied
 	h.mu.Unlock()
 
 	if err := h.recordInventory(ctx, s, m, req.Inventory, now); err != nil {
@@ -167,10 +219,11 @@ func (h *Hub) Sync(ctx context.Context, id uuid.UUID, req protocol.SyncRequest) 
 	}
 
 	h.mu.Lock()
-	gen, wake, has := s.generation, s.wake, s.hasInventory
+	gen, wake, has := s.generation, s.wake, s.hasInventory && !s.inventoryRefused
+	reported := s.hasInventory || s.inventoryRefused // even a refused report means waiting, not asking again at once
 	s.polling++
 	h.mu.Unlock()
-	if req.Generation == gen && has {
+	if req.Generation == gen && reported {
 		timer := time.NewTimer(h.opts.PollTimeout)
 		select {
 		case <-wake:
@@ -181,17 +234,45 @@ func (h *Hub) Sync(ctx context.Context, id uuid.UUID, req protocol.SyncRequest) 
 	}
 	h.mu.Lock()
 	s.polling--
-	s.lastSync = h.now().UTC()
+	s.lastSync = h.now()
 	gen = s.generation
 	h.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return protocol.SyncResponse{}, err
 	}
 	desired, err := h.desired(ctx, m)
-	return protocol.SyncResponse{Generation: gen, Workloads: desired, SendInventory: !has}, err
+	if err != nil {
+		return protocol.SyncResponse{}, err
+	}
+	h.mu.Lock()
+	h.recordSent(s, gen, desired)
+	h.mu.Unlock()
+	return protocol.SyncResponse{Generation: gen, Workloads: desired, SendInventory: !has}, nil
 }
 
-// recordInventory checks and stores a reported inventory, or writes a heartbeat now and then.
+// recordSent notes when each workload's attempt or mode was first sent. Call with h.mu held.
+func (h *Hub) recordSent(s *session, gen uint64, desired []protocol.Desired) {
+	if s.sent == nil {
+		s.sent, s.sentAt = map[uuid.UUID]instruction{}, map[uuid.UUID]uint64{}
+	}
+	listed := map[uuid.UUID]bool{}
+	for _, d := range desired {
+		listed[d.ID] = true
+		if in := (instruction{d.Attempt, d.Mode}); s.sent[d.ID] != in {
+			s.sent[d.ID], s.sentAt[d.ID] = in, gen
+		}
+	}
+	for id := range s.sent {
+		if !listed[id] {
+			delete(s.sent, id)
+			delete(s.sentAt, id)
+		}
+	}
+}
+
+// recordInventory checks and stores a reported inventory, or writes a heartbeat now and then. A
+// report that doesn't fit the machine is refused, and the machine isn't offered for placement until
+// a good one arrives; it still gets its desired state, so stops and removals reach it.
 func (h *Hub) recordInventory(ctx context.Context, s *session, m domain.Machine, inv *protocol.Inventory, now time.Time) error {
 	h.mu.Lock()
 	beat := s.hasInventory && now.Sub(s.heartbeatAt) >= heartbeatEvery
@@ -202,13 +283,20 @@ func (h *Hub) recordInventory(ctx context.Context, s *session, m domain.Machine,
 	if inv != nil {
 		checked, err := h.checkInventory(m, *inv)
 		if err != nil {
-			h.log.Warn("agent inventory refused", "machine", m.ID, "err", err)
-			return err
+			h.mu.Lock()
+			repeat := s.refusedReport != nil && reflect.DeepEqual(*s.refusedReport, *inv)
+			s.inventoryRefused, s.refusedReport = true, inv
+			h.mu.Unlock()
+			if !repeat {
+				h.log.Warn("agent inventory refused; the machine isn't offered for placement until its report fits it",
+					"machine", m.ID, "err", err)
+			}
+			return nil
 		}
 		m.OS, m.Arch, m.CPUs, m.MemoryMiB, m.Accelerators = checked.OS, checked.Arch, checked.CPUs, checked.MemoryMiB, checked.Accelerators
 		inv = &checked
 	}
-	m.LastSeenAt = now
+	m.LastSeenAt = now.UTC()
 	if err := h.store.InTx(ctx, func(q store.Queries) error { return q.UpdateMachineInventory(ctx, m) }); err != nil {
 		return fmt.Errorf("record machine %s: %w", m.ID, err)
 	}
@@ -216,7 +304,7 @@ func (h *Hub) recordInventory(ctx context.Context, s *session, m domain.Machine,
 	defer h.mu.Unlock()
 	s.heartbeatAt = now
 	if inv != nil {
-		s.inventory, s.hasInventory = *inv, true
+		s.inventory, s.hasInventory, s.inventoryRefused = *inv, true, false
 	}
 	return nil
 }
@@ -294,17 +382,8 @@ func (h *Hub) desired(ctx context.Context, m domain.Machine) ([]protocol.Desired
 	}
 	out := make([]protocol.Desired, 0, len(ws))
 	for _, w := range ws {
-		d := protocol.Desired{ID: w.ID, Kind: w.Kind, Driver: w.Driver, StrongIsolation: w.TenantID != m.TenantID}
-		switch {
-		case w.State == domain.StateDeleting:
-			d.Mode = protocol.ModeRemove
-		case w.State == domain.StateProvisioning || w.State == domain.StateRunning:
-			d.Mode = protocol.ModeRun
-		case w.Kind == domain.KindEndpoint:
-			d.Mode = protocol.ModeRemove
-		default:
-			d.Mode = protocol.ModePark
-		}
+		d := protocol.Desired{ID: w.ID, Mode: modeFor(w.Kind, w.State), Attempt: w.Attempt, Kind: w.Kind, Driver: w.Driver,
+			StrongIsolation: w.TenantID != m.TenantID}
 		if err := h.describe(&d, w); err != nil && d.Mode == protocol.ModeRun {
 			// Removed from the catalog since. An agent leaves a workload that's already running
 			// alone, and refuses to start one it can't be told how to run; the controller decides
@@ -348,7 +427,7 @@ func (h *Hub) describe(d *protocol.Desired, w domain.Workload) error {
 
 // online reports whether s's agent is in a sync now or synced recently. Call with h.mu held.
 func (h *Hub) online(s *session) bool {
-	return s.polling > 0 || h.now().UTC().Sub(s.lastSync) < h.opts.OfflineAfter
+	return s.polling > 0 || h.now().Sub(s.lastSync) < h.opts.OfflineAfter
 }
 
 // Capacity lists the machines connected now, with their devices per class, the CPUs and memory
@@ -378,7 +457,7 @@ func (h *Hub) Capacity(ctx context.Context) (cluster.Capacity, error) {
 	defer h.mu.Unlock()
 	out := cluster.Capacity{Machines: []cluster.MachineCapacity{}, Settling: settling}
 	for id, s := range h.sessions {
-		if !s.hasInventory || !h.online(s) {
+		if !s.hasInventory || s.inventoryRefused || !h.online(s) {
 			continue
 		}
 		mc := cluster.MachineCapacity{ID: id, Devices: h.catalog.DevicesOn(s.inventory.Accelerators, h.opts.Region),
@@ -430,17 +509,26 @@ func (h *Hub) Observe(_ context.Context, ref cluster.Ref) (cluster.Observed, str
 		if ok && s.lastSync.After(offlineSince) {
 			offlineSince = s.lastSync
 		}
-		switch away := h.now().UTC().Sub(offlineSince); {
-		case !ok && h.starting():
-			return cluster.ObservedProgressing, "", nil // reconnecting after a restart: nothing to say yet
+		switch away := h.now().Sub(offlineSince); {
+		case !ok && h.startingLocked():
+			return cluster.ObservedUnknown, "", nil // reconnecting after a restart: nothing to say yet
 		case away > h.opts.LostAfter:
 			return cluster.ObservedFailed, fmt.Sprintf("its machine has been offline for over %s", h.opts.LostAfter), nil
 		}
 		return cluster.ObservedUnknown, Offline, nil
 	}
+	// Only a report from after the agent applied what the store now expects answers it; anything
+	// earlier, even no status at all, is still in progress.
+	want := instruction{ref.Attempt, modeFor(ref.Kind, ref.State)}
+	if g, sent := s.sentAt[ref.ID]; !sent || s.sent[ref.ID] != want || s.applied < g {
+		return cluster.ObservedProgressing, "", nil
+	}
 	st, ok := s.statuses[ref.ID]
 	if !ok {
 		return cluster.ObservedAbsent, "", nil
+	}
+	if want.mode == protocol.ModeRun && st.Attempt != ref.Attempt {
+		return cluster.ObservedProgressing, "", nil // about another attempt
 	}
 	switch st.State {
 	case protocol.StateReady:
@@ -448,9 +536,9 @@ func (h *Hub) Observe(_ context.Context, ref cluster.Ref) (cluster.Observed, str
 	case protocol.StateStopped:
 		return cluster.ObservedStopped, "", nil
 	case protocol.StateFailed:
-		return cluster.ObservedFailed, protocol.Reason(st.Code), nil
+		return cluster.ObservedFailed, protocol.FailureReason(st.Code), nil
 	}
-	return cluster.ObservedProgressing, protocol.Reason(st.Code), nil
+	return cluster.ObservedProgressing, protocol.ProgressReason(st.Code), nil
 }
 
 // RegisterLocal finds or creates the record of the control plane's own machine, owned by the tenant

@@ -37,6 +37,7 @@ type data struct {
 	sessions    map[string]domain.Session
 	tokens      map[uuid.UUID]domain.APIToken
 	machines    map[uuid.UUID]domain.Machine
+	leases      map[string]lease
 	quotas      map[quotaKey]domain.Quota
 	workloads   map[uuid.UUID]domain.Workload
 	events      []domain.Event
@@ -51,6 +52,7 @@ func New() *Store {
 		sessions:  map[string]domain.Session{},
 		tokens:    map[uuid.UUID]domain.APIToken{},
 		machines:  map[uuid.UUID]domain.Machine{},
+		leases:    map[string]lease{},
 		quotas:    map[quotaKey]domain.Quota{},
 		workloads: map[uuid.UUID]domain.Workload{},
 		usage:     map[usageKey]domain.UsageRecord{},
@@ -81,6 +83,7 @@ func (d *data) clone() data {
 	for id, m := range d.machines {
 		c.machines[id] = cloneMachine(m)
 	}
+	c.leases = maps.Clone(d.leases)
 	c.quotas = maps.Clone(d.quotas)
 	c.workloads = make(map[uuid.UUID]domain.Workload, len(d.workloads))
 	for id, w := range d.workloads {
@@ -89,6 +92,26 @@ func (d *data) clone() data {
 	c.events = slices.Clone(d.events)
 	c.usage = maps.Clone(d.usage)
 	return c
+}
+
+type lease struct {
+	holder  string
+	expires time.Time
+}
+
+func (q *queries) TakeLease(_ context.Context, name, holder string, now time.Time, ttl time.Duration) (bool, error) {
+	if l, ok := q.d.leases[name]; ok && l.holder != holder && now.Before(l.expires) {
+		return false, nil
+	}
+	q.d.leases[name] = lease{holder: holder, expires: now.Add(ttl)}
+	return true, nil
+}
+
+func (q *queries) ReleaseLease(_ context.Context, name, holder string) error {
+	if l, ok := q.d.leases[name]; ok && l.holder == holder {
+		delete(q.d.leases, name)
+	}
+	return nil
 }
 
 func cloneWorkload(w domain.Workload) domain.Workload {
@@ -500,6 +523,7 @@ func (q *queries) SetPlacement(_ context.Context, id uuid.UUID, placedClass stri
 		}
 	}
 	w.PlacedClass, w.MachineID, w.Driver = placedClass, machineID, driver
+	w.Attempt++
 	q.d.workloads[id] = w
 	return nil
 }

@@ -137,6 +137,7 @@ checks each machine:
 | Datacenter admin network not firewalled | Open | Phase 3 |
 | The controller's ServiceAccount can create pods in any namespace | Accepted | Kind allowlist, RBAC limited to listed resources, audit logging |
 | Hosts can see guest data | **Accepted and disclosed** | Product warnings; confidential computing out of scope |
+| Before machines are shared (Phase 4) | Open | Two things to change first: a CPU workload under `macos-native` can still use the Mac's GPU through Metal, so on an Apple machine any active weak-driver workload must count as holding the GPU; and drivers must refuse to create a fresh disk for a workload that ran before (step 7). Placement uses only the tenant's own machines until then. |
 | Slow guessing from many addresses, and making sign-in busy | Accepted (mitigated) | Per-caller limits, a cap on concurrent password checks, and refusing common passwords keep guessing slow, but someone with many IPv4 addresses or IPv6 /48s can still guess slowly, or keep the password checks busy so sign-in answers "busy" for a while. Use a long, uncommon password. Before exposing sign-in to the internet, put a rate-limiting proxy in front; Phase 2 adds per-account alerts. |
 | Admission outcomes reveal whether a GPU class is full | Accepted (mitigated) | Untrusted tenants get no free-GPU counts, but queued versus admitted still shows whether a class has room. When sharing lands (Phase 4), compute capacity only over machines that user may use, so the signal covers only what they could run on anyway. |
 

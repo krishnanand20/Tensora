@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,9 @@ type Options struct {
 	// admits another region's workloads. Empty means local, the region of a Solo install.
 	Region           domain.Region
 	ProvisionTimeout time.Duration
+	// LeaseTTL is how long the region's lease lasts between renewals; zero means three intervals,
+	// at least 30 seconds.
+	LeaseTTL time.Duration
 }
 
 type Controller struct {
@@ -38,6 +42,10 @@ type Controller struct {
 	opts    Options
 	log     *slog.Logger
 	now     func() time.Time
+
+	holder  string        // this process, in the region's lease
+	leading chan struct{} // closed once this controller holds the lease
+	lead    sync.Once
 }
 
 func New(st store.Store, b cluster.Backend, cat *catalog.Catalog, opts Options, log *slog.Logger, now func() time.Time) *Controller {
@@ -47,24 +55,133 @@ func New(st store.Store, b cluster.Backend, cat *catalog.Catalog, opts Options, 
 	if opts.Region == "" {
 		opts.Region = domain.RegionLocal
 	}
-	return &Controller{store: st, backend: b, catalog: cat, opts: opts, log: log, now: now}
+	return &Controller{store: st, backend: b, catalog: cat, opts: opts, log: log, now: now,
+		holder: uuid.NewString(), leading: make(chan struct{})}
 }
 
-// Run reconciles every interval until ctx is cancelled.
+// Leading is closed once this controller holds its region's lease and reconciles. Work that must
+// happen once per region, such as running this machine's in-process agent, waits for it.
+func (c *Controller) Leading() <-chan struct{} { return c.leading }
+
+// errLostLease stops a controller that no longer holds its region's lease.
+var errLostLease = errors.New("lost the region's lease (another controller took over, or it couldn't be renewed in time)")
+
+// Run reconciles every interval until ctx is cancelled. Only one controller reconciles a region
+// at a time (ADR-0016): another waits as a standby until the lease is free. The leader renews its
+// lease in the background, every third of its time to live; if it can't renew before the lease
+// would run out, or finds another holding it, it cancels what it's doing and stops with an error,
+// so it never reconciles beside the one that took over, and whatever supervises it starts it again
+// as a standby. Call Release once everything that depends on leading has stopped.
 func (c *Controller) Run(ctx context.Context, interval time.Duration) error {
-	c.log.Info("controller started", "interval", interval)
+	ttl := c.leaseTTL(interval)
+	renewed, err := c.waitForLease(ctx, ttl, interval)
+	if err != nil || ctx.Err() != nil {
+		return err
+	}
+	leading, stepDown := context.WithCancelCause(ctx)
+	defer stepDown(nil)
+	go c.renew(leading, stepDown, renewed, ttl)
+	c.lead.Do(func() {
+		if l, ok := c.backend.(cluster.Leader); ok {
+			l.Lead()
+		}
+		c.log.Info("controller started", "region", c.opts.Region, "interval", interval)
+		close(c.leading)
+	})
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if err := c.ReconcileOnce(ctx); err != nil {
+		if err := c.ReconcileOnce(leading); err != nil && leading.Err() == nil {
 			c.log.Error("reconcile pass failed", "err", service.RedactSecrets(err.Error()))
 		}
 		select {
-		case <-ctx.Done():
+		case <-leading.Done():
+			if cause := context.Cause(leading); errors.Is(cause, errLostLease) {
+				return fmt.Errorf("region %s: %w", c.opts.Region, cause)
+			}
 			return nil
 		case <-ticker.C:
 		}
 	}
+}
+
+func (c *Controller) leaseTTL(interval time.Duration) time.Duration {
+	if c.opts.LeaseTTL > 0 {
+		return c.opts.LeaseTTL
+	}
+	return max(3*interval, 30*time.Second)
+}
+
+func (c *Controller) leaseName() string { return "controller:" + string(c.opts.Region) }
+
+// waitForLease stands by until this controller holds the lease, and returns when it took it.
+func (c *Controller) waitForLease(ctx context.Context, ttl, interval time.Duration) (time.Time, error) {
+	waiting := false
+	for {
+		at := c.now()
+		held, err := c.takeLease(ctx, at, ttl)
+		switch {
+		case held:
+			return at, nil
+		case err != nil && ctx.Err() == nil:
+			c.log.Error("couldn't take the region's lease; retrying", "region", c.opts.Region, "err", service.RedactSecrets(err.Error()))
+		case err == nil && !waiting:
+			c.log.Warn("another controller reconciles this region; standing by until its lease is free", "region", c.opts.Region)
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return time.Time{}, nil
+		case <-time.After(interval):
+		}
+	}
+}
+
+// renew keeps the lease while leading. It steps down when another holds it, or when it hasn't
+// renewed for two thirds of the lease's time, before the lease could run out under it.
+func (c *Controller) renew(ctx context.Context, stepDown context.CancelCauseFunc, renewed time.Time, ttl time.Duration) {
+	ticker := time.NewTicker(ttl / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		at := c.now()
+		held, err := c.takeLease(ctx, at, ttl)
+		switch {
+		case held:
+			renewed = at
+		case err == nil:
+			stepDown(errLostLease)
+			return
+		case c.now().Sub(renewed) >= ttl*2/3:
+			c.log.Error("couldn't renew the region's lease in time", "err", service.RedactSecrets(err.Error()))
+			stepDown(errLostLease)
+			return
+		}
+	}
+}
+
+// Release gives up the region's lease, so a standby can take over at once. Call it after Run has
+// returned and everything that depended on leading (the in-process agent) has stopped.
+func (c *Controller) Release(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := c.store.InTx(ctx, func(q store.Queries) error { return q.ReleaseLease(ctx, c.leaseName(), c.holder) }); err != nil {
+		c.log.Warn("couldn't release the region's lease; a standby takes over when it expires", "err", service.RedactSecrets(err.Error()))
+	}
+}
+
+func (c *Controller) takeLease(ctx context.Context, at time.Time, ttl time.Duration) (bool, error) {
+	var held bool
+	err := c.store.InTx(ctx, func(q store.Queries) error {
+		var err error
+		held, err = q.TakeLease(ctx, c.leaseName(), c.holder, at.UTC(), ttl)
+		return err
+	})
+	return held, err
 }
 
 // ReconcileOnce runs one pass. Per-workload failures are logged and retried next pass;
@@ -177,8 +294,11 @@ func (c *Controller) observe(ctx context.Context) error {
 		}
 		switch {
 		case obs == cluster.ObservedUnknown:
-			// Nothing is decided on it, but the owner hears why it's waiting.
-			c.note(ctx, w, reason)
+			// Nothing is decided on it, not even the provisioning timeout: the runtime can't say,
+			// such as while its machine reconnects after a restart. A machine that stays away is
+			// reported failed by the backend in the end. The owner hears why it's waiting.
+			c.noteIf(ctx, w, reason)
+			continue
 		case obs == cluster.ObservedFailed:
 			c.fail(ctx, w, "workload failed: "+reason)
 			continue
@@ -204,7 +324,11 @@ func (c *Controller) observe(ctx context.Context) error {
 		// Still provisioning, including when the move to running didn't happen: a workload must
 		// never hold GPUs forever.
 		if w.State == domain.StateProvisioning && c.now().Sub(w.UpdatedAt) > c.opts.ProvisionTimeout {
-			c.fail(ctx, w, fmt.Sprintf("not ready after %s: %s", c.opts.ProvisionTimeout, reason))
+			why := fmt.Sprintf("not ready after %s", c.opts.ProvisionTimeout)
+			if reason != "" {
+				why += ": " + reason
+			}
+			c.fail(ctx, w, why)
 		}
 	}
 	return nil
@@ -254,7 +378,9 @@ func (c *Controller) park(ctx context.Context) error {
 			// parked when the machine returns.
 			c.transition(ctx, w, domain.StateStopped, "stopped: "+reason)
 		case cluster.ObservedUnknown:
-			c.note(ctx, w, reason)
+			c.noteIf(ctx, w, reason)
+		case cluster.ObservedProgressing:
+			c.noteAgentProblem(ctx, w, reason)
 		}
 	}
 	return nil
@@ -284,10 +410,28 @@ func (c *Controller) remove(ctx context.Context) error {
 		case cluster.ObservedAbsent:
 			c.transition(ctx, w, domain.StateDeleted, "deleted")
 		case cluster.ObservedUnknown:
-			c.note(ctx, w, reason)
+			c.noteIf(ctx, w, reason)
+		case cluster.ObservedProgressing:
+			c.noteAgentProblem(ctx, w, reason)
 		}
 	}
 	return nil
+}
+
+// noteIf notes reason unless there's nothing to say.
+func (c *Controller) noteIf(ctx context.Context, w domain.Workload, reason string) {
+	if reason != "" {
+		c.note(ctx, w, reason)
+	}
+}
+
+// noteAgentProblem notes why a stop or delete on a node agent hasn't finished, such as a driver
+// that couldn't stop or remove it (rule 14). Kubernetes' progress while stopping ("stopping the
+// VM") is routine, so it isn't noted.
+func (c *Controller) noteAgentProblem(ctx context.Context, w domain.Workload, reason string) {
+	if w.MachineID != uuid.Nil {
+		c.noteIf(ctx, w, reason)
+	}
 }
 
 // run asks the runtime to run a placed workload.
@@ -403,7 +547,9 @@ func (c *Controller) place(ctx context.Context, w domain.Workload, pl placement,
 			w.PlacedClass, w.MachineID, w.Driver = pl.class, pl.machineID, pl.driver
 			return nil
 		})
+	// As the store now has it: placed, provisioning, and a new attempt.
 	w.PlacedClass, w.MachineID, w.Driver, w.State = pl.class, pl.machineID, pl.driver, domain.StateProvisioning
+	w.Attempt++
 	return w, ok
 }
 
@@ -462,7 +608,7 @@ func (c *Controller) tenant(ctx context.Context, w domain.Workload) (domain.Tena
 // ref names the workload in its runtime.
 func (c *Controller) ref(ctx context.Context, w domain.Workload) (cluster.Ref, error) {
 	t, err := c.tenant(ctx, w)
-	return cluster.Ref{ID: w.ID, TenantSlug: t.Slug, Kind: w.Kind, MachineID: w.MachineID}, err
+	return cluster.Ref{ID: w.ID, TenantSlug: t.Slug, Kind: w.Kind, MachineID: w.MachineID, State: w.State, Attempt: w.Attempt}, err
 }
 
 // spec is everything the runtime needs to run w as placed.
