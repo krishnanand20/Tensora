@@ -146,3 +146,52 @@ func TestMeterOnceAccountsClosedHoursExactlyOnce(t *testing.T) {
 		return nil
 	})
 }
+
+// A usage record is permanent, so none is written without a placement: the hours wait until the
+// controller records one, then they're accounted (none lost, none with an empty class).
+func TestUnplacedWorkloadsAreAccountedOnlyOncePlaced(t *testing.T) {
+	st := testutil.SeededStore(t)
+	ctx := context.Background()
+	var tenantID uuid.UUID
+	w := domain.Workload{
+		ID: uuid.New(), Name: "w", Kind: domain.KindNotebook, State: domain.StateRunning, ImageID: "pytorch-notebook",
+		GPUClass: "l40s-48gb", GPUCount: 1, Params: map[string]string{}, CreatedBy: "t", CreatedAt: at(0), UpdatedAt: at(2),
+		Region: domain.RegionLocal,
+	}
+	err := st.InTx(ctx, func(q store.Queries) error {
+		tn, err := q.TenantBySlug(ctx, "acme")
+		if err != nil {
+			return err
+		}
+		tenantID, w.TenantID = tn.ID, tn.ID
+		if err := q.CreateWorkload(ctx, w); err != nil {
+			return err
+		}
+		for i, to := range []domain.State{domain.StatePending, domain.StateProvisioning, domain.StateRunning} {
+			if err := q.AppendEvent(ctx, domain.Event{WorkloadID: w.ID, To: to, Reason: "test", At: at(i)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := metering.New(st, slog.New(slog.DiscardHandler), func() time.Time { return at(90) })
+	if n, err := m.MeterOnce(ctx); err != nil || n != 0 {
+		t.Fatalf("unplaced: wrote %d, %v; want nothing yet", n, err)
+	}
+	if err := st.InTx(ctx, func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "l40s-48gb", uuid.Nil) }); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := m.MeterOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("placed: wrote %d, %v; want the waiting hour", n, err)
+	}
+	_ = st.InTx(ctx, func(q store.Queries) error {
+		recs, _ := q.Usage(ctx, tenantID, base, base.Add(24*time.Hour))
+		if len(recs) != 1 || recs[0].GPUClass != "l40s-48gb" {
+			t.Errorf("records = %+v", recs)
+		}
+		return nil
+	})
+}

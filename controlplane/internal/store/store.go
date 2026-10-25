@@ -43,6 +43,30 @@ type Queries interface {
 	GetMachine(ctx context.Context, tenantID, id uuid.UUID) (domain.Machine, error)
 	ListMachines(ctx context.Context, tenantID uuid.UUID) ([]domain.Machine, error)
 
+	// Local accounts (ADR-0012). Sign-in looks a user up before any tenant is known, so these are
+	// system-wide: request handlers reach them only through the service's account methods.
+	CountUsers(ctx context.Context) (int, error)
+	// LockUsers makes "is this the first account?" and creating it atomic: Postgres locks the
+	// users table until the transaction ends; SQLite and memstore run one transaction at a time.
+	LockUsers(ctx context.Context) error
+	CreateUser(ctx context.Context, u domain.User) error
+	UserByEmail(ctx context.Context, email string) (domain.User, error)
+	UserByID(ctx context.Context, id uuid.UUID) (domain.User, error)
+	SetPasswordHash(ctx context.Context, userID uuid.UUID, hash string) error
+	CreateSession(ctx context.Context, s domain.Session) error
+	SessionByTokenHash(ctx context.Context, hash string) (domain.Session, error)
+	DeleteSession(ctx context.Context, hash string) error
+	// DeleteOtherSessions signs a user out of every session except keepHash ("" means all of them).
+	DeleteOtherSessions(ctx context.Context, userID uuid.UUID, keepHash string) error
+	DeleteExpiredSessions(ctx context.Context, now time.Time) error
+	CreateAPIToken(ctx context.Context, t domain.APIToken) error
+	APITokenByHash(ctx context.Context, hash string) (domain.APIToken, error)
+	TouchAPIToken(ctx context.Context, id uuid.UUID, at time.Time) error
+	// API tokens, user-scoped: a user lists and revokes only their own (rule 8). Revoking another
+	// user's token, or one that doesn't exist, is not found; revoking a revoked one is a no-op.
+	ListAPITokens(ctx context.Context, userID uuid.UUID) ([]domain.APIToken, error)
+	RevokeAPIToken(ctx context.Context, userID, id uuid.UUID, at time.Time) error
+
 	// Workloads, tenant-scoped. Deleted workloads are invisible.
 	CreateWorkload(ctx context.Context, w domain.Workload) error
 	GetWorkload(ctx context.Context, tenantID, id uuid.UUID) (domain.Workload, error)
@@ -59,12 +83,16 @@ type Queries interface {
 	// workload is still in state from. Use service.Transition, not this, directly.
 	UpdateWorkloadState(ctx context.Context, id uuid.UUID, from, to domain.State, at time.Time) error
 
-	// Workloads, system-wide (controller / metering only).
-	WorkloadsInStates(ctx context.Context, states ...domain.State) ([]domain.Workload, error)
-	// GPUsAllocated sums gpu_count by placed class over placed workloads whose state HoldsCapacity.
-	GPUsAllocated(ctx context.Context) (map[string]int, error)
+	// Workloads, system-wide and per region (controller / metering only). A controller handles one
+	// region (ADR-0009), so it never sees, counts, or admits another region's workloads.
+	WorkloadsInStates(ctx context.Context, region domain.Region, states ...domain.State) ([]domain.Workload, error)
+	// GPUsAllocated sums gpu_count by class over the region's workloads whose state HoldsCapacity.
+	// It counts the placed class, or the requested class for a workload that holds capacity without
+	// a recorded placement, so capacity is never under-counted.
+	GPUsAllocated(ctx context.Context, region domain.Region) (map[string]int, error)
 	// SetPlacement records what a workload was admitted on: its class and, on agents, its machine
-	// (uuid.Nil for none). Call it in the transaction that moves the workload to provisioning.
+	// (uuid.Nil for none). The machine must be allowed to host it (domain.Machine.CanHost). Call it
+	// in the transaction that moves the workload to provisioning.
 	SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error
 	// WorkloadsForMetering returns workloads that are metered now or had an event at or after since.
 	WorkloadsForMetering(ctx context.Context, since time.Time) ([]domain.Workload, error)
@@ -81,6 +109,12 @@ type Queries interface {
 }
 
 func NotFound(what string) error { return domain.Errorf(domain.CodeNotFound, "%s not found", what) }
+
+// InvalidRegion refuses a record without a valid region: every workload and usage record belongs
+// to exactly one (rule 9).
+func InvalidRegion(what string, r domain.Region) error {
+	return domain.Errorf(domain.CodeInvalid, "%s needs a valid region, got %q", what, r)
+}
 
 func StaleState(id uuid.UUID, from domain.State) error {
 	return domain.Errorf(domain.CodeConflict, "workload %s is no longer %s", id, from)

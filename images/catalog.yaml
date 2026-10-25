@@ -1,17 +1,23 @@
-# Tensora launch catalog: the GPU classes and images users can choose from.
-# Loaded by the control plane (TENSORA_CATALOG_PATH) and deployed as a ConfigMap by the
-# tensora chart. Field reference: controlplane/internal/catalog/catalog.go.
+# Tensora launch catalog for Solo and Lab installs (and `make dev`): the regions, classes, and images
+# users can choose from. Loaded by the control plane (TENSORA_CATALOG_PATH). The Datacenter profile
+# uses deploy/catalog.yaml instead. Field reference: controlplane/internal/catalog/catalog.go.
 # Control plane tests load this file, so `make test-cp` catches mistakes here.
-#
-# The classes below are the Datacenter profile's NVIDIA GPUs. Planned (ADR-0009, 0010, 0013): a
-# top-level `regions:` list (Solo: `local`), an `accelerator` (nvidia | apple | amd | cpu) and
-# `regions: [...]` on every class, Apple Silicon classes (e.g. apple-m4-max-128gb), CPU classes, and
-# per-platform runtimes (vLLM, MLX, llama.cpp). The loader rejects unknown fields, so these arrive
-# together with the code change (roadmap Phase 1 task breakdown).
 
+# Locations this installation offers (ADR-0009). The first is the default for workloads that don't
+# name one. A Solo install has one region, local. Region IDs are lowercase; location-based IDs, such
+# as in-mum-1 or eu-fra-1, are recommended. An ID can't change once workloads exist in it.
+regions:
+  - id: local
+    display_name: This installation
+
+# What a workload runs on. Each class has an accelerator (nvidia, apple, amd, or cpu) and, optionally,
+# the regions offering it (none listed = every region). NVIDIA classes run on Kubernetes (Datacenter)
+# or, with the node agent, on Linux machines; Apple and CPU classes run on node agents (roadmap
+# steps 6 and 7), so the Kubernetes backend reports no capacity for them.
 gpu_classes:
   - id: l40s-48gb
     display_name: NVIDIA L40S 48GB
+    accelerator: nvidia
     vram_gb: 48
     # Advertised by the GPU Operator device plugin on nodes in "container" mode.
     container_resource: nvidia.com/gpu
@@ -27,6 +33,7 @@ gpu_classes:
 
   - id: a100-80gb
     display_name: NVIDIA A100 80GB PCIe
+    accelerator: nvidia
     vram_gb: 80
     container_resource: nvidia.com/gpu
     vm_device_name: nvidia.com/GA100_A100_PCIE_80GB
@@ -40,6 +47,7 @@ gpu_classes:
   # tenants) here. Operators decide for their own deployment. See docs/architecture/gpu-sharing.md.
   - id: rtx4090-24gb
     display_name: NVIDIA GeForce RTX 4090 24GB
+    accelerator: nvidia
     vram_gb: 24
     container_resource: nvidia.com/gpu
     vm_device_name: nvidia.com/AD102_GEFORCE_RTX_4090
@@ -49,25 +57,95 @@ gpu_classes:
     memory_gib_per_gpu: 48
     internal_only: true
 
+  # Apple Silicon: the Mac's GPU (Metal) with its unified memory, sized by memory because that's
+  # what decides which models fit. One unit is the whole GPU of one Mac. Owners only (rule 4):
+  # native macOS execution isn't offered to invited or community users.
+  - id: apple-silicon-16gb
+    display_name: Apple Silicon GPU, 16 GB unified memory
+    accelerator: apple
+    vram_gb: 16
+    vcpus_per_gpu: 8
+    memory_gib_per_gpu: 16
+    internal_only: true
+
+  - id: apple-silicon-32gb
+    display_name: Apple Silicon GPU, 32 GB unified memory
+    accelerator: apple
+    vram_gb: 32
+    vcpus_per_gpu: 10
+    memory_gib_per_gpu: 32
+    internal_only: true
+
+  - id: apple-silicon-64gb
+    display_name: Apple Silicon GPU, 64 GB unified memory
+    accelerator: apple
+    vram_gb: 64
+    vcpus_per_gpu: 12
+    memory_gib_per_gpu: 64
+    internal_only: true
+
+  - id: apple-silicon-128gb
+    display_name: Apple Silicon GPU, 128 GB unified memory
+    accelerator: apple
+    vram_gb: 128
+    vcpus_per_gpu: 14
+    memory_gib_per_gpu: 128
+    internal_only: true
+
+  # CPU-only sizes, for data prep, small models, and opt-in fallback when GPUs are busy (ADR-0010).
+  # gpu_count counts units of this size. CPU inference is roughly 10-50x slower than a GPU.
+  - id: cpu-4c-16g
+    display_name: CPU, 4 vCPUs and 16 GiB
+    accelerator: cpu
+    vram_gb: 0
+    vcpus_per_gpu: 4
+    memory_gib_per_gpu: 16
+
+  - id: cpu-16c-64g
+    display_name: CPU, 16 vCPUs and 64 GiB
+    accelerator: cpu
+    vram_gb: 0
+    vcpus_per_gpu: 16
+    memory_gib_per_gpu: 64
+
+# What runs. Each image lists runtimes in order of preference; a workload uses the first one that
+# supports its class's accelerator. A runtime's ref is what the backend runs: on Kubernetes, a CDI
+# DataSource (vm), a container image (notebook), or a KServe ClusterServingRuntime (endpoint); on a
+# node agent, a name its driver understands (roadmap step 7).
 images:
-  # kind: vm → ref is a CDI DataSource in the images namespace (images/vm/).
   - id: ubuntu-24.04-cuda
     display_name: Ubuntu 24.04 + NVIDIA driver
     kind: vm
-    ref: ubuntu-24.04-cuda
     root_disk_gib: 100
     description: A full VM with whole GPUs passed through. Log in over SSH with your key.
+    runtimes:
+      - accelerators: [nvidia]
+        ref: ubuntu-24.04-cuda # CDI DataSource in the images namespace (images/vm/)
 
-  # kind: notebook → ref is a container image (images/containers/).
   - id: pytorch-notebook
     display_name: PyTorch + JupyterLab
     kind: notebook
-    ref: ghcr.io/your-org/tensora-pytorch-notebook:0.1.0
-    description: JupyterLab with PyTorch and CUDA. Your work directory persists across restarts.
+    description: JupyterLab with PyTorch, on CUDA, Metal, or CPU. Your work directory persists across restarts.
+    runtimes:
+      - accelerators: [nvidia, cpu]
+        ref: ghcr.io/your-org/tensora-pytorch-notebook:0.1.0 # container image (images/containers/)
+      - accelerators: [apple]
+        ref: jupyterlab-pytorch-mps # macos-native driver: a uv-managed environment (planned)
 
-  # kind: endpoint → ref is a KServe ClusterServingRuntime (deploy/charts/cluster-config).
-  - id: vllm
-    display_name: vLLM (OpenAI-compatible API)
+  - id: openai-endpoint
+    display_name: OpenAI-compatible model endpoint
     kind: endpoint
-    ref: tensora-vllm
-    description: Serve a safetensors model from Hugging Face or S3 behind an OpenAI-compatible API.
+    description: Serve a Hugging Face or S3 model behind an OpenAI-compatible API, with vLLM on NVIDIA, MLX on Apple Silicon, or llama.cpp.
+    runtimes:
+      - accelerators: [nvidia]
+        server: vllm
+        model_format: safetensors
+        ref: tensora-vllm # KServe ClusterServingRuntime (deploy/charts/cluster-config)
+      - accelerators: [apple]
+        server: mlx
+        model_format: safetensors
+        ref: mlx-lm # macos-native driver (planned)
+      - accelerators: [nvidia, apple, amd, cpu]
+        server: llama.cpp
+        model_format: gguf # refused until tensora-ml validate checks GGUF (rule 6)
+        ref: llama-server # docker and macos-native drivers (planned)

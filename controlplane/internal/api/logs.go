@@ -49,16 +49,19 @@ type outputLogsView struct {
 }
 
 type exportView struct {
-	Format     string            `json:"format"`
-	ExportedAt time.Time         `json:"exported_at"`
-	ExportedBy string            `json:"exported_by"`
-	Workload   workloadView      `json:"workload"`
-	CreatedBy  string            `json:"created_by"`
-	Params     map[string]string `json:"params"`
-	Events     []eventView       `json:"events"`
-	Usage      []usageView       `json:"usage"`
-	OutputLogs outputLogsView    `json:"output_logs"`
-	Redactions []redactionView   `json:"redactions"`
+	Format     string       `json:"format"`
+	ExportedAt time.Time    `json:"exported_at"`
+	ExportedBy string       `json:"exported_by"`
+	Workload   workloadView `json:"workload"`
+	// LastPlacedClass is the stored placement, kept for a workload that's waiting again (whose view
+	// hides it), so the export stays complete.
+	LastPlacedClass string            `json:"last_placed_class,omitempty"`
+	CreatedBy       string            `json:"created_by"`
+	Params          map[string]string `json:"params"`
+	Events          []eventView       `json:"events"`
+	Usage           []usageView       `json:"usage"`
+	OutputLogs      outputLogsView    `json:"output_logs"`
+	Redactions      []redactionView   `json:"redactions"`
 }
 
 func toEventViews(events []domain.Event) []eventView {
@@ -93,16 +96,17 @@ func (s *Server) exportWorkload(w http.ResponseWriter, r *http.Request, p domain
 		return err
 	}
 	view := exportView{
-		Format:     exportFormat,
-		ExportedAt: exp.ExportedAt,
-		ExportedBy: p.Subject,
-		Workload:   toWorkloadView(exp.Workload),
-		CreatedBy:  exp.Workload.CreatedBy,
-		Params:     exp.Workload.Params,
-		Events:     toEventViews(exp.Events),
-		Usage:      make([]usageView, len(exp.Usage)),
-		OutputLogs: outputLogsView{Available: false, Note: outputLogsNote},
-		Redactions: make([]redactionView, len(exp.Redactions)),
+		Format:          exportFormat,
+		ExportedAt:      exp.ExportedAt,
+		ExportedBy:      p.Actor(),
+		Workload:        toWorkloadView(exp.Workload),
+		LastPlacedClass: exp.Workload.PlacedClass,
+		CreatedBy:       exp.Workload.CreatedBy,
+		Params:          exp.Workload.Params,
+		Events:          toEventViews(exp.Events),
+		Usage:           make([]usageView, len(exp.Usage)),
+		OutputLogs:      outputLogsView{Available: false, Note: outputLogsNote},
+		Redactions:      make([]redactionView, len(exp.Redactions)),
 	}
 	for i, u := range exp.Usage {
 		view.Usage[i] = usageView{PeriodStart: u.PeriodStart, GPUClass: u.GPUClass, GPUCount: u.GPUCount,

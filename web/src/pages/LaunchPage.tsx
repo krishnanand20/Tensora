@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 
 import { api } from "../api/client";
 import type { CreateWorkload, WorkloadKind } from "../api/types";
+import { launchableClasses, runtimeFor } from "../workloads";
 
 const kinds: { value: WorkloadKind; label: string }[] = [
   { value: "endpoint", label: "Model endpoint" },
@@ -16,6 +17,9 @@ export function LaunchPage() {
   const queryClient = useQueryClient();
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
   const [kind, setKind] = useState<WorkloadKind>("endpoint");
+  const [imageId, setImageId] = useState("");
+  const [region, setRegion] = useState("");
+  const [classId, setClassId] = useState("");
   const create = useMutation({
     mutationFn: api.createWorkload,
     onSuccess: async () => {
@@ -27,8 +31,13 @@ export function LaunchPage() {
   if (catalog.isPending) return <p>Loading…</p>;
   if (catalog.isError) return <p className="error">{catalog.error.message}</p>;
 
+  const { regions } = catalog.data;
   const images = catalog.data.images.filter((i) => i.kind === kind);
-  const gpus = catalog.data.gpu_classes.filter((g) => kind !== "vm" || g.supports_vm);
+  const image = images.find((i) => i.id === imageId) ?? images[0];
+  const regionId = region || regions[0]?.id || "";
+  const gpus = launchableClasses(catalog.data.gpu_classes, image, regionId);
+  const gpu = gpus.find((g) => g.id === classId) ?? gpus[0];
+  const server = gpu && kind === "endpoint" ? runtimeFor(image, gpu.accelerator)?.server : undefined;
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -36,9 +45,10 @@ export function LaunchPage() {
     const input: CreateWorkload = {
       name: String(f.get("name")),
       kind,
-      image_id: String(f.get("image_id")),
-      gpu_class: String(f.get("gpu_class")),
+      image_id: image?.id ?? "",
+      gpu_class: gpu?.id ?? "",
       gpu_count: Number(f.get("gpu_count")),
+      region: regionId,
     };
     if (kind === "vm") input.ssh_public_key = String(f.get("ssh_public_key")).trim();
     if (kind === "endpoint") input.model_uri = String(f.get("model_uri")).trim();
@@ -51,7 +61,14 @@ export function LaunchPage() {
       <form className="form" onSubmit={onSubmit}>
         <label>
           Type
-          <select value={kind} onChange={(e) => setKind(e.target.value as WorkloadKind)}>
+          <select
+            value={kind}
+            onChange={(e) => {
+              setKind(e.target.value as WorkloadKind);
+              setImageId("");
+              setClassId("");
+            }}
+          >
             {kinds.map((k) => (
               <option key={k.value} value={k.value}>
                 {k.label}
@@ -63,9 +80,21 @@ export function LaunchPage() {
           Name
           <input name="name" required pattern="[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?" placeholder="my-llm" />
         </label>
+        {regions.length > 1 && (
+          <label>
+            Region
+            <select value={regionId} onChange={(e) => setRegion(e.target.value)}>
+              {regions.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.display_name} ({r.id})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           Image
-          <select name="image_id" key={kind}>
+          <select value={image?.id ?? ""} onChange={(e) => setImageId(e.target.value)}>
             {images.map((i) => (
               <option key={i.id} value={i.id} title={i.description}>
                 {i.display_name}
@@ -75,8 +104,8 @@ export function LaunchPage() {
         </label>
         <div className="row">
           <label>
-            GPU
-            <select name="gpu_class">
+            Runs on
+            <select value={gpu?.id ?? ""} onChange={(e) => setClassId(e.target.value)}>
               {gpus.map((g) => (
                 <option key={g.id} value={g.id}>
                   {g.display_name}
@@ -89,6 +118,8 @@ export function LaunchPage() {
             <input name="gpu_count" type="number" min={1} max={8} defaultValue={1} />
           </label>
         </div>
+        {gpus.length === 0 && <p className="muted">Nothing in this region can run this image.</p>}
+        {server && <p className="muted">Served by {server} on this hardware.</p>}
         {kind === "vm" && (
           <label>
             SSH public key
@@ -102,7 +133,7 @@ export function LaunchPage() {
           </label>
         )}
         {create.isError && <p className="error">{create.error.message}</p>}
-        <button type="submit" disabled={create.isPending}>
+        <button type="submit" disabled={create.isPending || !gpu}>
           {create.isPending ? "Launching…" : "Launch"}
         </button>
       </form>

@@ -4,6 +4,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -24,6 +25,7 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	t.Run("EventsAndUsage", func(t *testing.T) { testEventsAndUsage(t, newStore(t)) })
 	t.Run("ErrorsAndCrossTenantReads", func(t *testing.T) { testErrorsAndCrossTenant(t, newStore(t)) })
 	t.Run("MachinesAndPlacement", func(t *testing.T) { testMachinesAndPlacement(t, newStore(t)) })
+	t.Run("LocalAccounts", func(t *testing.T) { testLocalAccounts(t, newStore(t)) })
 }
 
 // SchemaColumns and SchemaIndexes are every table's columns and every named index that both
@@ -40,10 +42,14 @@ var (
 		},
 		"workload_events":  {"at", "from_state", "id", "reason", "to_state", "workload_id"},
 		"usage_records":    {"created_at", "gpu_class", "gpu_count", "machine_id", "period_start", "region", "seconds", "tenant_id", "workload_id"},
-		"idempotency_keys": {"created_at", "idempotency_key", "request_hash", "response_body", "response_status", "tenant_id"},
+		"idempotency_keys": {"created_at", "idempotency_key", "request_hash", "response_body", "response_status", "subject", "tenant_id"},
+		"users":            {"created_at", "disabled_at", "email", "id", "password_hash", "tenant_id"},
+		"sessions":         {"created_at", "expires_at", "token_hash", "user_id"},
+		"api_tokens":       {"created_at", "expires_at", "id", "last_used_at", "name", "prefix", "revoked_at", "token_hash", "user_id"},
 	}
 	SchemaIndexes = []string{
-		"idempotency_keys_created_idx", "machines_region_idx",
+		"api_tokens_active_name_idx", "idempotency_keys_created_idx", "machines_region_idx",
+		"sessions_expires_idx", "sessions_user_idx", "users_tenant_idx",
 		"usage_records_tenant_idx", "workload_events_at_idx", "workload_events_workload_idx",
 		"workloads_active_state_idx", "workloads_region_state_idx", "workloads_tenant_idx",
 	}
@@ -56,12 +62,13 @@ func CheckSchema(t *testing.T, columns map[string][]string, indexes []string) {
 	for table := range columns {
 		slices.Sort(columns[table])
 	}
-	if !maps.EqualFunc(columns, SchemaColumns, slices.Equal) {
+	if !maps.EqualFunc(columns, SchemaColumns, func(got, want []string) bool { return slices.Equal(got, slices.Sorted(slices.Values(want))) }) {
 		t.Errorf("tables and columns = %v,\nwant %v", columns, SchemaColumns)
 	}
+	want := slices.Sorted(slices.Values(SchemaIndexes))
 	slices.Sort(indexes)
-	if !slices.Equal(indexes, SchemaIndexes) {
-		t.Errorf("indexes = %v, want %v", indexes, SchemaIndexes)
+	if !slices.Equal(indexes, want) {
+		t.Errorf("indexes = %v, want %v", indexes, want)
 	}
 }
 
@@ -178,7 +185,7 @@ func testAccounting(t *testing.T, st store.Store) {
 		if held, _ := q.GPUsHeld(ctx, a.ID, "l40s-48gb"); held != 3 {
 			t.Errorf("GPUsHeld = %d, want 3", held)
 		}
-		if alloc, _ := q.GPUsAllocated(ctx); alloc["l40s-48gb"] != 3 {
+		if alloc, _ := q.GPUsAllocated(ctx, domain.RegionLocal); alloc["l40s-48gb"] != 3 {
 			t.Errorf("GPUsAllocated = %v, want 3 (running 2 + deleting 1)", alloc)
 		}
 		return nil
@@ -234,7 +241,7 @@ func testEventsAndUsage(t *testing.T, st store.Store) {
 		if err != nil || len(ws) != 1 {
 			t.Errorf("running workload should be metered even without recent events: %v, %v", ws, err)
 		}
-		rec := domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0, TenantID: a.ID, GPUClass: "l40s-48gb", GPUCount: 2, Seconds: 3600}
+		rec := domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0, TenantID: a.ID, GPUClass: "l40s-48gb", GPUCount: 2, Seconds: 3600, Region: domain.RegionLocal}
 		if ok, err := q.InsertUsageIfAbsent(ctx, rec); !ok || err != nil {
 			t.Errorf("first insert = %v, %v", ok, err)
 		}
@@ -266,7 +273,7 @@ func testErrorsAndCrossTenant(t *testing.T, st store.Store) {
 			return err
 		}
 		_, err := q.InsertUsageIfAbsent(ctx, domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0, TenantID: a.ID,
-			GPUClass: "l40s-48gb", GPUCount: 2, Seconds: 60})
+			GPUClass: "l40s-48gb", GPUCount: 2, Seconds: 60, Region: domain.RegionLocal})
 		return err
 	})
 
@@ -288,6 +295,16 @@ func testErrorsAndCrossTenant(t *testing.T, st store.Store) {
 		{"event for a missing workload", func(q store.Queries) error {
 			return q.AppendEvent(ctx, domain.Event{WorkloadID: uuid.New(), To: domain.StatePending, Reason: "x", At: t0})
 		}, domain.CodeNotFound},
+		{"workload without a region", func(q store.Queries) error {
+			noRegion := w
+			noRegion.ID, noRegion.Region = uuid.New(), ""
+			return q.CreateWorkload(ctx, noRegion)
+		}, domain.CodeInvalid},
+		{"usage without a region", func(q store.Queries) error {
+			_, err := q.InsertUsageIfAbsent(ctx, domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0.Add(time.Hour),
+				TenantID: a.ID, GPUClass: "l40s-48gb", GPUCount: 2, Seconds: 60})
+			return err
+		}, domain.CodeInvalid},
 	}
 	for _, c := range cases {
 		// Each in its own transaction: Postgres aborts a transaction after an error.
@@ -410,8 +427,18 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 		if err != nil || got.PlacedClass != "a100-80gb" || got.MachineID != m.ID {
 			t.Errorf("placed workload = %+v, %v", got, err)
 		}
-		if alloc, err := q.GPUsAllocated(ctx); err != nil || alloc["a100-80gb"] != 1 || alloc["l40s-48gb"] != 0 {
+		if alloc, err := q.GPUsAllocated(ctx, "eu-fra-1"); err != nil || alloc["a100-80gb"] != 1 || alloc["l40s-48gb"] != 0 {
 			t.Errorf("GPUsAllocated = %v, %v; want the placed class counted, not the requested one", alloc, err)
+		}
+		// Regions are separate: the local controller neither sees nor counts eu-fra-1's workloads.
+		if alloc, err := q.GPUsAllocated(ctx, domain.RegionLocal); err != nil || len(alloc) != 0 {
+			t.Errorf("GPUsAllocated(local) = %v, %v; want nothing from another region", alloc, err)
+		}
+		if ws, err := q.WorkloadsInStates(ctx, domain.RegionLocal, domain.StateProvisioning); err != nil || len(ws) != 0 {
+			t.Errorf("WorkloadsInStates(local) = %v, %v; want nothing from another region", ws, err)
+		}
+		if ws, err := q.WorkloadsInStates(ctx, "eu-fra-1", domain.StateProvisioning); err != nil || len(ws) != 1 {
+			t.Errorf("WorkloadsInStates(eu-fra-1) = %v, %v", ws, err)
 		}
 		rec := domain.UsageRecord{WorkloadID: w.ID, PeriodStart: t0, TenantID: a.ID, GPUClass: "a100-80gb",
 			GPUCount: 1, Seconds: 60, Region: "eu-fra-1", MachineID: m.ID}
@@ -432,4 +459,261 @@ func testMachinesAndPlacement(t *testing.T, st store.Store) {
 			t.Errorf("SetPlacement with an %s must be not found", name)
 		}
 	}
+
+	// A machine may host only workloads in its own region, and only its owner's unless it's in a
+	// community pool (domain.Machine.CanHost).
+	elsewhere := m
+	elsewhere.ID, elsewhere.Name, elsewhere.Region = uuid.New(), "local-box", domain.RegionLocal
+	bravos := m
+	bravos.ID, bravos.TenantID, bravos.Name = uuid.New(), b.ID, "bravo-box"
+	tx(t, st, func(q store.Queries) error {
+		if err := q.CreateMachine(ctx, elsewhere); err != nil {
+			return err
+		}
+		return q.CreateMachine(ctx, bravos)
+	})
+	for name, tt := range map[string]struct {
+		machine uuid.UUID
+		want    domain.Code
+	}{
+		"machine in another region":       {elsewhere.ID, domain.CodeInvalid},
+		"another tenant's invite machine": {bravos.ID, domain.CodeForbidden},
+	} {
+		code, _ := domain.CodeOf(st.InTx(ctx, func(q store.Queries) error { return q.SetPlacement(ctx, w.ID, "a100-80gb", tt.machine) }))
+		if code != tt.want {
+			t.Errorf("SetPlacement on a %s: code = %q, want %q", name, code, tt.want)
+		}
+	}
+
+	// A workload holding capacity without a recorded placement (admitted by an older version) is
+	// counted under the class it requested, never left out.
+	legacy := workload(t, st, a, domain.StatePending, 2)
+	tx(t, st, func(q store.Queries) error {
+		return q.UpdateWorkloadState(ctx, legacy.ID, domain.StatePending, domain.StateDeleting, t0)
+	})
+	tx(t, st, func(q store.Queries) error {
+		if alloc, err := q.GPUsAllocated(ctx, domain.RegionLocal); err != nil || alloc["l40s-48gb"] != 2 {
+			t.Errorf("GPUsAllocated with an unplaced deleting workload = %v, %v; want it counted (2)", alloc, err)
+		}
+		return nil
+	})
+}
+
+// UpgradeFixture is a version-1 database's contents, as SQL for an upgrade test: workloads whose
+// event histories decide whether migration 00003 treats them as admitted. now is the dialect's
+// expression for a timestamp ('…' text for SQLite, now() for Postgres).
+func UpgradeFixture(now string) string {
+	const tenant = "00000000-0000-0000-0000-0000000000a1"
+	histories := []struct {
+		id, name, state string
+		events          []string
+	}{
+		{"00000000-0000-0000-0000-000000000001", "run", "running", []string{"pending", "provisioning", "running"}},
+		{"00000000-0000-0000-0000-000000000002", "wait", "queued", []string{"pending", "queued"}},
+		{"00000000-0000-0000-0000-000000000003", "restarted", "queued",
+			[]string{"pending", "provisioning", "running", "stopping", "stopped", "pending", "queued"}},
+		{"00000000-0000-0000-0000-000000000004", "early-delete", "deleting", []string{"pending", "deleting"}},
+		{"00000000-0000-0000-0000-000000000005", "old-endpoint", "queued", []string{"pending", "queued"}},
+	}
+	sql := fmt.Sprintf("INSERT INTO tenants (id, slug, name, tier, created_at) VALUES ('%s', 'acme', 'Acme', 'trusted', %s);\n", tenant, now)
+	for _, h := range histories {
+		kind, image := "notebook", "i"
+		if h.name == "old-endpoint" {
+			kind, image = "endpoint", "vllm" // the endpoint image's id before roadmap step 4
+		}
+		sql += fmt.Sprintf("INSERT INTO workloads (id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, created_by, created_at, updated_at)"+
+			" VALUES ('%s', '%s', '%s', '%s', '%s', '%s', 'l40s-48gb', 1, 's', %s, %s);\n", h.id, tenant, h.name, kind, h.state, image, now, now)
+		from := "NULL"
+		for _, to := range h.events {
+			sql += fmt.Sprintf("INSERT INTO workload_events (workload_id, from_state, to_state, reason, at) VALUES ('%s', %s, '%s', 'test', %s);\n",
+				h.id, from, to, now)
+			from = "'" + to + "'"
+		}
+	}
+	return sql
+}
+
+// BadUsageAfter00002 is a usage record as the 00002 gap could write it: no class.
+func BadUsageAfter00002(periodStart string) string {
+	return fmt.Sprintf("INSERT INTO usage_records (workload_id, period_start, tenant_id, gpu_class, gpu_count, seconds)"+
+		" VALUES ('00000000-0000-0000-0000-000000000003', %s, '00000000-0000-0000-0000-0000000000a1', '', 1, 2400);", periodStart)
+}
+
+// CheckUpgraded checks a database built from UpgradeFixture and BadUsageAfter00002 after it was
+// migrated to the latest version.
+func CheckUpgraded(t *testing.T, st store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	tx(t, st, func(q store.Queries) error {
+		ws, err := q.WorkloadsInStates(ctx, domain.RegionLocal, domain.AllStates()...)
+		if err != nil {
+			return err
+		}
+		placed := map[string]string{}
+		for _, w := range ws {
+			if w.Region != domain.RegionLocal {
+				t.Errorf("%s: region %q, want local", w.Name, w.Region)
+			}
+			if w.Name == "old-endpoint" && w.ImageID != "openai-endpoint" {
+				t.Errorf("old endpoint image = %q, want it renamed to openai-endpoint", w.ImageID)
+			}
+			placed[w.Name] = w.PlacedClass
+		}
+		want := map[string]string{"run": "l40s-48gb", "wait": "", "restarted": "l40s-48gb", "early-delete": "", "old-endpoint": ""}
+		if !maps.Equal(placed, want) {
+			t.Errorf("placed classes after upgrade = %v, want %v (admitted means it ever moved to provisioning)", placed, want)
+		}
+		// running (placed) + deleting (unplaced, counted under its requested class)
+		if alloc, err := q.GPUsAllocated(ctx, domain.RegionLocal); err != nil || alloc["l40s-48gb"] != 2 {
+			t.Errorf("GPUsAllocated after upgrade = %v, %v; want 2", alloc, err)
+		}
+		tn, err := q.TenantBySlug(ctx, "acme")
+		if err != nil {
+			return err
+		}
+		usage, err := q.Usage(ctx, tn.ID, time.Time{}, time.Now().Add(24*time.Hour))
+		if err != nil || len(usage) != 1 || usage[0].GPUClass != "l40s-48gb" {
+			t.Errorf("usage after upgrade = %+v, %v; the empty class must be repaired", usage, err)
+		}
+		return nil
+	})
+}
+
+func testLocalAccounts(t *testing.T, st store.Store) {
+	ctx := context.Background()
+	a := tenant(t, st, "alpha")
+	// Placeholder hashes: the store keeps whatever it's given; hashing is the service's job.
+	alice := domain.User{ID: uuid.New(), TenantID: a.ID, Email: "alice@alpha.test", PasswordHash: "$argon2id$x", CreatedAt: t0} //nolint:gosec // test fixture
+	bob := domain.User{ID: uuid.New(), TenantID: a.ID, Email: "bob@alpha.test", PasswordHash: "$argon2id$y", CreatedAt: t0}     //nolint:gosec // test fixture
+	tx(t, st, func(q store.Queries) error {
+		if err := q.LockUsers(ctx); err != nil {
+			return err
+		}
+		if n, err := q.CountUsers(ctx); err != nil || n != 0 {
+			t.Errorf("CountUsers before = %d, %v", n, err)
+		}
+		if err := q.CreateUser(ctx, alice); err != nil {
+			return err
+		}
+		return q.CreateUser(ctx, bob)
+	})
+	for name, tt := range map[string]struct {
+		fn   func(q store.Queries) error
+		want domain.Code
+	}{
+		"duplicate email": {func(q store.Queries) error {
+			dup := alice
+			dup.ID = uuid.New()
+			return q.CreateUser(ctx, dup)
+		}, domain.CodeConflict},
+		"user for a missing tenant": {func(q store.Queries) error {
+			orphan := alice
+			orphan.ID, orphan.TenantID, orphan.Email = uuid.New(), uuid.New(), "orphan@x.test"
+			return q.CreateUser(ctx, orphan)
+		}, domain.CodeNotFound},
+		"password for an unknown user": {func(q store.Queries) error { return q.SetPasswordHash(ctx, uuid.New(), "h") }, domain.CodeNotFound},
+	} {
+		if code, _ := domain.CodeOf(st.InTx(ctx, tt.fn)); code != tt.want {
+			t.Errorf("%s: code = %q, want %q", name, code, tt.want)
+		}
+	}
+
+	tx(t, st, func(q store.Queries) error {
+		if n, err := q.CountUsers(ctx); err != nil || n != 2 {
+			t.Errorf("CountUsers = %d, %v", n, err)
+		}
+		got, err := q.UserByEmail(ctx, "alice@alpha.test")
+		if err != nil || got.ID != alice.ID || !got.DisabledAt.IsZero() || !got.CreatedAt.Equal(t0) {
+			t.Errorf("UserByEmail = %+v, %v", got, err)
+		}
+		if _, err := q.UserByEmail(ctx, "nobody@alpha.test"); !domain.IsNotFound(err) {
+			t.Errorf("unknown email: %v", err)
+		}
+		if err := q.SetPasswordHash(ctx, alice.ID, "$argon2id$new"); err != nil {
+			return err
+		}
+		if got, err := q.UserByID(ctx, alice.ID); err != nil || got.PasswordHash != "$argon2id$new" {
+			t.Errorf("after SetPasswordHash = %+v, %v", got, err)
+		}
+
+		// Sessions: sign out everywhere but here, and sweep expired ones.
+		for i, hash := range []string{"s-here", "s-phone", "s-old"} {
+			expires := t0.Add(time.Hour)
+			if hash == "s-old" {
+				expires = t0.Add(-time.Minute)
+			}
+			if err := q.CreateSession(ctx, domain.Session{TokenHash: hash, UserID: alice.ID, CreatedAt: t0.Add(time.Duration(i)), ExpiresAt: expires}); err != nil {
+				return err
+			}
+		}
+		if err := q.CreateSession(ctx, domain.Session{TokenHash: "s-bob", UserID: bob.ID, CreatedAt: t0, ExpiresAt: t0.Add(time.Hour)}); err != nil {
+			return err
+		}
+		if err := q.DeleteExpiredSessions(ctx, t0); err != nil {
+			return err
+		}
+		if _, err := q.SessionByTokenHash(ctx, "s-old"); !domain.IsNotFound(err) {
+			t.Errorf("expired session survived the sweep: %v", err)
+		}
+		if err := q.DeleteOtherSessions(ctx, alice.ID, "s-here"); err != nil {
+			return err
+		}
+		if s, err := q.SessionByTokenHash(ctx, "s-here"); err != nil || s.UserID != alice.ID || !s.ExpiresAt.Equal(t0.Add(time.Hour)) {
+			t.Errorf("kept session = %+v, %v", s, err)
+		}
+		if _, err := q.SessionByTokenHash(ctx, "s-phone"); !domain.IsNotFound(err) {
+			t.Errorf("other session survived: %v", err)
+		}
+		if _, err := q.SessionByTokenHash(ctx, "s-bob"); err != nil {
+			t.Errorf("another user's session was deleted: %v", err)
+		}
+		if err := q.DeleteSession(ctx, "s-here"); err != nil {
+			return err
+		}
+		if _, err := q.SessionByTokenHash(ctx, "s-here"); !domain.IsNotFound(err) {
+			t.Errorf("deleted session survived: %v", err)
+		}
+		return nil
+	})
+
+	// API tokens: names are unique among live tokens, and users see and revoke only their own.
+	tok := domain.APIToken{ID: uuid.New(), UserID: alice.ID, Name: "laptop", Prefix: "tsk_abcd", TokenHash: "h-laptop", CreatedAt: t0, ExpiresAt: t0.Add(24 * time.Hour)}
+	tx(t, st, func(q store.Queries) error { return q.CreateAPIToken(ctx, tok) })
+	dupName := tok
+	dupName.ID, dupName.TokenHash = uuid.New(), "h-other"
+	if code, _ := domain.CodeOf(st.InTx(ctx, func(q store.Queries) error { return q.CreateAPIToken(ctx, dupName) })); code != domain.CodeConflict {
+		t.Errorf("duplicate live token name: code = %q, want conflict", code)
+	}
+	tx(t, st, func(q store.Queries) error {
+		got, err := q.APITokenByHash(ctx, "h-laptop")
+		if err != nil || got.ID != tok.ID || !got.ExpiresAt.Equal(tok.ExpiresAt) || !got.LastUsedAt.IsZero() || !got.RevokedAt.IsZero() {
+			t.Errorf("APITokenByHash = %+v, %v", got, err)
+		}
+		if err := q.TouchAPIToken(ctx, tok.ID, t0.Add(time.Minute)); err != nil {
+			return err
+		}
+		if list, err := q.ListAPITokens(ctx, alice.ID); err != nil || len(list) != 1 || !list[0].LastUsedAt.Equal(t0.Add(time.Minute)) {
+			t.Errorf("alice's tokens = %+v, %v", list, err)
+		}
+		if list, err := q.ListAPITokens(ctx, bob.ID); err != nil || len(list) != 0 {
+			t.Errorf("bob sees tokens that aren't his: %+v, %v", list, err)
+		}
+		return nil
+	})
+	if !domain.IsNotFound(st.InTx(ctx, func(q store.Queries) error { return q.RevokeAPIToken(ctx, bob.ID, tok.ID, t0) })) {
+		t.Error("revoking another user's token must be not found")
+	}
+	tx(t, st, func(q store.Queries) error {
+		if err := q.RevokeAPIToken(ctx, alice.ID, tok.ID, t0.Add(time.Hour)); err != nil {
+			return err
+		}
+		if err := q.RevokeAPIToken(ctx, alice.ID, tok.ID, t0.Add(2*time.Hour)); err != nil { // a no-op
+			return err
+		}
+		got, err := q.APITokenByHash(ctx, "h-laptop")
+		if err != nil || !got.RevokedAt.Equal(t0.Add(time.Hour)) {
+			t.Errorf("revoked token = %+v, %v; want the first revocation time kept", got, err)
+		}
+		return q.CreateAPIToken(ctx, dupName) // the name is free again
+	})
 }

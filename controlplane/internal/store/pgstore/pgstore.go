@@ -166,6 +166,144 @@ func nullID(id uuid.UUID) any {
 // nilUUID reads a NULL reference back as uuid.Nil.
 const nilUUID = `'00000000-0000-0000-0000-000000000000'`
 
+// ---- local accounts
+
+// nullTime stores a zero time as NULL; optionalTime reads NULL back as zero.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func optionalTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+const userCols = `id, tenant_id, email, password_hash, created_at, disabled_at`
+
+func scanUser(row pgx.Row) (domain.User, error) {
+	var u domain.User
+	var disabled *time.Time
+	err := row.Scan(&u.ID, &u.TenantID, &u.Email, &u.PasswordHash, &u.CreatedAt, &disabled)
+	u.DisabledAt = optionalTime(disabled)
+	return u, err
+}
+
+func (q *queries) LockUsers(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`)
+	return err
+}
+
+func (q *queries) CountUsers(ctx context.Context) (int, error) {
+	var n int
+	err := q.db.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+func (q *queries) CreateUser(ctx context.Context, u domain.User) error {
+	_, err := q.db.Exec(ctx, `INSERT INTO users (`+userCols+`) VALUES ($1, $2, $3, $4, $5, $6)`,
+		u.ID, u.TenantID, u.Email, u.PasswordHash, u.CreatedAt, nullTime(u.DisabledAt))
+	return mapErr(err, "user")
+}
+
+func (q *queries) UserByEmail(ctx context.Context, email string) (domain.User, error) {
+	u, err := scanUser(q.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE email = $1`, email))
+	return u, mapErr(err, "user")
+}
+
+func (q *queries) UserByID(ctx context.Context, id uuid.UUID) (domain.User, error) {
+	u, err := scanUser(q.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE id = $1`, id))
+	return u, mapErr(err, "user")
+}
+
+func (q *queries) SetPasswordHash(ctx context.Context, userID uuid.UUID, hash string) error {
+	tag, err := q.db.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, userID, hash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.NotFound("user")
+	}
+	return nil
+}
+
+func (q *queries) CreateSession(ctx context.Context, s domain.Session) error {
+	_, err := q.db.Exec(ctx, `INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
+		s.TokenHash, s.UserID, s.CreatedAt, s.ExpiresAt)
+	return mapErr(err, "session")
+}
+
+func (q *queries) SessionByTokenHash(ctx context.Context, hash string) (domain.Session, error) {
+	var s domain.Session
+	err := q.db.QueryRow(ctx, `SELECT token_hash, user_id, created_at, expires_at FROM sessions WHERE token_hash = $1`, hash).
+		Scan(&s.TokenHash, &s.UserID, &s.CreatedAt, &s.ExpiresAt)
+	return s, mapErr(err, "session")
+}
+
+func (q *queries) DeleteSession(ctx context.Context, hash string) error {
+	_, err := q.db.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, hash)
+	return err
+}
+
+func (q *queries) DeleteOtherSessions(ctx context.Context, userID uuid.UUID, keepHash string) error {
+	_, err := q.db.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2`, userID, keepHash)
+	return err
+}
+
+func (q *queries) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	_, err := q.db.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= $1`, now)
+	return err
+}
+
+const tokenCols = `id, user_id, name, prefix, token_hash, created_at, expires_at, last_used_at, revoked_at` //nolint:gosec // column names, not a credential
+
+func scanToken(row pgx.Row) (domain.APIToken, error) {
+	var t domain.APIToken
+	var expires, lastUsed, revoked *time.Time
+	err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.Prefix, &t.TokenHash, &t.CreatedAt, &expires, &lastUsed, &revoked)
+	t.ExpiresAt, t.LastUsedAt, t.RevokedAt = optionalTime(expires), optionalTime(lastUsed), optionalTime(revoked)
+	return t, err
+}
+
+func (q *queries) CreateAPIToken(ctx context.Context, t domain.APIToken) error {
+	_, err := q.db.Exec(ctx, `INSERT INTO api_tokens (`+tokenCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		t.ID, t.UserID, t.Name, t.Prefix, t.TokenHash, t.CreatedAt, nullTime(t.ExpiresAt), nullTime(t.LastUsedAt), nullTime(t.RevokedAt))
+	return mapErr(err, "token")
+}
+
+func (q *queries) APITokenByHash(ctx context.Context, hash string) (domain.APIToken, error) {
+	t, err := scanToken(q.db.QueryRow(ctx, `SELECT `+tokenCols+` FROM api_tokens WHERE token_hash = $1`, hash))
+	return t, mapErr(err, "token")
+}
+
+func (q *queries) TouchAPIToken(ctx context.Context, id uuid.UUID, at time.Time) error {
+	_, err := q.db.Exec(ctx, `UPDATE api_tokens SET last_used_at = $2 WHERE id = $1`, id, at)
+	return err
+}
+
+func (q *queries) ListAPITokens(ctx context.Context, userID uuid.UUID) ([]domain.APIToken, error) {
+	rows, err := q.db.Query(ctx, `SELECT `+tokenCols+` FROM api_tokens WHERE user_id = $1 ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.APIToken, error) { return scanToken(r) })
+}
+
+func (q *queries) RevokeAPIToken(ctx context.Context, userID, id uuid.UUID, at time.Time) error {
+	tag, err := q.db.Exec(ctx, `UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, $3) WHERE id = $1 AND user_id = $2`, id, userID, at)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.NotFound("token")
+	}
+	return nil
+}
+
 // ---- machines
 
 const machineCols = `id, tenant_id, name, region, os, arch, accelerators, sharing, last_seen_at, created_at`
@@ -239,6 +377,9 @@ func (q *queries) collectWorkloads(ctx context.Context, sql string, args ...any)
 }
 
 func (q *queries) CreateWorkload(ctx context.Context, w domain.Workload) error {
+	if !w.Region.Valid() {
+		return store.InvalidRegion("workload", w.Region)
+	}
 	params, fallback := w.Params, w.Fallback
 	if params == nil {
 		params = map[string]string{}
@@ -288,27 +429,38 @@ func (q *queries) UpdateWorkloadState(ctx context.Context, id uuid.UUID, from, t
 	return nil
 }
 
-func (q *queries) WorkloadsInStates(ctx context.Context, states ...domain.State) ([]domain.Workload, error) {
+func (q *queries) WorkloadsInStates(ctx context.Context, region domain.Region, states ...domain.State) ([]domain.Workload, error) {
 	return q.collectWorkloads(ctx, `SELECT `+workloadSelect+` FROM workloads
-		WHERE state = ANY($1) ORDER BY created_at, id`, store.StatesAsStrings(states))
+		WHERE region = $1 AND state = ANY($2) ORDER BY created_at, id`, string(region), store.StatesAsStrings(states))
 }
 
 func (q *queries) SetPlacement(ctx context.Context, id uuid.UUID, placedClass string, machineID uuid.UUID) error {
-	tag, err := q.db.Exec(ctx, `UPDATE workloads SET placed_class = NULLIF($2, ''), machine_id = $3 WHERE id = $1`,
-		id, placedClass, nullID(machineID))
+	var w domain.Workload
+	var region string
+	err := q.db.QueryRow(ctx, `SELECT tenant_id, region FROM workloads WHERE id = $1`, id).Scan(&w.TenantID, &region)
 	if err != nil {
-		return mapErr(err, "machine")
+		return mapErr(err, "workload")
 	}
-	if tag.RowsAffected() == 0 {
-		return store.NotFound("workload")
+	w.Region = domain.Region(region)
+	if machineID != uuid.Nil {
+		// Locked until the transaction ends, so its sharing level can't change between check and use.
+		m, err := scanMachine(q.db.QueryRow(ctx, `SELECT `+machineCols+` FROM machines WHERE id = $1 FOR SHARE`, machineID))
+		if err != nil {
+			return mapErr(err, "machine")
+		}
+		if err := m.CanHost(w); err != nil {
+			return err
+		}
 	}
-	return nil
+	_, err = q.db.Exec(ctx, `UPDATE workloads SET placed_class = NULLIF($2, ''), machine_id = $3 WHERE id = $1`,
+		id, placedClass, nullID(machineID))
+	return mapErr(err, "machine")
 }
 
-func (q *queries) GPUsAllocated(ctx context.Context) (map[string]int, error) {
-	rows, err := q.db.Query(ctx, `SELECT placed_class, SUM(gpu_count) FROM workloads
-		WHERE state = ANY($1) AND placed_class IS NOT NULL GROUP BY placed_class`,
-		store.StatesAsStrings(domain.StatesWhere(domain.State.HoldsCapacity)))
+func (q *queries) GPUsAllocated(ctx context.Context, region domain.Region) (map[string]int, error) {
+	rows, err := q.db.Query(ctx, `SELECT COALESCE(placed_class, gpu_class), SUM(gpu_count) FROM workloads
+		WHERE region = $1 AND state = ANY($2) GROUP BY COALESCE(placed_class, gpu_class)`,
+		string(region), store.StatesAsStrings(domain.StatesWhere(domain.State.HoldsCapacity)))
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +520,9 @@ func (q *queries) collectEvents(ctx context.Context, sql string, args ...any) ([
 }
 
 func (q *queries) InsertUsageIfAbsent(ctx context.Context, r domain.UsageRecord) (bool, error) {
+	if !r.Region.Valid() {
+		return false, store.InvalidRegion("usage record", r.Region)
+	}
 	tag, err := q.db.Exec(ctx, `INSERT INTO usage_records (`+usageCols+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (workload_id, period_start) DO NOTHING`,
 		r.WorkloadID, r.PeriodStart, r.TenantID, r.GPUClass, r.GPUCount, r.Seconds, string(r.Region), nullID(r.MachineID))

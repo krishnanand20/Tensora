@@ -1,4 +1,15 @@
-import type { ApiErrorBody, Catalog, CreateWorkload, List, Workload, WorkloadEvent } from "./types";
+import type {
+  ApiErrorBody,
+  ApiToken,
+  Catalog,
+  CreatedApiToken,
+  CreateWorkload,
+  List,
+  Me,
+  PasswordChanged,
+  Workload,
+  WorkloadEvent,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -38,9 +49,19 @@ export function workloadPath(id: string, suffix = ""): string {
 }
 
 function authHeaders(): Record<string, string> {
-  // Dev auth only. TODO(phase-1): local accounts and API tokens; OIDC with PKCE for the Datacenter profile (phase 3).
+  // Local accounts sign in with a session cookie, which the browser sends by itself (same origin).
+  // Every request also carries the CSRF header: another site can't add it, so the API knows the
+  // request came from this dashboard. Dev mode adds X-Dev-Tenant. OIDC with PKCE arrives with the
+  // Datacenter profile (phase 3). Tokens never go in localStorage.
+  const headers: Record<string, string> = { "X-Tensora-CSRF": "1" };
   const tenant = import.meta.env.VITE_DEV_TENANT ?? (import.meta.env.DEV ? "acme" : undefined);
-  return tenant ? { "X-Dev-Tenant": tenant } : {};
+  if (tenant) headers["X-Dev-Tenant"] = tenant;
+  return headers;
+}
+
+/** Where to go after signing in: only a path inside the dashboard, never another site. */
+export function safeNext(next: string | null): string {
+  return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/";
 }
 
 async function send(method: string, path: string, body?: unknown): Promise<Response> {
@@ -75,6 +96,15 @@ async function exportWorkload(id: string): Promise<{ blob: Blob; filename: strin
 export const api = {
   catalog: () => request<Catalog>("GET", "/v1/catalog"),
   /** includeDeleted adds deleted workloads, whose timeline and full log stay available (ADR-0015). */
+  me: () => request<Me>("GET", "/v1/auth/me"),
+  login: (email: string, password: string) => request<Me>("POST", "/v1/auth/login", { email, password }),
+  logout: () => request<unknown>("POST", "/v1/auth/logout"),
+  changePassword: (current_password: string, new_password: string) =>
+    request<PasswordChanged>("POST", "/v1/auth/password", { current_password, new_password }),
+  listTokens: () => request<List<ApiToken>>("GET", "/v1/tokens"),
+  createToken: (name: string, expires_in_days: number) =>
+    request<CreatedApiToken>("POST", "/v1/tokens", { name, expires_in_days }),
+  revokeToken: (id: string) => request<unknown>("DELETE", `/v1/tokens/${encodeURIComponent(id)}`),
   listWorkloads: (includeDeleted = false) =>
     request<List<Workload>>("GET", includeDeleted ? "/v1/workloads?include_deleted=true" : "/v1/workloads"),
   getWorkload: (id: string, includeDeleted = false) =>

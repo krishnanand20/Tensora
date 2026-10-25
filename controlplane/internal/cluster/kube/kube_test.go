@@ -24,13 +24,14 @@ func TestBuildersOnlyEmitAllowedKinds(t *testing.T) {
 	gpu, _ := cat.GPUClass("l40s-48gb")
 	objs := manifests.Tenant("acme", map[string]int{"nvidia.com/gpu": 1}, "tensora-images")
 	for kind, imageID := range map[domain.WorkloadKind]string{
-		domain.KindVM: "ubuntu-24.04-cuda", domain.KindNotebook: "pytorch-notebook", domain.KindEndpoint: "vllm",
+		domain.KindVM: "ubuntu-24.04-cuda", domain.KindNotebook: "pytorch-notebook", domain.KindEndpoint: "openai-endpoint",
 	} {
 		img, _ := cat.Image(imageID)
+		runtime, _ := img.RuntimeFor(gpu.Accelerator)
 		w := domain.Workload{ID: uuid.New(), Kind: kind, GPUClass: gpu.ID, GPUCount: 1, Params: map[string]string{
 			domain.ParamSSHPublicKey: testutil.SSHKey, domain.ParamModelURI: "s3://models/x",
 		}}
-		built, err := manifests.Workload(w, manifests.Context{TenantSlug: "acme", Tier: domain.TierUntrusted, GPU: gpu, Image: img}, true)
+		built, err := manifests.Workload(w, manifests.Context{TenantSlug: "acme", Tier: domain.TierUntrusted, GPU: gpu, Image: img, Runtime: runtime}, true)
 		if err != nil {
 			t.Fatal(err)
 		}

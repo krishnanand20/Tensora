@@ -28,7 +28,7 @@ func (Dev) Authenticate(r *http.Request) (domain.Principal, error) {
 	if user == "" {
 		user = "dev@" + tenant
 	}
-	return domain.Principal{Subject: user, Email: user, TenantSlug: tenant}, nil
+	return domain.Principal{Subject: user, Email: user, TenantSlug: tenant, Via: domain.AuthDev}, nil
 }
 
 // OIDC validates bearer JWTs issued by Keycloak. The tenant comes from a custom claim set by
@@ -66,5 +66,5 @@ func (o *OIDC) Authenticate(r *http.Request) (domain.Principal, error) {
 		return domain.Principal{}, domain.Errorf(domain.CodeForbidden, "token has no %s claim", o.tenantClaim)
 	}
 	email, _ := claims["email"].(string)
-	return domain.Principal{Subject: tok.Subject, Email: email, TenantSlug: tenant}, nil
+	return domain.Principal{Subject: tok.Subject, Email: email, TenantSlug: tenant, Via: domain.AuthOIDC}, nil
 }

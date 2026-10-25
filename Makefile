@@ -115,9 +115,12 @@ fmt: ## Format all code
 # ---------------------------------------------------------------- deploy (render only, never applies)
 .PHONY: deploy-check
 deploy-check: ## Lint + render charts and validate with kubeconform (no cluster needed)
-	helm lint deploy/charts/tensora --set-file catalog=images/catalog.yaml
+	helm lint deploy/charts/tensora --set-file catalog=deploy/catalog.yaml
 	helm lint deploy/charts/cluster-config -f deploy/environments/single-node.yaml
-	helm template tensora deploy/charts/tensora --set-file catalog=images/catalog.yaml | $(KUBECONFORM)
+	helm template tensora deploy/charts/tensora --set-file catalog=deploy/catalog.yaml | $(KUBECONFORM)
+	@# A region missing from the catalog must fail to render, not leave workloads pending.
+	@! helm template tensora deploy/charts/tensora --set-file catalog=deploy/catalog.yaml --set cluster.region=nowhere >/dev/null 2>&1 \
+		|| (echo "the chart rendered a region that isn't in the catalog" && exit 1)
 	for env in single-node production; do \
 	  helm template cluster-config deploy/charts/cluster-config -f deploy/environments/$$env.yaml | $(KUBECONFORM) || exit 1; \
 	done

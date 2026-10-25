@@ -1,0 +1,84 @@
+# Datacenter profile launch catalog: what users of a Kubernetes deployment can choose from. Passed to
+# the tensora chart by helmfile (--set-file catalog=...). Field reference:
+# controlplane/internal/catalog/catalog.go. Solo and Lab installs use images/catalog.yaml instead.
+#
+# It lists only what the Kubernetes backend can run: NVIDIA classes with their device-plugin
+# resource names. Apple Silicon classes need node agents, and CPU classes arrive with CPU worker
+# nodes and the tensora-vllm-cpu runtime (ADR-0010). Control plane tests load this file too.
+
+# Every region of this deployment (ADR-0009); the first is the default. Each environment file's
+# `region` must be listed here, and a region ID can't change once workloads exist in it.
+# Location-based IDs (in-mum-1, eu-fra-1) are recommended.
+regions:
+  - id: dc-1
+    display_name: Datacenter 1
+
+gpu_classes:
+  - id: l40s-48gb
+    display_name: NVIDIA L40S 48GB
+    accelerator: nvidia
+    vram_gb: 48
+    # Advertised by the GPU Operator device plugin on nodes in "container" mode.
+    container_resource: nvidia.com/gpu
+    # Advertised by the sandbox device plugin on "vm-passthrough" nodes. Must match
+    # KubeVirt permittedHostDevices (deploy/environments/*.yaml). Verify on a real node:
+    #   kubectl get node <name> -o jsonpath='{.status.allocatable}'
+    vm_device_name: nvidia.com/AD102GL_L40S
+    # GPU Feature Discovery labels that select container-mode nodes with this GPU.
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-L40S
+    vcpus_per_gpu: 8
+    memory_gib_per_gpu: 64
+
+  - id: a100-80gb
+    display_name: NVIDIA A100 80GB PCIe
+    accelerator: nvidia
+    vram_gb: 80
+    container_resource: nvidia.com/gpu
+    vm_device_name: nvidia.com/GA100_A100_PCIE_80GB
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-A100-80GB-PCIe
+    vcpus_per_gpu: 12
+    memory_gib_per_gpu: 120
+
+  # Consumer card: NVIDIA's GeForce driver licence has historically excluded datacenter deployment,
+  # so it's internal-only (trusted tenants) here. See docs/architecture/gpu-sharing.md.
+  - id: rtx4090-24gb
+    display_name: NVIDIA GeForce RTX 4090 24GB
+    accelerator: nvidia
+    vram_gb: 24
+    container_resource: nvidia.com/gpu
+    vm_device_name: nvidia.com/AD102_GEFORCE_RTX_4090
+    node_selector:
+      nvidia.com/gpu.product: NVIDIA-GeForce-RTX-4090
+    vcpus_per_gpu: 8
+    memory_gib_per_gpu: 48
+    internal_only: true
+
+images:
+  - id: ubuntu-24.04-cuda
+    display_name: Ubuntu 24.04 + NVIDIA driver
+    kind: vm
+    root_disk_gib: 100
+    description: A full VM with whole GPUs passed through. Log in over SSH with your key.
+    runtimes:
+      - accelerators: [nvidia]
+        ref: ubuntu-24.04-cuda # CDI DataSource in the images namespace (images/vm/)
+
+  - id: pytorch-notebook
+    display_name: PyTorch + JupyterLab
+    kind: notebook
+    description: JupyterLab with PyTorch and CUDA. Your work directory persists across restarts.
+    runtimes:
+      - accelerators: [nvidia]
+        ref: ghcr.io/your-org/tensora-pytorch-notebook:0.1.0 # container image (images/containers/)
+
+  - id: openai-endpoint
+    display_name: OpenAI-compatible model endpoint
+    kind: endpoint
+    description: Serve a safetensors model from Hugging Face or S3 behind an OpenAI-compatible API, with vLLM.
+    runtimes:
+      - accelerators: [nvidia]
+        server: vllm
+        model_format: safetensors
+        ref: tensora-vllm # KServe ClusterServingRuntime (deploy/charts/cluster-config)

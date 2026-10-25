@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tensora/tensora/controlplane/internal/domain"
 )
 
 type Config struct {
@@ -39,6 +42,16 @@ type Config struct {
 	ControllerInterval time.Duration
 	MeteringInterval   time.Duration
 	ProvisionTimeout   time.Duration
+
+	// Region is the one region this process's controller reconciles (ADR-0009); local by default.
+	Region domain.Region
+
+	// TrustedProxies are reverse proxies whose X-Forwarded-For and X-Forwarded-Proto are believed
+	// (TENSORA_TRUSTED_PROXIES: addresses or CIDR ranges, comma-separated).
+	TrustedProxies []netip.Prefix
+	// InsecureHTTP allows sign-in and session cookies over plain HTTP from other machines
+	// (TENSORA_INSECURE_HTTP=true), for a network the operator trusts.
+	InsecureHTTP bool
 }
 
 func Load() (Config, error) { return FromEnv(os.Getenv) }
@@ -65,6 +78,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		UntrustedRuntimeClass: get("UNTRUSTED_RUNTIME_CLASS", "kata-qemu-nvidia-gpu"),
 		StorageClass:          get("STORAGE_CLASS", "tensora-block"),
 		ImagesNamespace:       get("IMAGES_NAMESPACE", "tensora-images"),
+		Region:                domain.Region(get("REGION", string(domain.RegionLocal))),
 	}
 
 	var errs []error
@@ -72,6 +86,12 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		errs = append(errs, fmt.Errorf("TENSORA_LOG_LEVEL: %w", err))
 	}
 	var err error
+	if c.TrustedProxies, err = parsePrefixes(get("TRUSTED_PROXIES", "")); err != nil {
+		errs = append(errs, fmt.Errorf("TENSORA_TRUSTED_PROXIES: %w", err))
+	}
+	if c.InsecureHTTP, err = strconv.ParseBool(get("INSECURE_HTTP", "false")); err != nil {
+		errs = append(errs, fmt.Errorf("TENSORA_INSECURE_HTTP must be true or false: %w", err))
+	}
 	if c.FakeCapacity, err = parseCapacity(get("FAKE_CAPACITY", "l40s-48gb=4,a100-80gb=2")); err != nil {
 		errs = append(errs, fmt.Errorf("TENSORA_FAKE_CAPACITY: %w", err))
 	}
@@ -107,8 +127,9 @@ func (c Config) validate() error {
 		if c.OIDCIssuer == "" {
 			errs = append(errs, errors.New("TENSORA_OIDC_ISSUER is required when TENSORA_AUTH_MODE=oidc"))
 		}
+	case "local": // built-in accounts and API tokens (ADR-0012); fine in every environment
 	default:
-		errs = append(errs, fmt.Errorf("TENSORA_AUTH_MODE must be dev or oidc, got %q", c.AuthMode))
+		errs = append(errs, fmt.Errorf("TENSORA_AUTH_MODE must be local, oidc, or dev, got %q", c.AuthMode))
 	}
 	switch c.ClusterBackend {
 	case "fake":
@@ -124,6 +145,9 @@ func (c Config) validate() error {
 	}
 	if _, err := c.Database(); err != nil {
 		errs = append(errs, err)
+	}
+	if !c.Region.Valid() {
+		errs = append(errs, fmt.Errorf("TENSORA_REGION must be a region ID such as local or eu-fra-1, got %q", c.Region))
 	}
 	return errors.Join(errs...)
 }
@@ -158,6 +182,27 @@ func (c Config) Database() (Database, error) {
 		return Database{Driver: "sqlite", DSN: abs}, nil
 	}
 	return Database{}, errors.New("TENSORA_DATABASE_URL must be a postgres:// or postgresql:// URL, or sqlite:<path>")
+}
+
+// parsePrefixes parses comma-separated addresses ("10.0.0.5") and CIDR ranges ("10.0.0.0/24").
+func parsePrefixes(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(part); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(part)
+		if err != nil {
+			return nil, fmt.Errorf("%q is neither an address nor a CIDR range", part)
+		}
+		out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+	}
+	return out, nil
 }
 
 // parseCapacity parses "l40s-48gb=4,a100-80gb=2".

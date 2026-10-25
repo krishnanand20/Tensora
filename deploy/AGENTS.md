@@ -10,6 +10,7 @@ add-ons and charts. Solo and Lab installs (Macs, personal Linux machines) use no
 
 ```
 helmfile.yaml.gotmpl          every add-on in install order, grouped by layer, with feature flags
+catalog.yaml                  the Datacenter launch catalog: every region, and only classes Kubernetes can run
 environments/<env>.yaml       one file per regional cluster: flags, IPs, GPU devices, storage
 platform/<component>/         values files (or kustomizations) for third-party components
 charts/cluster-config/        OUR cluster objects: namespaces, MetalLB pool, issuer, Gateway,
@@ -32,7 +33,7 @@ examples/                     hand-applied smoke tests used by the runbooks
   - anything that grants RBAC
 - **Order matters.** Express dependencies with `needs:`. Custom resources go in `cluster-config`, which `needs` their operators.
 - **Feature flags:** a component that isn't core gets an `installed: {{ .Values.features.<x> }}` flag. Add the flag to every environment file.
-- **Regions (ADR-0009):** most add-ons deploy into every regional cluster. Mark control-plane-only components (Keycloak, the control plane's Postgres) as such. A regional cluster must never depend on another region. While there's one region, its cluster also hosts the control plane.
+- **Regions (ADR-0009):** each environment's `region` must be listed in `catalog.yaml`; the chart refuses to render otherwise. Most add-ons deploy into every regional cluster. Mark control-plane-only components (Keycloak, the control plane's Postgres) as such. A regional cluster must never depend on another region. While there's one region, its cluster also hosts the control plane.
 - **Fallbacks (ADR-0010):** the planned `tensora-vllm-cpu` runtime follows the same rules as `tensora-vllm` (safetensors only, no remote code). CPU worker nodes get the same isolation runtime classes as GPU nodes.
 
 ## Commands

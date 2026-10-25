@@ -25,6 +25,9 @@ import (
 var errNotInCatalog = errors.New("is no longer offered by this installation")
 
 type Options struct {
+	// Region is the one region this controller reconciles (ADR-0009). It never sees, counts, or
+	// admits another region's workloads. Empty means local, the region of a Solo install.
+	Region                domain.Region
 	StorageClass          string
 	ImagesNamespace       string
 	UntrustedRuntimeClass string
@@ -43,6 +46,9 @@ type Controller struct {
 func New(st store.Store, b cluster.Backend, cat *catalog.Catalog, opts Options, log *slog.Logger, now func() time.Time) *Controller {
 	if now == nil {
 		now = time.Now
+	}
+	if opts.Region == "" {
+		opts.Region = domain.RegionLocal
 	}
 	return &Controller{store: st, backend: b, catalog: cat, opts: opts, log: log, now: now}
 }
@@ -77,10 +83,10 @@ func (c *Controller) admit(ctx context.Context) error {
 	var allocated map[string]int
 	err := c.store.InTx(ctx, func(q store.Queries) error {
 		var err error
-		if waiting, err = q.WorkloadsInStates(ctx, domain.StatePending, domain.StateQueued); err != nil {
+		if waiting, err = q.WorkloadsInStates(ctx, c.opts.Region, domain.StatePending, domain.StateQueued); err != nil {
 			return err
 		}
-		allocated, err = q.GPUsAllocated(ctx)
+		allocated, err = q.GPUsAllocated(ctx, c.opts.Region)
 		return err
 	})
 	if err != nil || len(waiting) == 0 {
@@ -97,9 +103,14 @@ func (c *Controller) admit(ctx context.Context) error {
 	// TODO(phase-3): add aging so large requests cannot starve.
 	for _, w := range waiting {
 		// Checked before capacity: a class that left the catalog has no capacity either, so the
-		// workload would otherwise wait forever under a misleading reason.
-		if _, _, err := c.catalogEntries(w); err != nil {
-			c.transition(ctx, w, domain.StateFailed, "can't start: "+err.Error())
+		// workload would otherwise wait forever under a misleading reason. The launch rules are
+		// checked again too, in case the catalog or the tenant's tier changed since create.
+		runtime, err := c.checkLaunch(ctx, w)
+		if errors.Is(err, errRetryLater) {
+			continue
+		}
+		if err != nil {
+			c.transition(ctx, w, domain.StateFailed, "can't start: "+userMessage(err))
 			continue
 		}
 		free := max(capacity[w.GPUClass]-allocated[w.GPUClass], 0)
@@ -118,9 +129,9 @@ func (c *Controller) admit(ctx context.Context) error {
 		// Placed on the requested class. Fallback placement (ADR-0010) and agent machines will choose
 		// here, in one place, as admission grows (ADR-0014's sharing rules too).
 		placed, machine := w.GPUClass, uuid.Nil
-		if c.place(ctx, w, placed, machine) {
-			allocated[placed] += w.GPUCount
-		}
+		// Counted even if placing fails: its objects were just applied, and the next pass retries.
+		allocated[placed] += w.GPUCount
+		c.place(ctx, w, placed, machine, runtime.Server)
 	}
 	return nil
 }
@@ -149,18 +160,47 @@ func (c *Controller) observe(ctx context.Context) error {
 			c.retryLater(ctx, w, "read its status from the runtime", err)
 			continue
 		}
+		if w.PlacedClass == "" {
+			// Admitted by a version that didn't record placement. Fallbacks didn't exist then, so it
+			// runs on the class it requested; record that, so it can be counted and accounted.
+			if !c.adoptPlacement(ctx, &w) {
+				continue
+			}
+		}
 		switch {
 		case obs == cluster.ObservedFailed:
 			c.fail(ctx, w, "workload failed: "+reason)
-		case w.State == domain.StateProvisioning && obs == cluster.ObservedReady:
-			c.transition(ctx, w, domain.StateRunning, "ready")
+			continue
 		case w.State == domain.StateRunning && obs == cluster.ObservedAbsent:
 			c.fail(ctx, w, "cluster objects disappeared")
-		case w.State == domain.StateProvisioning && c.now().Sub(w.UpdatedAt) > c.opts.ProvisionTimeout:
+			continue
+		case w.State == domain.StateProvisioning && obs == cluster.ObservedReady:
+			if c.transition(ctx, w, domain.StateRunning, "ready") {
+				continue
+			}
+		}
+		// Still provisioning, including when the move to running didn't happen: a workload must
+		// never hold GPUs forever.
+		if w.State == domain.StateProvisioning && c.now().Sub(w.UpdatedAt) > c.opts.ProvisionTimeout {
 			c.fail(ctx, w, fmt.Sprintf("not ready after %s: %s", c.opts.ProvisionTimeout, reason))
 		}
 	}
 	return nil
+}
+
+// adoptPlacement records the requested class as the placement of a workload that holds capacity
+// without one, and says so in its timeline.
+func (c *Controller) adoptPlacement(ctx context.Context, w *domain.Workload) bool {
+	err := c.store.InTx(ctx, func(q store.Queries) error {
+		return q.SetPlacement(ctx, w.ID, w.GPUClass, w.MachineID)
+	})
+	if err != nil {
+		c.logError("adopt placement failed", *w, err)
+		return false
+	}
+	w.PlacedClass = w.GPUClass
+	c.note(ctx, *w, fmt.Sprintf("placed on %s: it was admitted before placements were recorded", w.GPUClass))
+	return true
 }
 
 // park frees the GPUs of stopping workloads while keeping their disks.
@@ -264,10 +304,14 @@ func (c *Controller) fail(ctx context.Context, w domain.Workload, reason string)
 // and their team) see how many GPUs are free. For invited and community users that number would
 // show when other people use the machines (docs/architecture/tenancy-and-isolation.md).
 func (c *Controller) waitingReason(ctx context.Context, w domain.Workload, free int) string {
-	if t, err := c.tenant(ctx, w); err == nil && t.Tier == domain.TierTrusted {
-		return fmt.Sprintf("waiting for %s capacity: requested %d GPU(s), %d free", w.GPUClass, w.GPUCount, free)
+	units := "GPU(s)"
+	if g, ok := c.catalog.GPUClass(w.GPUClass); ok && g.Accelerator == domain.AcceleratorCPU {
+		units = "unit(s)"
 	}
-	return fmt.Sprintf("waiting for %s capacity: requested %d GPU(s), not enough free right now", w.GPUClass, w.GPUCount)
+	if t, err := c.tenant(ctx, w); err == nil && t.Tier == domain.TierTrusted {
+		return fmt.Sprintf("waiting for %s capacity: requested %d %s, %d free", w.GPUClass, w.GPUCount, units, free)
+	}
+	return fmt.Sprintf("waiting for %s capacity: requested %d %s, not enough free right now", w.GPUClass, w.GPUCount, units)
 }
 
 // retryLater handles a runtime action that failed and will be retried next pass. The operator's
@@ -312,9 +356,14 @@ func (c *Controller) logError(msg string, w domain.Workload, err error) {
 }
 
 // place records where the workload was placed and moves it to provisioning, in one transaction,
-// so a workload is never provisioning without a placement.
-func (c *Controller) place(ctx context.Context, w domain.Workload, placedClass string, machineID uuid.UUID) bool {
-	return c.transitionWith(ctx, w, domain.StateProvisioning, fmt.Sprintf("admitted: %d × %s", w.GPUCount, placedClass),
+// so a workload is never provisioning without a placement. The reason names the model server for
+// endpoints, so a change of server is never silent (rule 10).
+func (c *Controller) place(ctx context.Context, w domain.Workload, placedClass string, machineID uuid.UUID, server string) bool {
+	reason := fmt.Sprintf("admitted: %d × %s", w.GPUCount, placedClass)
+	if server != "" {
+		reason += ", served by " + server
+	}
+	return c.transitionWith(ctx, w, domain.StateProvisioning, reason,
 		func(q store.Queries, w *domain.Workload) error {
 			if err := q.SetPlacement(ctx, w.ID, placedClass, machineID); err != nil {
 				return err
@@ -343,8 +392,13 @@ func (c *Controller) transitionWith(ctx context.Context, w domain.Workload, to d
 		return service.Transition(ctx, q, &w, to, reason, c.now())
 	})
 	if err != nil {
-		// Usually a concurrent API change (e.g. delete during provisioning); next pass sees it.
-		c.log.Warn("transition skipped", "workload", w.ID, "from", from, "to", to, "err", err)
+		c.log.Warn("transition skipped", "workload", w.ID, "from", from, "to", to, "err", service.RedactSecrets(err.Error()))
+		// A conflict is a concurrent change, such as a delete during provisioning; the next pass
+		// sees the new state, and the timeline already shows it. Anything else is a decision that
+		// didn't happen, so the owner hears about it (rule 14).
+		if code, _ := domain.CodeOf(err); code != domain.CodeConflict {
+			c.note(ctx, w, fmt.Sprintf("couldn't move it to %s; retrying. The operator's log has the details under this workload's ID.", to))
+		}
 		return false
 	}
 	c.log.Info("workload transitioned", "workload", w.ID, "tenant", w.TenantID, "from", from, "to", to, "reason", reason)
@@ -355,7 +409,7 @@ func (c *Controller) inStates(ctx context.Context, states ...domain.State) ([]do
 	var ws []domain.Workload
 	err := c.store.InTx(ctx, func(q store.Queries) error {
 		var err error
-		ws, err = q.WorkloadsInStates(ctx, states...)
+		ws, err = q.WorkloadsInStates(ctx, c.opts.Region, states...)
 		return err
 	})
 	return ws, err
@@ -390,7 +444,7 @@ func (c *Controller) buildContext(ctx context.Context, w domain.Workload) (manif
 	if err != nil {
 		return manifests.Context{}, nil, err
 	}
-	gpu, img, err := c.catalogEntries(w)
+	gpu, img, runtime, err := c.catalogEntries(w)
 	if err != nil {
 		return manifests.Context{}, nil, err
 	}
@@ -399,23 +453,56 @@ func (c *Controller) buildContext(ctx context.Context, w domain.Workload) (manif
 		Tier:                  t.Tier,
 		GPU:                   gpu,
 		Image:                 img,
+		Runtime:               runtime,
 		StorageClass:          c.opts.StorageClass,
 		ImagesNamespace:       c.opts.ImagesNamespace,
 		UntrustedRuntimeClass: c.opts.UntrustedRuntimeClass,
 	}, quotas, nil
 }
 
-// catalogEntries looks up the workload's GPU class and image, which an operator may have removed.
-func (c *Controller) catalogEntries(w domain.Workload) (catalog.GPUClass, catalog.Image, error) {
+// errRetryLater means a check couldn't be made this pass; nothing is decided.
+var errRetryLater = errors.New("retry later")
+
+// checkLaunch re-applies catalog.CheckLaunch at admission, with the tenant's current tier.
+func (c *Controller) checkLaunch(ctx context.Context, w domain.Workload) (catalog.Runtime, error) {
+	gpu, img, _, err := c.catalogEntries(w)
+	if err != nil {
+		return catalog.Runtime{}, err
+	}
+	t, err := c.tenant(ctx, w)
+	if err != nil {
+		c.logError("admission: tenant lookup failed", w, err)
+		return catalog.Runtime{}, errRetryLater
+	}
+	return catalog.CheckLaunch(t.Tier, gpu, img, w.Kind, w.Region)
+}
+
+// userMessage is the part of an error that's safe to show the workload's owner: a domain error's
+// message, or the error itself for the controller's own fixed-vocabulary errors.
+func userMessage(err error) string {
+	var de *domain.Error
+	if errors.As(err, &de) {
+		return de.Message
+	}
+	return err.Error()
+}
+
+// catalogEntries looks up the workload's class, its image, and the image's runtime for that
+// class's accelerator. An operator may have removed any of them since the workload was created.
+func (c *Controller) catalogEntries(w domain.Workload) (catalog.GPUClass, catalog.Image, catalog.Runtime, error) {
 	gpu, ok := c.catalog.GPUClass(w.GPUClass)
 	if !ok {
-		return catalog.GPUClass{}, catalog.Image{}, fmt.Errorf("GPU class %q %w", w.GPUClass, errNotInCatalog)
+		return catalog.GPUClass{}, catalog.Image{}, catalog.Runtime{}, fmt.Errorf("GPU class %q %w", w.GPUClass, errNotInCatalog)
 	}
 	img, ok := c.catalog.Image(w.ImageID)
 	if !ok {
-		return catalog.GPUClass{}, catalog.Image{}, fmt.Errorf("image %q %w", w.ImageID, errNotInCatalog)
+		return catalog.GPUClass{}, catalog.Image{}, catalog.Runtime{}, fmt.Errorf("image %q %w", w.ImageID, errNotInCatalog)
 	}
-	return gpu, img, nil
+	runtime, ok := img.RuntimeFor(gpu.Accelerator)
+	if !ok {
+		return catalog.GPUClass{}, catalog.Image{}, catalog.Runtime{}, fmt.Errorf("image %q on %s %w", w.ImageID, gpu.Accelerator, errNotInCatalog)
+	}
+	return gpu, img, runtime, nil
 }
 
 // quotaResources turns per-class quotas into ResourceQuota limits on the extended resources
@@ -424,7 +511,7 @@ func (c *Controller) quotaResources(quotas []domain.Quota) map[string]int {
 	out := map[string]int{}
 	for _, q := range quotas {
 		gc, ok := c.catalog.GPUClass(q.GPUClass)
-		if !ok {
+		if !ok || gc.ContainerResource == "" { // Apple and CPU classes don't run on Kubernetes
 			continue
 		}
 		out[gc.ContainerResource] += q.MaxGPUs

@@ -31,7 +31,7 @@ func virtualMachine(w domain.Workload, c Context, running bool) cluster.Manifest
 			"dataVolumeTemplates": []any{map[string]any{
 				"metadata": map[string]any{"name": name + "-root", "labels": lbl},
 				"spec": map[string]any{
-					"sourceRef": map[string]any{"kind": "DataSource", "name": c.Image.Ref, "namespace": c.ImagesNamespace},
+					"sourceRef": map[string]any{"kind": "DataSource", "name": c.Runtime.Ref, "namespace": c.ImagesNamespace},
 					"storage": map[string]any{
 						"storageClassName": c.StorageClass,
 						"resources":        map[string]any{"requests": map[string]any{"storage": fmt.Sprintf("%dGi", c.Image.RootDiskGiB)}},
@@ -90,7 +90,7 @@ func notebook(w domain.Workload, c Context, running bool) []cluster.Manifest {
 		},
 		"containers": []any{map[string]any{
 			"name":            "notebook",
-			"image":           c.Image.Ref,
+			"image":           c.Runtime.Ref,
 			"ports":           []any{map[string]any{"name": "http", "containerPort": int64(8888)}},
 			"resources":       gpuResources(c, w.GPUCount),
 			"securityContext": containerSecurityContext(),
@@ -137,7 +137,7 @@ func inferenceService(w domain.Workload, c Context) cluster.Manifest {
 	ann["serving.kserve.io/deploymentMode"] = "RawDeployment"
 	model := map[string]any{
 		"modelFormat": map[string]any{"name": "huggingface"},
-		"runtime":     c.Image.Ref,
+		"runtime":     c.Runtime.Ref,
 		"storageUri":  w.Params[domain.ParamModelURI],
 		"resources":   gpuResources(c, w.GPUCount),
 	}

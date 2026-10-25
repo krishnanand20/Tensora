@@ -6,4 +6,4 @@ metadata:
     {{- include "tensora.labels" . | nindent 4 }}
 data:
   catalog.yaml: |
-    {{- required "catalog is required: pass --set-file catalog=images/catalog.yaml" .Values.catalog | nindent 4 }}
+    {{- required "catalog is required: pass --set-file catalog=deploy/catalog.yaml" .Values.catalog | nindent 4 }}

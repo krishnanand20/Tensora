@@ -51,7 +51,7 @@ a GPU is either given to containers or bound to vfio-pci for a VM, never both at
   - Both the MLX and llama.cpp servers provide OpenAI-compatible APIs. vLLM is the NVIDIA runtime and isn't used on Macs.
 - **VMs:** macOS guests get paravirtualized Metal through Apple's Virtualization framework. The macOS licence allows at most 2 macOS VMs per Mac. Linux guests get no GPU compute.
 - **No partitioning:** Metal has nothing like MIG. On shared Macs, one untrusted user gets the whole GPU or none of it, and an owner's own workloads may share freely.
-- **Capacity:** each Apple class is identified by chip family and unified memory, for example `apple-m4-max-128gb` (catalog, planned).
+- **Capacity:** Apple classes are sized by unified memory (`apple-silicon-16gb` to `apple-silicon-128gb`), because memory decides which models fit; one unit is one Mac's whole GPU. They're offered to machines' owners only (rule 4).
 
 ## When GPUs are busy
 

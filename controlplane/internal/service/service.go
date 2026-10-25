@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"runtime"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,13 +18,19 @@ type Service struct {
 	store   store.Store
 	catalog *catalog.Catalog
 	now     func() time.Time
+	logins  *loginLimiter
+	dummy   dummyHash
+	// hashSlots bounds concurrent password hashing: each argon2id call takes 64 MiB, so unbounded
+	// parallel sign-ins could exhaust memory (on a Mac, the memory the owner's GPU work shares).
+	hashSlots chan struct{}
 }
 
 func New(st store.Store, cat *catalog.Catalog, now func() time.Time) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: st, catalog: cat, now: now}
+	return &Service{store: st, catalog: cat, now: now, logins: newLoginLimiter(),
+		hashSlots: make(chan struct{}, min(4, max(1, runtime.NumCPU()/2)))}
 }
 
 // withTenant resolves the caller's tenant and runs fn in the same transaction.
@@ -40,18 +47,18 @@ func (s *Service) withTenant(ctx context.Context, p domain.Principal, fn func(st
 	})
 }
 
-// VisibleCatalog returns the GPU classes and images the caller's tenant may launch.
-func (s *Service) VisibleCatalog(ctx context.Context, p domain.Principal) ([]catalog.GPUClass, []catalog.Image, error) {
-	var classes []catalog.GPUClass
+// VisibleCatalog returns the regions, and the classes and images the caller's tenant may launch.
+func (s *Service) VisibleCatalog(ctx context.Context, p domain.Principal) (catalog.Catalog, error) {
+	out := catalog.Catalog{Regions: s.catalog.Regions, Images: s.catalog.Images}
 	err := s.withTenant(ctx, p, func(_ store.Queries, t domain.Tenant) error {
 		for _, g := range s.catalog.GPUClasses {
 			if g.VisibleTo(t.Tier) {
-				classes = append(classes, g)
+				out.GPUClasses = append(out.GPUClasses, g)
 			}
 		}
 		return nil
 	})
-	return classes, s.catalog.Images, err
+	return out, err
 }
 
 func (s *Service) CreateWorkload(ctx context.Context, p domain.Principal, in CreateWorkloadInput) (domain.Workload, error) {
@@ -60,7 +67,8 @@ func (s *Service) CreateWorkload(ctx context.Context, p domain.Principal, in Cre
 	}
 	var w domain.Workload
 	err := s.withTenant(ctx, p, func(q store.Queries, t domain.Tenant) error {
-		if err := s.checkCatalog(t, in); err != nil {
+		region, err := s.checkCatalog(t, in)
+		if err != nil {
 			return err
 		}
 		if err := checkQuota(ctx, q, t.ID, in.GPUClass, in.GPUCount); err != nil {
@@ -71,15 +79,12 @@ func (s *Service) CreateWorkload(ctx context.Context, p domain.Principal, in Cre
 			ID: uuid.Must(uuid.NewV7()), TenantID: t.ID, Name: in.Name, Kind: in.Kind,
 			State: domain.StatePending, ImageID: in.ImageID, GPUClass: in.GPUClass,
 			GPUCount: in.GPUCount, Params: in.params(), CreatedBy: p.Subject,
-			CreatedAt: now, UpdatedAt: now,
-			// TODO(roadmap step 4): take the region from the request, checked against the catalog's
-			// regions. Until then every workload is in the one region a Solo install has.
-			Region: domain.RegionLocal,
+			CreatedAt: now, UpdatedAt: now, Region: region,
 		}
 		if err := q.CreateWorkload(ctx, w); err != nil {
 			return err
 		}
-		return q.AppendEvent(ctx, domain.Event{WorkloadID: w.ID, To: domain.StatePending, Reason: CleanReason("created by " + p.Subject), At: now})
+		return q.AppendEvent(ctx, domain.Event{WorkloadID: w.ID, To: domain.StatePending, Reason: CleanReason("created by " + p.Actor()), At: now})
 	})
 	return w, err
 }
@@ -121,7 +126,7 @@ func (s *Service) StopWorkload(ctx context.Context, p domain.Principal, id uuid.
 		if w.State != domain.StateProvisioning && w.State != domain.StateRunning {
 			return domain.Errorf(domain.CodeInvalidTransition, "only provisioning or running workloads can be stopped (this one is %s)", w.State)
 		}
-		return Transition(ctx, q, w, domain.StateStopping, "stop requested by "+p.Subject, s.now())
+		return Transition(ctx, q, w, domain.StateStopping, "stop requested by "+p.Actor(), s.now())
 	})
 }
 
@@ -131,10 +136,19 @@ func (s *Service) StartWorkload(ctx context.Context, p domain.Principal, id uuid
 		if w.State != domain.StateStopped && w.State != domain.StateFailed {
 			return domain.Errorf(domain.CodeInvalidTransition, "only stopped or failed workloads can be started (this one is %s)", w.State)
 		}
+		// The catalog or the tenant's tier may have changed since it was created.
+		img, okImage := s.catalog.Image(w.ImageID)
+		gpu, okClass := s.catalog.GPUClass(w.GPUClass)
+		if !okImage || !okClass {
+			return domain.Errorf(domain.CodeInvalid, "its image or gpu_class is no longer offered by this installation")
+		}
+		if _, err := catalog.CheckLaunch(t.Tier, gpu, img, w.Kind, w.Region); err != nil {
+			return err
+		}
 		if err := checkQuota(ctx, q, t.ID, w.GPUClass, w.GPUCount); err != nil {
 			return err
 		}
-		return Transition(ctx, q, w, domain.StatePending, "start requested by "+p.Subject, s.now())
+		return Transition(ctx, q, w, domain.StatePending, "start requested by "+p.Actor(), s.now())
 	})
 }
 
@@ -144,7 +158,7 @@ func (s *Service) DeleteWorkload(ctx context.Context, p domain.Principal, id uui
 		if w.State == domain.StateDeleting {
 			return nil
 		}
-		return Transition(ctx, q, w, domain.StateDeleting, "delete requested by "+p.Subject, s.now())
+		return Transition(ctx, q, w, domain.StateDeleting, "delete requested by "+p.Actor(), s.now())
 	})
 }
 
@@ -163,19 +177,28 @@ func (s *Service) withWorkload(ctx context.Context, p domain.Principal, id uuid.
 	return w, err
 }
 
-func (s *Service) checkCatalog(t domain.Tenant, in CreateWorkloadInput) error {
+// checkCatalog checks a new workload against the catalog and returns its region: the one
+// requested, or the catalog's default (ADR-0009).
+func (s *Service) checkCatalog(t domain.Tenant, in CreateWorkloadInput) (domain.Region, error) {
+	region := in.Region
+	if region == "" {
+		region = s.catalog.DefaultRegion()
+	}
+	if _, ok := s.catalog.Region(region); !ok {
+		return "", domain.Errorf(domain.CodeInvalid, "unknown region %q", region)
+	}
 	img, ok := s.catalog.Image(in.ImageID)
 	if !ok || img.Kind != in.Kind {
-		return domain.Errorf(domain.CodeInvalid, "unknown %s image %q", in.Kind, in.ImageID)
+		return "", domain.Errorf(domain.CodeInvalid, "unknown %s image %q", in.Kind, in.ImageID)
 	}
 	gpu, ok := s.catalog.GPUClass(in.GPUClass)
 	if !ok || !gpu.VisibleTo(t.Tier) {
-		return domain.Errorf(domain.CodeInvalid, "unknown gpu_class %q", in.GPUClass)
+		return "", domain.Errorf(domain.CodeInvalid, "unknown gpu_class %q", in.GPUClass) // don't confirm hidden classes exist
 	}
-	if in.Kind == domain.KindVM && gpu.VMDeviceName == "" {
-		return domain.Errorf(domain.CodeInvalid, "gpu_class %q cannot be attached to VMs", in.GPUClass)
+	if _, err := catalog.CheckLaunch(t.Tier, gpu, img, in.Kind, region); err != nil {
+		return "", err
 	}
-	return nil
+	return region, nil
 }
 
 func checkQuota(ctx context.Context, q store.Queries, tenantID uuid.UUID, gpuClass string, want int) error {

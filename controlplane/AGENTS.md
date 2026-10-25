@@ -21,7 +21,8 @@ internal/store/         Store/Queries interfaces
   storetest/            conformance suite every implementation must pass
 internal/service/       business operations, tenant-scoped; Transition() is the single path for state changes
 internal/api/           HTTP handlers (stdlib net/http); thin, and calls the service only
-internal/auth/          Dev (header) and OIDC (JWT) authenticators (planned: local accounts and API tokens)
+internal/auth/          authenticators: Local (API tokens and session cookies, with the CSRF check), OIDC (JWT), and Dev (header)
+internal/credential/    argon2id password hashing, and random tokens stored only as SHA-256 hashes
 internal/client/        Go client for the /v1 API, used by the CLI commands (and tests); keeps exports byte-for-byte
 internal/cluster/       Backend interface, labels, CheckJSONTypes
   manifests/            pure builders that return Kubernetes objects as map[string]any
@@ -53,7 +54,8 @@ Allowed imports flow downward: `api → service → store, domain`; `controller 
 - **State changes:** call `service.Transition(ctx, q, &w, to, reason, now)` inside `store.InTx`. Never call `UpdateWorkloadState` directly.
 - **Time:** inject `now func() time.Time`, never call `time.Now()` inside logic, and store UTC.
 - **Errors:** expected failures are `domain.Errorf(code, ...)`, and their message is shown to users. Wrap everything else with `%w`; it becomes a logged 500.
-- **Logging:** `log/slog` with key-value pairs. Never log tokens, SSH keys, agent certificates, or model URIs that carry credentials. Errors that may echo inputs (runtime and Kubernetes errors) go through `service.RedactSecrets` first. Request-scoped lines use `requestInfoFrom(ctx).logAttrs()` in `api`: the request ID, plus the tenant and subject once authenticated.
+- **Logging:** `log/slog` with key-value pairs. Never log passwords, tokens, session values, SSH keys, agent certificates, or model URIs that carry credentials.
+- **Credentials:** store only hashes (`credential.HashPassword`, `credential.HashToken`), and show a new API token only in the response that creates it. Hash passwords outside any store transaction: argon2id is slow on purpose, and SQLite runs one transaction at a time. Errors that may echo inputs (runtime and Kubernetes errors) go through `service.RedactSecrets` first. Request-scoped lines use `requestInfoFrom(ctx).logAttrs()` in `api`: the request ID, plus the tenant and subject once authenticated.
 - **Transparency** (rule 14, ADR-0015): every controller decision gets a specific, human-readable `reason` in `service.Transition` (for example `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free`, not `queued`). A decision that doesn't change state, such as a retry, gets a note (`service.Note`). New fields a user supplied belong in the export. If a field can hold a secret, redact it in `service.ExportWorkload` and add a `Redaction` entry; never drop data silently.
 - **Reasons are a fixed vocabulary.** Never put raw runtime messages or errors into a reason: they can name internal objects, describe other tenants' use of the cluster, or echo credentials. `cluster.Backend.Observe` returns fixed text, and the raw error goes to the operator's log. Only trusted tenants see free-capacity counts.
 - **No money** (rule 12): `metering` is usage accounting for quotas and fairness only.
@@ -71,8 +73,8 @@ The [roadmap's Phase 1 task breakdown](../docs/roadmap.md#task-breakdown-the-sol
 has the full list. Until it lands:
 
 - **Profiles and agents (ADR-0012, ADR-0013):** don't assume Kubernetes, Postgres, or Linux outside their own packages. Everything above `cluster.Backend` and `store.Store` must work with the agent backend and SQLite.
-- **Regions (ADR-0009):** don't write code that assumes one region. Every workload, machine, and usage record carries one; new regional queries take a `region` parameter.
-- **Fallbacks (ADR-0010):** don't treat the requested class (`gpu_class`) as the class that runs. Capacity, usage accounting, and display use `placed_class`, which the controller's `place` step records at admission. `service.Transition` refuses a metered state for an unplaced workload.
+- **Regions (ADR-0009):** don't write code that assumes one region. Every workload, machine, and usage record carries one; the controller reconciles `Options.Region` only; regional queries (`WorkloadsInStates`, `GPUsAllocated`) take a `region` parameter.
+- **Fallbacks (ADR-0010):** don't treat the requested class (`gpu_class`) as the class that runs. Capacity, usage accounting, and display use `placed_class`, which the controller's `place` step records at admission. `service.Transition` refuses provisioning or a metered state for an unplaced workload.
 - **Sharing (ADR-0014):** admission will need the machine's sharing level and the user's trust level, so keep placement logic in one place (the controller's admit step, which calls `place`).
 
 ## Commands

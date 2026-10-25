@@ -21,8 +21,12 @@ func ctxFor(t *testing.T, tier domain.IsolationTier, imageID string) Context {
 	if !ok {
 		t.Fatalf("image %s missing from catalog", imageID)
 	}
+	runtime, ok := img.RuntimeFor(gpu.Accelerator)
+	if !ok {
+		t.Fatalf("image %s has no runtime for %s", imageID, gpu.Accelerator)
+	}
 	return Context{
-		TenantSlug: "acme", Tier: tier, GPU: gpu, Image: img,
+		TenantSlug: "acme", Tier: tier, GPU: gpu, Image: img, Runtime: runtime,
 		StorageClass: "tensora-block", ImagesNamespace: "tensora-images", UntrustedRuntimeClass: "kata-test",
 	}
 }
@@ -38,7 +42,7 @@ func wl(kind domain.WorkloadKind, gpus int) domain.Workload {
 }
 
 var imageFor = map[domain.WorkloadKind]string{
-	domain.KindVM: "ubuntu-24.04-cuda", domain.KindNotebook: "pytorch-notebook", domain.KindEndpoint: "vllm",
+	domain.KindVM: "ubuntu-24.04-cuda", domain.KindNotebook: "pytorch-notebook", domain.KindEndpoint: "openai-endpoint",
 }
 
 // dig walks nested maps/slices: dig(m, "spec", "template", "containers", 0, "image").
@@ -171,7 +175,7 @@ func TestPodsAreHardenedAndUntrustedOnesSandboxed(t *testing.T) {
 }
 
 func TestEndpointUsesSafeRuntime(t *testing.T) {
-	objs, err := Workload(wl(domain.KindEndpoint, 2), ctxFor(t, domain.TierUntrusted, "vllm"), true)
+	objs, err := Workload(wl(domain.KindEndpoint, 2), ctxFor(t, domain.TierUntrusted, "openai-endpoint"), true)
 	if err != nil {
 		t.Fatal(err)
 	}

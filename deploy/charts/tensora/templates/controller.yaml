@@ -95,6 +95,8 @@ spec:
           args: [controller]
           env:
             {{- include "tensora.env" . | nindent 12 }}
+            - name: TENSORA_REGION
+              value: {{ include "tensora.region" . | quote }}
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
           {{- include "tensora.containerSecurityContext" . | nindent 10 }}

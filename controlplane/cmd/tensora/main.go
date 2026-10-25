@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,6 +45,9 @@ Server commands:
   migrate     apply database migrations to TENSORA_DATABASE_URL (Postgres or a SQLite file;
               a SQLite file is also migrated whenever it's opened)
   seed        create dev tenants and quotas (TENSORA_ENV=dev only)
+  setup -email you@example.com [-tenant home] [-password-stdin]
+              create the first account, the machine's owner, for TENSORA_AUTH_MODE=local; asks for
+              the password without echoing it (or reads one line from stdin)
   dev         api + controller + metering in one process with seeded data; uses an in-memory
               store unless TENSORA_DATABASE_URL is set (postgres://… or sqlite:<path>)
 
@@ -73,6 +78,8 @@ func main() {
 	switch {
 	case isClientCommand(cmd):
 		err = runClient(ctx, cmd, args, os.Stdout)
+	case cmd == "setup":
+		err = runSetup(ctx, args, os.Stdin, os.Stdout)
 	case len(args) > 0:
 		err = fmt.Errorf("%s takes no arguments (see tensora help)", cmd)
 	default:
@@ -213,6 +220,19 @@ func openLogFile(path string) (*os.File, error) {
 	return f, nil
 }
 
+// listensOnlyOnLoopback reports whether addr ("127.0.0.1:8080", ":8080") accepts only this machine.
+func listensOnlyOnLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.IsLoopback()
+}
+
 func openStore(ctx context.Context, cfg config.Config, log *slog.Logger, allowMemory bool) (store.Store, error) {
 	db, err := cfg.Database()
 	if err != nil {
@@ -233,6 +253,10 @@ func openStore(ctx context.Context, cfg config.Config, log *slog.Logger, allowMe
 }
 
 func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *catalog.Catalog) (*controller.Controller, error) {
+	// A controller for a region users can't create workloads in would leave everything pending.
+	if _, ok := cat.Region(cfg.Region); !ok {
+		return nil, fmt.Errorf("TENSORA_REGION %q isn't in the catalog's regions", cfg.Region)
+	}
 	var backend cluster.Backend
 	switch cfg.ClusterBackend {
 	case "kubernetes":
@@ -245,6 +269,7 @@ func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *cat
 		backend = fake.New(cfg.FakeCapacity)
 	}
 	return controller.New(st, backend, cat, controller.Options{
+		Region:                cfg.Region,
 		StorageClass:          cfg.StorageClass,
 		ImagesNamespace:       cfg.ImagesNamespace,
 		UntrustedRuntimeClass: cfg.UntrustedRuntimeClass,
@@ -253,19 +278,32 @@ func newController(cfg config.Config, log *slog.Logger, st store.Store, cat *cat
 }
 
 func serveAPI(ctx context.Context, cfg config.Config, log *slog.Logger, st store.Store, cat *catalog.Catalog) error {
-	var authn auth.Authenticator = auth.Dev{}
-	if cfg.AuthMode == "oidc" {
+	svc := service.New(st, cat, nil)
+	var authn auth.Authenticator
+	switch cfg.AuthMode {
+	case "oidc":
 		o, err := auth.NewOIDC(ctx, cfg.OIDCIssuer, cfg.OIDCAudience, cfg.OIDCTenantClaim)
 		if err != nil {
 			return err
 		}
 		authn = o
-	} else {
+	case "local":
+		authn = auth.NewLocal(svc, auth.Transport{TrustedProxies: cfg.TrustedProxies, AllowPlainHTTP: cfg.InsecureHTTP})
+		if n, err := countUsers(ctx, st); err == nil && n == 0 {
+			log.Warn("local auth: no accounts yet; create the owner with `tensora setup`")
+		}
+		if !listensOnlyOnLoopback(cfg.HTTPAddr) && !cfg.InsecureHTTP && len(cfg.TrustedProxies) == 0 {
+			log.Warn("local auth: listening beyond this machine, but sign-in from other machines needs HTTPS "+
+				"through a trusted proxy (TENSORA_TRUSTED_PROXIES), or TENSORA_INSECURE_HTTP=true on a network you trust",
+				"addr", cfg.HTTPAddr)
+		}
+	default:
+		authn = auth.Dev{}
 		log.Warn("dev auth enabled: the X-Dev-Tenant header is trusted")
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.New(service.New(st, cat, nil), authn, log.With("component", "api"), st.Ping).Handler(),
+		Handler:           api.New(svc, authn, log.With("component", "api"), st.Ping).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)

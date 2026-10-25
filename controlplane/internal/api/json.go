@@ -36,11 +36,24 @@ type listView[T any] struct {
 	Items []T `json:"items"`
 }
 
+type regionView struct {
+	ID          domain.Region `json:"id"`
+	DisplayName string        `json:"display_name"`
+}
+
 type gpuClassView struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	VRAMGB      int    `json:"vram_gb"`
-	SupportsVM  bool   `json:"supports_vm"`
+	ID          string                 `json:"id"`
+	DisplayName string                 `json:"display_name"`
+	Accelerator domain.AcceleratorKind `json:"accelerator"`
+	VRAMGB      int                    `json:"vram_gb"`
+	SupportsVM  bool                   `json:"supports_vm"`
+	Regions     []domain.Region        `json:"regions"` // where it's offered
+}
+
+// runtimeView says what serves an image on which accelerators, without the internal ref.
+type runtimeView struct {
+	Accelerators []domain.AcceleratorKind `json:"accelerators"`
+	Server       string                   `json:"server,omitempty"`
 }
 
 type imageView struct {
@@ -48,9 +61,11 @@ type imageView struct {
 	DisplayName string              `json:"display_name"`
 	Kind        domain.WorkloadKind `json:"kind"`
 	Description string              `json:"description"`
+	Runtimes    []runtimeView       `json:"runtimes"`
 }
 
 type catalogView struct {
+	Regions    []regionView   `json:"regions"` // the first is the default
 	GPUClasses []gpuClassView `json:"gpu_classes"`
 	Images     []imageView    `json:"images"`
 }
@@ -67,6 +82,10 @@ type errorDetail struct {
 }
 
 func toWorkloadView(w domain.Workload) workloadView {
+	if w.State == domain.StatePending || w.State == domain.StateQueued {
+		// Waiting to be placed again: a placement from an earlier run isn't where it will run.
+		w.PlacedClass = ""
+	}
 	return workloadView{
 		ID: w.ID, Name: w.Name, Kind: w.Kind, State: w.State, ImageID: w.ImageID,
 		GPUClass: w.GPUClass, GPUCount: w.GPUCount, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
@@ -74,13 +93,31 @@ func toWorkloadView(w domain.Workload) workloadView {
 	}
 }
 
-func toCatalogView(classes []catalog.GPUClass, images []catalog.Image) catalogView {
-	v := catalogView{GPUClasses: make([]gpuClassView, len(classes)), Images: make([]imageView, len(images))}
-	for i, g := range classes {
-		v.GPUClasses[i] = gpuClassView{ID: g.ID, DisplayName: g.DisplayName, VRAMGB: g.VRAMGB, SupportsVM: g.VMDeviceName != ""}
+func toCatalogView(c catalog.Catalog) catalogView {
+	v := catalogView{
+		Regions:    make([]regionView, len(c.Regions)),
+		GPUClasses: make([]gpuClassView, len(c.GPUClasses)),
+		Images:     make([]imageView, len(c.Images)),
 	}
-	for i, img := range images {
-		v.Images[i] = imageView{ID: img.ID, DisplayName: img.DisplayName, Kind: img.Kind, Description: img.Description}
+	for i, r := range c.Regions {
+		v.Regions[i] = regionView{ID: r.ID, DisplayName: r.DisplayName}
+	}
+	for i, g := range c.GPUClasses {
+		regions := g.Regions
+		if len(regions) == 0 {
+			for _, r := range c.Regions {
+				regions = append(regions, r.ID)
+			}
+		}
+		v.GPUClasses[i] = gpuClassView{ID: g.ID, DisplayName: g.DisplayName, Accelerator: g.Accelerator, VRAMGB: g.VRAMGB,
+			SupportsVM: g.VMDeviceName != "", Regions: regions}
+	}
+	for i, img := range c.Images {
+		runtimes := make([]runtimeView, len(img.Runtimes))
+		for j, r := range img.Runtimes {
+			runtimes[j] = runtimeView{Accelerators: r.Accelerators, Server: r.Server}
+		}
+		v.Images[i] = imageView{ID: img.ID, DisplayName: img.DisplayName, Kind: img.Kind, Description: img.Description, Runtimes: runtimes}
 	}
 	return v
 }
@@ -93,6 +130,7 @@ var statusByCode = map[domain.Code]int{
 	domain.CodeConflict:          http.StatusConflict,
 	domain.CodeQuotaExceeded:     http.StatusConflict,
 	domain.CodeInvalidTransition: http.StatusConflict,
+	domain.CodeTooManyRequests:   http.StatusTooManyRequests,
 }
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -101,6 +139,9 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, ok := statusByCode[de.Code]
 		if !ok {
 			status = http.StatusBadRequest
+		}
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "60")
 		}
 		writeJSON(w, status, errorView{errorDetail{Code: string(de.Code), Message: de.Message, RequestID: requestID(r.Context())}})
 		return

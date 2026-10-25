@@ -16,6 +16,7 @@ const (
 	CodeConflict          Code = "conflict"
 	CodeQuotaExceeded     Code = "quota_exceeded"
 	CodeInvalidTransition Code = "invalid_transition"
+	CodeTooManyRequests   Code = "too_many_requests"
 )
 
 // Error is an expected failure whose message is safe to show the caller.

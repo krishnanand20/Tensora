@@ -38,13 +38,31 @@ export interface CreateWorkload {
   gpu_count: number;
   ssh_public_key?: string;
   model_uri?: string;
+  /** Where it runs and its data stays (ADR-0009); omitted means the catalog's first region. */
+  region?: string;
+}
+
+export type Accelerator = "nvidia" | "apple" | "amd" | "cpu";
+
+export interface Region {
+  id: string;
+  display_name: string;
 }
 
 export interface GpuClass {
   id: string;
   display_name: string;
+  accelerator: Accelerator;
   vram_gb: number;
   supports_vm: boolean;
+  /** Regions offering it. */
+  regions: string[];
+}
+
+/** What serves an image on which accelerators, such as vLLM on NVIDIA or MLX on Apple Silicon. */
+export interface ImageRuntime {
+  accelerators: Accelerator[];
+  server?: string;
 }
 
 export interface CatalogImage {
@@ -52,9 +70,13 @@ export interface CatalogImage {
   display_name: string;
   kind: WorkloadKind;
   description: string;
+  /** In order of preference; the first that supports a class's accelerator is used. */
+  runtimes: ImageRuntime[];
 }
 
 export interface Catalog {
+  /** The first is the default. */
+  regions: Region[];
   gpu_classes: GpuClass[];
   images: CatalogImage[];
 }
@@ -70,6 +92,36 @@ export interface WorkloadEvent {
   to: WorkloadState;
   reason: string;
   at: string;
+}
+
+/** Who's signed in (GET /v1/auth/me). */
+export interface Me {
+  subject: string;
+  email?: string;
+  tenant: string;
+  auth_mode: "local" | "oidc" | "dev";
+}
+
+/** After a password change: other sessions are signed out, but API tokens keep working. */
+export interface PasswordChanged {
+  status: string;
+  /** API tokens that still work; revoke them too if the password leaked. */
+  api_tokens_active: number;
+}
+
+/** An API token, as listed. The token itself is shown only once, when it's created. */
+export interface ApiToken {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  expires_at?: string;
+  last_used_at?: string;
+  revoked_at?: string;
+}
+
+export interface CreatedApiToken extends ApiToken {
+  token: string;
 }
 
 export interface ApiErrorBody {

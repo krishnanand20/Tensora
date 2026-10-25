@@ -33,6 +33,9 @@ type usageKey struct {
 
 type data struct {
 	tenants     map[uuid.UUID]domain.Tenant
+	users       map[uuid.UUID]domain.User
+	sessions    map[string]domain.Session
+	tokens      map[uuid.UUID]domain.APIToken
 	machines    map[uuid.UUID]domain.Machine
 	quotas      map[quotaKey]domain.Quota
 	workloads   map[uuid.UUID]domain.Workload
@@ -44,6 +47,9 @@ type data struct {
 func New() *Store {
 	return &Store{d: data{
 		tenants:   map[uuid.UUID]domain.Tenant{},
+		users:     map[uuid.UUID]domain.User{},
+		sessions:  map[string]domain.Session{},
+		tokens:    map[uuid.UUID]domain.APIToken{},
 		machines:  map[uuid.UUID]domain.Machine{},
 		quotas:    map[quotaKey]domain.Quota{},
 		workloads: map[uuid.UUID]domain.Workload{},
@@ -68,6 +74,9 @@ func (s *Store) Close()                     {}
 func (d *data) clone() data {
 	c := *d
 	c.tenants = maps.Clone(d.tenants)
+	c.users = maps.Clone(d.users)
+	c.sessions = maps.Clone(d.sessions)
+	c.tokens = maps.Clone(d.tokens)
 	c.machines = make(map[uuid.UUID]domain.Machine, len(d.machines))
 	for id, m := range d.machines {
 		c.machines[id] = cloneMachine(m)
@@ -160,6 +169,147 @@ func (q *queries) GPUsHeld(_ context.Context, tenantID uuid.UUID, gpuClass strin
 	return n, nil
 }
 
+func (q *queries) CountUsers(context.Context) (int, error) { return len(q.d.users), nil }
+
+// LockUsers needs nothing here: transactions already run one at a time.
+func (q *queries) LockUsers(context.Context) error { return nil }
+
+func (q *queries) CreateUser(_ context.Context, u domain.User) error {
+	if _, ok := q.d.tenants[u.TenantID]; !ok {
+		return store.NotFound("user")
+	}
+	for id, existing := range q.d.users {
+		if id == u.ID || existing.Email == u.Email {
+			return domain.Errorf(domain.CodeConflict, "user already exists")
+		}
+	}
+	q.d.users[u.ID] = u
+	return nil
+}
+
+func (q *queries) UserByEmail(_ context.Context, email string) (domain.User, error) {
+	for _, u := range q.d.users {
+		if u.Email == email {
+			return u, nil
+		}
+	}
+	return domain.User{}, store.NotFound("user")
+}
+
+func (q *queries) UserByID(_ context.Context, id uuid.UUID) (domain.User, error) {
+	if u, ok := q.d.users[id]; ok {
+		return u, nil
+	}
+	return domain.User{}, store.NotFound("user")
+}
+
+func (q *queries) SetPasswordHash(_ context.Context, userID uuid.UUID, hash string) error {
+	u, ok := q.d.users[userID]
+	if !ok {
+		return store.NotFound("user")
+	}
+	u.PasswordHash = hash
+	q.d.users[userID] = u
+	return nil
+}
+
+func (q *queries) CreateSession(_ context.Context, s domain.Session) error {
+	if _, ok := q.d.users[s.UserID]; !ok {
+		return store.NotFound("session")
+	}
+	if _, ok := q.d.sessions[s.TokenHash]; ok {
+		return domain.Errorf(domain.CodeConflict, "session already exists")
+	}
+	q.d.sessions[s.TokenHash] = s
+	return nil
+}
+
+func (q *queries) SessionByTokenHash(_ context.Context, hash string) (domain.Session, error) {
+	if s, ok := q.d.sessions[hash]; ok {
+		return s, nil
+	}
+	return domain.Session{}, store.NotFound("session")
+}
+
+func (q *queries) DeleteSession(_ context.Context, hash string) error {
+	delete(q.d.sessions, hash)
+	return nil
+}
+
+func (q *queries) DeleteOtherSessions(_ context.Context, userID uuid.UUID, keepHash string) error {
+	for hash, s := range q.d.sessions {
+		if s.UserID == userID && hash != keepHash {
+			delete(q.d.sessions, hash)
+		}
+	}
+	return nil
+}
+
+func (q *queries) DeleteExpiredSessions(_ context.Context, now time.Time) error {
+	for hash, s := range q.d.sessions {
+		if !s.ExpiresAt.After(now) {
+			delete(q.d.sessions, hash)
+		}
+	}
+	return nil
+}
+
+func (q *queries) CreateAPIToken(_ context.Context, t domain.APIToken) error {
+	if _, ok := q.d.users[t.UserID]; !ok {
+		return store.NotFound("token")
+	}
+	for id, existing := range q.d.tokens {
+		if id == t.ID || existing.TokenHash == t.TokenHash ||
+			(existing.UserID == t.UserID && existing.Name == t.Name && existing.RevokedAt.IsZero()) {
+			return domain.Errorf(domain.CodeConflict, "token already exists")
+		}
+	}
+	q.d.tokens[t.ID] = t
+	return nil
+}
+
+func (q *queries) APITokenByHash(_ context.Context, hash string) (domain.APIToken, error) {
+	for _, t := range q.d.tokens {
+		if t.TokenHash == hash {
+			return t, nil
+		}
+	}
+	return domain.APIToken{}, store.NotFound("token")
+}
+
+func (q *queries) TouchAPIToken(_ context.Context, id uuid.UUID, at time.Time) error {
+	if t, ok := q.d.tokens[id]; ok {
+		t.LastUsedAt = at
+		q.d.tokens[id] = t
+	}
+	return nil
+}
+
+func (q *queries) ListAPITokens(_ context.Context, userID uuid.UUID) ([]domain.APIToken, error) {
+	var out []domain.APIToken
+	for _, t := range q.d.tokens {
+		if t.UserID == userID {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b domain.APIToken) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID.String(), b.ID.String()))
+	})
+	return out, nil
+}
+
+func (q *queries) RevokeAPIToken(_ context.Context, userID, id uuid.UUID, at time.Time) error {
+	t, ok := q.d.tokens[id]
+	if !ok || t.UserID != userID {
+		return store.NotFound("token")
+	}
+	if t.RevokedAt.IsZero() {
+		t.RevokedAt = at
+		q.d.tokens[id] = t
+	}
+	return nil
+}
+
 func (q *queries) CreateMachine(_ context.Context, m domain.Machine) error {
 	if _, ok := q.d.tenants[m.TenantID]; !ok {
 		return store.NotFound("machine")
@@ -193,6 +343,9 @@ func (q *queries) ListMachines(_ context.Context, tenantID uuid.UUID) ([]domain.
 }
 
 func (q *queries) CreateWorkload(_ context.Context, w domain.Workload) error {
+	if !w.Region.Valid() {
+		return store.InvalidRegion("workload", w.Region)
+	}
 	if _, ok := q.d.tenants[w.TenantID]; !ok {
 		return store.NotFound("tenant")
 	}
@@ -254,10 +407,10 @@ func (q *queries) UpdateWorkloadState(_ context.Context, id uuid.UUID, from, to 
 	return nil
 }
 
-func (q *queries) WorkloadsInStates(_ context.Context, states ...domain.State) ([]domain.Workload, error) {
+func (q *queries) WorkloadsInStates(_ context.Context, region domain.Region, states ...domain.State) ([]domain.Workload, error) {
 	var out []domain.Workload
 	for _, w := range q.d.workloads {
-		if slices.Contains(states, w.State) {
+		if w.Region == region && slices.Contains(states, w.State) {
 			out = append(out, cloneWorkload(w))
 		}
 	}
@@ -265,12 +418,17 @@ func (q *queries) WorkloadsInStates(_ context.Context, states ...domain.State) (
 	return out, nil
 }
 
-func (q *queries) GPUsAllocated(context.Context) (map[string]int, error) {
+func (q *queries) GPUsAllocated(_ context.Context, region domain.Region) (map[string]int, error) {
 	out := map[string]int{}
 	for _, w := range q.d.workloads {
-		if w.State.HoldsCapacity() && w.PlacedClass != "" {
-			out[w.PlacedClass] += w.GPUCount
+		if w.Region != region || !w.State.HoldsCapacity() {
+			continue
 		}
+		class := w.PlacedClass
+		if class == "" {
+			class = w.GPUClass
+		}
+		out[class] += w.GPUCount
 	}
 	return out, nil
 }
@@ -280,8 +438,14 @@ func (q *queries) SetPlacement(_ context.Context, id uuid.UUID, placedClass stri
 	if !ok {
 		return store.NotFound("workload")
 	}
-	if _, ok := q.d.machines[machineID]; machineID != uuid.Nil && !ok {
-		return store.NotFound("machine")
+	if machineID != uuid.Nil {
+		m, ok := q.d.machines[machineID]
+		if !ok {
+			return store.NotFound("machine")
+		}
+		if err := m.CanHost(w); err != nil {
+			return err
+		}
 	}
 	w.PlacedClass, w.MachineID = placedClass, machineID
 	q.d.workloads[id] = w
@@ -336,6 +500,9 @@ func (q *queries) EventsForWorkload(ctx context.Context, tenantID, workloadID uu
 }
 
 func (q *queries) InsertUsageIfAbsent(_ context.Context, r domain.UsageRecord) (bool, error) {
+	if !r.Region.Valid() {
+		return false, store.InvalidRegion("usage record", r.Region)
+	}
 	k := usageKey{r.WorkloadID, r.PeriodStart.UTC()}
 	if _, ok := q.d.usage[k]; ok {
 		return false, nil

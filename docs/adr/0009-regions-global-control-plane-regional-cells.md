@@ -1,6 +1,6 @@
 # 0009. Regions: one global control plane, independent regional cells
 
-- **Status:** Accepted (data model in code: every workload, machine, and usage record has a region. Region in the create API, the catalog's region list, and per-region controllers are planned; see the roadmap)
+- **Status:** Accepted (in code: every workload, machine, and usage record has a region; the catalog lists regions; create takes `region`; each controller reconciles one region, `TENSORA_REGION`. Region-aware workload URLs and cross-region opt-in are planned; see the roadmap)
 - **Date:** 2026-10-23
 
 > **Reframed 2026-10-23 ([ADR-0011](0011-free-for-everyone.md), [ADR-0012](0012-deployment-profiles.md)):** Tensora is self-hosted software, not a cloud we operate or sell. Read "global control plane" as *the control plane of one deployment*, and "regional cell" as *one location within it* (a home, an office, a datacenter). Solo installs have one region, `local`. Statements below about selling worldwide or India as a first region **no longer apply**.

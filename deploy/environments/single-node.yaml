@@ -2,7 +2,9 @@
 # Consumed by helmfile (feature flags, templated values files) and by the cluster-config chart.
 # A one-region deployment: this cluster also hosts the control plane (ADR-0009).
 
-region: dc-1 # read once regions land in code (roadmap)
+# This cluster's region (ADR-0009): its controller reconciles only this region's workloads. It must be
+# listed in deploy/catalog.yaml, and it can't change once workloads exist in it.
+region: dc-1
 
 domain: tensora.example.com
 acmeEmail: ops@tensora.example.com

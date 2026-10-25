@@ -78,7 +78,7 @@ make web-dev    # dashboard on http://localhost:5173 (in a second terminal)
 ```bash
 curl -s localhost:8080/v1/catalog -H 'X-Dev-Tenant: acme' | jq
 curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' -H 'Content-Type: application/json' \
-  -d '{"name":"llm","kind":"endpoint","image_id":"vllm","gpu_class":"l40s-48gb","gpu_count":1,
+  -d '{"name":"llm","kind":"endpoint","image_id":"openai-endpoint","gpu_class":"l40s-48gb","gpu_count":1,
        "model_uri":"hf://Qwen/Qwen2.5-0.5B-Instruct"}' | jq
 curl -s localhost:8080/v1/workloads -H 'X-Dev-Tenant: acme' | jq   # pending → provisioning → running
 ```

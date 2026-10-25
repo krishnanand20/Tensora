@@ -23,7 +23,10 @@ cluster:
   untrustedRuntimeClass: kata-qemu-nvidia-gpu
   storageClass: tensora-block
   imagesNamespace: tensora-images
-  # Planned (ADR-0009): `region: dc-1`, passed to this cluster's controller as TENSORA_REGION.
+  # The region this cluster serves (ADR-0009), passed to its controller (only) as TENSORA_REGION.
+  # The controller reconciles only this region's workloads. It must be listed in the catalog's
+  # regions, or rendering fails. helmfile sets it from the environment file's `region`.
+  region: dc-1
 
 gateway:
   name: tensora
@@ -52,5 +55,5 @@ web:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { memory: 128Mi }
 
-# Contents of images/catalog.yaml. helmfile passes it with --set-file catalog=...
+# Contents of deploy/catalog.yaml. helmfile passes it with --set-file catalog=...
 catalog: ""

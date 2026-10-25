@@ -1,4 +1,4 @@
-import type { Workload, WorkloadEvent, WorkloadState } from "./api/types";
+import type { Accelerator, CatalogImage, GpuClass, Workload, WorkloadEvent, WorkloadState } from "./api/types";
 
 export type Action = "stop" | "start" | "delete";
 
@@ -30,4 +30,26 @@ export function classShown(w: Pick<Workload, "gpu_class" | "gpu_count" | "placed
   const placed = w.placed_class ?? w.gpu_class;
   const shown = `${w.gpu_count} × ${placed}`;
   return placed === w.gpu_class ? shown : `${shown} (requested ${w.gpu_class})`;
+}
+
+/** The runtime an image uses on an accelerator: the first that supports it. Mirrors catalog.Image.RuntimeFor. */
+export function runtimeFor(image: CatalogImage | undefined, accelerator: Accelerator) {
+  return image?.runtimes.find((r) => r.accelerators.includes(accelerator));
+}
+
+/**
+ * The classes a launch can use: offered in the region, able to host VMs if it's a VM, and with a
+ * runtime for the image. The API checks the same; this only keeps impossible choices off the form.
+ */
+export function launchableClasses(
+  classes: GpuClass[],
+  image: CatalogImage | undefined,
+  region: string,
+): GpuClass[] {
+  return classes.filter(
+    (g) =>
+      g.regions.includes(region) &&
+      (image?.kind !== "vm" || g.supports_vm) &&
+      runtimeFor(image, g.accelerator) !== undefined,
+  );
 }

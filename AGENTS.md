@@ -50,7 +50,9 @@ Run from the repo root (`make help` lists everything):
 - `make fmt` — auto-format everything
 - `make deploy-check` — render the Datacenter charts and validate with kubeconform (no cluster needed)
 
-The `tensora` binary is also a CLI client for a running API: `tensora workloads [-all]`, `tensora events <id>`,
+With `TENSORA_AUTH_MODE=local`, create the owner account once with `tensora setup -email you@example.com`,
+then sign in on the dashboard and make API tokens there. The `tensora` binary is also a CLI client for a
+running API (set `TENSORA_TOKEN`): `tensora workloads [-all]`, `tensora events <id>`,
 `tensora export <id>` ([logs and transparency](docs/architecture/logs-and-transparency.md)). For full
 server logs, set `TENSORA_LOG_LEVEL=debug` and `TENSORA_LOG_FILE=<path>`.
 
@@ -67,7 +69,7 @@ touched and report the actual output. If a tool is missing, say so — do not cl
 6. **Model weights must be in a code-free format:** safetensors, or GGUF once `tensora-ml validate` supports it ([ADR-0013](docs/adr/0013-node-agent-and-apple-silicon.md)). Never pickle, and never `trust_remote_code`. The validator (`ml/src/tensora_ml/validate.py`) is the enforcement point.
 7. **Every workload state change goes through `service.Transition`**, which validates against `domain` state rules and appends a `workload_events` row. Usage accounting depends on those rows. Never write `state` directly.
 8. **Every store query that touches tenant data is scoped by tenant ID.** A request from tenant B for tenant A's object returns 404, never 403 (don't leak existence).
-9. **Every workload belongs to exactly one region, and its data never leaves that region** unless the user explicitly opts in. Solo has one region, `local` ([ADR-0009](docs/adr/0009-regions-global-control-plane-regional-cells.md)). *Not in code yet; new code must not assume a single region.*
+9. **Every workload belongs to exactly one region, and its data never leaves that region** unless the user explicitly opts in. Solo has one region, `local` ([ADR-0009](docs/adr/0009-regions-global-control-plane-regional-cells.md)). Every workload, machine, and usage record carries its region; each controller reconciles one (`TENSORA_REGION`); a machine hosts only workloads in its own region. New code must not assume a single region.
 10. **Fallbacks are opt-in and visible** ([ADR-0010](docs/adr/0010-fallbacks-cpu-placement-and-inference-failover.md)). Never silently give a user a different GPU class, CPU, model, machine, or region. Record `placed_class`, say what served each response, and account usage for what actually ran.
 11. **Cross-platform:** `controlplane/` must build and run on linux/amd64, linux/arm64, and darwin/arm64 (`make build-all`). OS-specific code lives only behind build tags in driver packages. No Linux-only assumptions anywhere else.
 12. **Free for everyone:** no pricing, payment, invoice, paid-tier, or paywall logic in code, UI, or docs ([ADR-0011](docs/adr/0011-free-for-everyone.md)).

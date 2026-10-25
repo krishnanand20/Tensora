@@ -94,7 +94,7 @@ func TestSchemaConstraints(t *testing.T) {
 		}
 	}
 	orphan := domain.Workload{ID: uuid.New(), TenantID: uuid.New(), Name: "w", Kind: domain.KindVM, State: domain.StatePending,
-		ImageID: "i", GPUClass: "c", GPUCount: 1, CreatedBy: "s"}
+		ImageID: "i", GPUClass: "c", GPUCount: 1, CreatedBy: "s", Region: domain.RegionLocal}
 	err = st.InTx(ctx, func(q store.Queries) error { return q.CreateWorkload(ctx, orphan) })
 	if !domain.IsNotFound(err) {
 		t.Errorf("workload for a missing tenant: err = %v, want not found", err)
@@ -151,7 +151,8 @@ func TestConcurrentCreatesNeverExceedQuota(t *testing.T) {
 				}
 				now := time.Now()
 				return q.CreateWorkload(ctx, domain.Workload{ID: uuid.New(), TenantID: tn.ID, Name: "w", Kind: domain.KindNotebook,
-					State: domain.StatePending, ImageID: "i", GPUClass: "l40s-48gb", GPUCount: 1, CreatedBy: "s", CreatedAt: now, UpdatedAt: now})
+					State: domain.StatePending, ImageID: "i", GPUClass: "l40s-48gb", GPUCount: 1, CreatedBy: "s", CreatedAt: now, UpdatedAt: now,
+					Region: domain.RegionLocal})
 			})
 		}()
 	}
@@ -340,9 +341,8 @@ func TestConcurrentFirstOpens(t *testing.T) {
 	}
 }
 
-// Upgrading a database with data: workloads admitted before migration 00002 ran on the class
-// they requested, so they're backfilled as placed there, and everything lands in region local.
-func TestUpgradeBackfillsPlacement(t *testing.T) {
+// Upgrading a database with data, from version 1 through the 00002 gap to the latest.
+func TestUpgradeRepairsPlacement(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "tensora.db")
 	abs, checked, err := prepare(path)
@@ -360,12 +360,13 @@ func TestUpgradeBackfillsPlacement(t *testing.T) {
 	if _, err := p.UpTo(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.ExecContext(ctx, `
-		INSERT INTO tenants (id, slug, name, tier, created_at) VALUES ('00000000-0000-0000-0000-0000000000a1', 'acme', 'Acme', 'trusted', '2026-01-01T00:00:00.000000000Z');
-		INSERT INTO workloads (id, tenant_id, name, kind, state, image_id, gpu_class, gpu_count, created_by, created_at, updated_at) VALUES
-			('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000a1', 'run', 'notebook', 'running', 'i', 'l40s-48gb', 1, 's', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z'),
-			('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000a1', 'wait', 'notebook', 'queued', 'i', 'l40s-48gb', 1, 's', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z');`)
-	if err != nil {
+	if _, err := db.ExecContext(ctx, storetest.UpgradeFixture("'2026-01-01T10:00:00.000000000Z'")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, storetest.BadUsageAfter00002("'2026-01-01T10:00:00.000000000Z'")); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -377,28 +378,5 @@ func TestUpgradeBackfillsPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
-	err = st.InTx(ctx, func(q store.Queries) error {
-		ws, err := q.WorkloadsInStates(ctx, domain.StateRunning, domain.StateQueued)
-		if err != nil {
-			return err
-		}
-		placed := map[string]string{}
-		for _, w := range ws {
-			if w.Region != domain.RegionLocal {
-				t.Errorf("%s: region %q, want local", w.Name, w.Region)
-			}
-			placed[w.Name] = w.PlacedClass
-		}
-		if placed["run"] != "l40s-48gb" || placed["wait"] != "" {
-			t.Errorf("placed classes after upgrade = %v; want the running one placed and the queued one not", placed)
-		}
-		alloc, err := q.GPUsAllocated(ctx)
-		if err != nil || alloc["l40s-48gb"] != 1 {
-			t.Errorf("GPUsAllocated after upgrade = %v, %v; the running workload must still hold its GPU", alloc, err)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	storetest.CheckUpgraded(t, st)
 }

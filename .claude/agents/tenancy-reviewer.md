@@ -43,7 +43,8 @@ trust matrix. Do not edit files. Report findings only.
 
 **Regions and fallbacks** (rules 9 and 10)
 - Regional code filters by region. Data never leaves its region without explicit opt-in.
-- Every fallback is opt-in, recorded (`placed_class`, response headers), and accounted as what actually ran.
+- Every fallback is opt-in, recorded (`placed_class`, response headers), and accounted as what actually ran. Nothing reaches provisioning or running unplaced (`CheckPlaced`), capacity never under-counts an unplaced workload, and metering never writes a record without a class.
+- Each controller reconciles one region: its queries take a `region`, and a machine hosts only workloads in its own region and, unless it's in a community pool, only its owner's (`Machine.CanHost`). The launch rules live in one place, `catalog.CheckLaunch`, checked at create, start, and admission: native macOS (Apple notebooks and endpoints) only for trusted tenants, and no endpoint whose server loads an unvalidated model format (rule 6).
 - Gateway failover only goes to the same tenant's resources or to shared pools, never to another tenant's.
 
 **Logs and transparency** (rule 14, ADR-0015)
@@ -56,6 +57,8 @@ trust matrix. Do not edit files. Report findings only.
 - A runtime that can't be reached (Observe or Capacity errors) leaves one note per workload, and a provisioning workload still times out. Metering ignores notes (`from == to`).
 - 500s return only a generic message and `request_id`, and the full error goes to the server log. The server always generates request IDs; a caller's `X-Request-ID` is only logged as `client_request_id`. Request log lines carry tenant and subject.
 - The SQLite store's file and its `-wal`, `-shm`, and `-journal` files are `0600` regular files in a directory others can't write to, opened by absolute path (never `:memory:` or a `file:` URI). Its schema matches Postgres (`storetest.CheckSchema`), and `workload_events` stays append-only there too (triggers, with `recursive_triggers` on).
+- Local accounts: only hashes of passwords (argon2id) and tokens (SHA-256) are stored or logged; a new token appears only in its creation response; password hashing happens outside transactions and inside `withHashSlot`; sign-in is uniform for unknown emails, rechecks the hash inside the session transaction, and limits guessing per email-and-address pair and per address, counted as attempts start; `X-Forwarded-*` is believed only from `TENSORA_TRUSTED_PROXIES`; passwords and session cookies cross only private connections (`Transport.Private`); cookie requests that change something need `X-Tensora-CSRF`; API tokens can't create tokens or change the password (`requireSession`); users list and revoke only their own tokens; disabled accounts' sessions and tokens stop; timelines use `Principal.Actor()`; the first account comes only from `tensora setup`.
+- Workload web UIs (Jupyter, endpoints) are never served from the dashboard's or API's origin.
 - Files the CLI writes are `0600`: exports never replace an existing file without `-f` and never use a server-chosen name of an unexpected shape. `TENSORA_LOG_FILE` is never chmodded; a file others can read, a symlink, or a file swapped during open is refused. The CLI never sends a token over plain HTTP to another machine unless explicitly allowed, never follows redirects, and makes server error text printable.
 
 **Free** (rule 12)

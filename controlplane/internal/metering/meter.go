@@ -60,6 +60,12 @@ func (m *Meter) MeterOnce(ctx context.Context) (int, error) {
 			return err
 		}
 		for _, w := range ws {
+			if w.PlacedClass == "" {
+				// Never write a record that says nothing about what ran: records are permanent. The
+				// controller records a missing placement, and the next pass accounts these hours.
+				m.log.Error("usage not accounted yet: the workload has no placement", "workload", w.ID, "tenant", w.TenantID)
+				continue
+			}
 			events, err := q.Events(ctx, w.ID)
 			if err != nil {
 				return err
@@ -70,8 +76,8 @@ func (m *Meter) MeterOnce(ctx context.Context) (int, error) {
 				}
 				// Accounted for what actually ran and where (ADR-0010, rule 9). Metered time always
 				// follows admission, which records the placement.
-				// TODO(phase-2): with fallback, a workload can be re-placed on another class after a
-				// restart; take each interval's class from its admission event instead.
+				// TODO(phase-2): with fallback, a workload can be re-placed on another class or machine
+				// after a restart; take each interval's placement from its admission event instead.
 				ok, err := q.InsertUsageIfAbsent(ctx, domain.UsageRecord{
 					WorkloadID: w.ID, PeriodStart: hour, TenantID: w.TenantID,
 					GPUClass: w.PlacedClass, GPUCount: w.GPUCount, Seconds: secs,

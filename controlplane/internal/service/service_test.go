@@ -2,8 +2,12 @@ package service_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
+	"github.com/tensora/tensora/controlplane/internal/catalog"
 	"github.com/tensora/tensora/controlplane/internal/domain"
 	"github.com/tensora/tensora/controlplane/internal/service"
 	"github.com/tensora/tensora/controlplane/internal/store"
@@ -81,7 +85,7 @@ func TestUnknownTenantIsForbidden(t *testing.T) {
 
 func TestInputValidation(t *testing.T) {
 	vm := service.CreateWorkloadInput{Name: "vm", Kind: domain.KindVM, ImageID: "ubuntu-24.04-cuda", GPUClass: "l40s-48gb", GPUCount: 1, SSHPublicKey: testutil.SSHKey}
-	ep := service.CreateWorkloadInput{Name: "ep", Kind: domain.KindEndpoint, ImageID: "vllm", GPUClass: "l40s-48gb", GPUCount: 1, ModelURI: "hf://Qwen/Qwen2.5-0.5B-Instruct"}
+	ep := service.CreateWorkloadInput{Name: "ep", Kind: domain.KindEndpoint, ImageID: "openai-endpoint", GPUClass: "l40s-48gb", GPUCount: 1, ModelURI: "hf://Qwen/Qwen2.5-0.5B-Instruct"}
 	tests := []struct {
 		name   string
 		mutate func(*service.CreateWorkloadInput)
@@ -133,8 +137,12 @@ func TestStartRechecksQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Drive it to stopped the way the controller would.
+	// Drive it to stopped the way the controller would: placed, then admitted.
 	err = st.InTx(ctx, func(q store.Queries) error {
+		if err := q.SetPlacement(ctx, first.ID, first.GPUClass, uuid.Nil); err != nil {
+			return err
+		}
+		first.PlacedClass = first.GPUClass
 		for _, s := range []domain.State{domain.StateProvisioning, domain.StateStopping, domain.StateStopped} {
 			if err := service.Transition(ctx, q, &first, s, "test", testutil.T0); err != nil {
 				return err
@@ -170,4 +178,92 @@ func TestDeleteIsIdempotent(t *testing.T) {
 			t.Fatalf("delete = %+v, %v", got, err)
 		}
 	}
+}
+
+// Region and runtime checks at create time (ADR-0009, ADR-0013), against a two-region catalog.
+func TestCreateChecksRegionAndRuntime(t *testing.T) {
+	cat := &catalog.Catalog{
+		Regions: []catalog.Region{{ID: "local"}, {ID: "eu-fra-1"}},
+		GPUClasses: []catalog.GPUClass{
+			{ID: "l40s", Accelerator: domain.AcceleratorNVIDIA, VRAMGB: 48, ContainerResource: "nvidia.com/gpu", VCPUsPerGPU: 8, MemoryGiBPerGPU: 64},
+			{ID: "fra-only", Accelerator: domain.AcceleratorNVIDIA, VRAMGB: 80, ContainerResource: "nvidia.com/gpu", VCPUsPerGPU: 8, MemoryGiBPerGPU: 64, Regions: []domain.Region{"eu-fra-1"}},
+			{ID: "cpu", Accelerator: domain.AcceleratorCPU, VCPUsPerGPU: 4, MemoryGiBPerGPU: 16},
+		},
+		Images: []catalog.Image{{ID: "nb", Kind: domain.KindNotebook, Runtimes: []catalog.Runtime{
+			{Accelerators: []domain.AcceleratorKind{domain.AcceleratorNVIDIA}, Ref: "cuda-notebook"},
+		}}},
+	}
+	if err := cat.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	st := testutil.SeededStore(t)
+	ctx := context.Background()
+	err := st.InTx(ctx, func(q store.Queries) error {
+		tn, err := q.TenantBySlug(ctx, "internal")
+		if err != nil {
+			return err
+		}
+		for _, class := range []string{"l40s", "fra-only", "cpu"} {
+			if err := q.SetQuota(ctx, domain.Quota{TenantID: tn.ID, GPUClass: class, MaxGPUs: 4}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(st, cat, testutil.NewClock(testutil.T0).Now)
+	in := func(class string, region domain.Region) service.CreateWorkloadInput {
+		return service.CreateWorkloadInput{Name: "nb", Kind: domain.KindNotebook, ImageID: "nb", GPUClass: class, GPUCount: 1, Region: region}
+	}
+
+	w, err := svc.CreateWorkload(ctx, testutil.Internal, in("l40s", ""))
+	if err != nil || w.Region != "local" {
+		t.Fatalf("default region: %+v, %v; want local, the catalog's first region", w, err)
+	}
+	if w, err := svc.CreateWorkload(ctx, testutil.Internal, in("fra-only", "eu-fra-1")); err != nil || w.Region != "eu-fra-1" {
+		t.Fatalf("named region: %+v, %v", w, err)
+	}
+	for name, tt := range map[string]struct {
+		input service.CreateWorkloadInput
+		want  string
+	}{
+		"unknown region":                 {in("l40s", "us-east-1"), "unknown region"},
+		"class not offered there":        {in("fra-only", "local"), "isn't offered in region"},
+		"no runtime for the accelerator": {in("cpu", ""), "can't run on"},
+	} {
+		_, err := svc.CreateWorkload(ctx, testutil.Internal, tt.input)
+		if code, _ := domain.CodeOf(err); code != domain.CodeInvalid || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: err = %v, want invalid_request mentioning %q", name, err, tt.want)
+		}
+	}
+}
+
+// The launch rules are checked again at start: an untrusted tenant can't restart a workload that
+// runs natively on a Mac, even one that exists because the catalog or its tier changed (rule 4).
+func TestStartRechecksLaunchRules(t *testing.T) {
+	svc, st := setup(t)
+	ctx := context.Background()
+	var id uuid.UUID
+	err := st.InTx(ctx, func(q store.Queries) error {
+		tn, err := q.TenantBySlug(ctx, testutil.Acme.TenantSlug) // untrusted
+		if err != nil {
+			return err
+		}
+		if err := q.SetQuota(ctx, domain.Quota{TenantID: tn.ID, GPUClass: "apple-silicon-32gb", MaxGPUs: 1}); err != nil {
+			return err
+		}
+		id = uuid.Must(uuid.NewV7())
+		return q.CreateWorkload(ctx, domain.Workload{
+			ID: id, TenantID: tn.ID, Name: "mac-nb", Kind: domain.KindNotebook, State: domain.StateFailed,
+			ImageID: "pytorch-notebook", GPUClass: "apple-silicon-32gb", GPUCount: 1, Params: map[string]string{},
+			CreatedBy: "test", CreatedAt: testutil.T0, UpdatedAt: testutil.T0, Region: domain.RegionLocal, PlacedClass: "apple-silicon-32gb",
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.StartWorkload(ctx, testutil.Acme, id)
+	wantCode(t, err, domain.CodeInvalid)
 }

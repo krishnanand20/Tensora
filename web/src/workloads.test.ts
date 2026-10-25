@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { filenameFromDisposition, toApiError, workloadPath } from "./api/client";
-import { availableActions, classShown, describeChange, isSettling } from "./workloads";
+import { filenameFromDisposition, safeNext, toApiError, workloadPath } from "./api/client";
+import type { CatalogImage, GpuClass } from "./api/types";
+import { availableActions, classShown, describeChange, isSettling, launchableClasses, runtimeFor } from "./workloads";
 
 describe("availableActions", () => {
   it("matches the control plane's lifecycle rules", () => {
@@ -82,5 +83,49 @@ describe("classShown", () => {
     expect(classShown({ gpu_class: "l40s-48gb", gpu_count: 1, placed_class: "cpu-16c-64g" })).toBe(
       "1 × cpu-16c-64g (requested l40s-48gb)",
     );
+  });
+});
+
+describe("launchableClasses", () => {
+  const cls = (id: string, accelerator: GpuClass["accelerator"], regions: string[], supports_vm = false): GpuClass => ({
+    id,
+    display_name: id,
+    accelerator,
+    vram_gb: 1,
+    supports_vm,
+    regions,
+  });
+  const classes = [cls("l40s", "nvidia", ["local"], true), cls("mac", "apple", ["local"]), cls("fra", "nvidia", ["eu-fra-1"])];
+  const endpoint: CatalogImage = {
+    id: "ep",
+    display_name: "ep",
+    kind: "endpoint",
+    description: "",
+    runtimes: [
+      { accelerators: ["nvidia"], server: "vllm" },
+      { accelerators: ["apple"], server: "mlx" },
+    ],
+  };
+  const vm: CatalogImage = { ...endpoint, kind: "vm", runtimes: [{ accelerators: ["nvidia"] }] };
+
+  it("offers only what can run the image in the region", () => {
+    expect(launchableClasses(classes, endpoint, "local").map((g) => g.id)).toEqual(["l40s", "mac"]);
+    expect(launchableClasses(classes, endpoint, "eu-fra-1").map((g) => g.id)).toEqual(["fra"]);
+    expect(launchableClasses(classes, vm, "local").map((g) => g.id)).toEqual(["l40s"]);
+  });
+
+  it("names the server for each accelerator", () => {
+    expect(runtimeFor(endpoint, "apple")?.server).toBe("mlx");
+    expect(runtimeFor(endpoint, "cpu")).toBeUndefined();
+  });
+});
+
+describe("safeNext", () => {
+  it("returns only paths inside the dashboard", () => {
+    expect(safeNext("/workloads/abc?x=1")).toBe("/workloads/abc?x=1");
+    expect(safeNext(null)).toBe("/");
+    expect(safeNext("https://evil.example")).toBe("/");
+    expect(safeNext("//evil.example")).toBe("/");
+    expect(safeNext("/\\evil.example")).toBe("/");
   });
 });

@@ -158,3 +158,36 @@ func TestDeletedWorkloadsAreReachable(t *testing.T) {
 		t.Errorf("bad include_deleted: %d, want 400", code)
 	}
 }
+
+// While a restarted workload waits, its previous run's placement isn't where it will run, so it
+// isn't shown (the timeline keeps the history).
+func TestWaitingWorkloadShowsNoStalePlacement(t *testing.T) {
+	st := testutil.SeededStore(t)
+	svc := service.New(st, testutil.Catalog(t), nil)
+	h := api.New(svc, auth.Dev{}, slog.New(slog.DiscardHandler), st.Ping).Handler()
+	_, created := call(t, h, "POST", "/v1/workloads", "acme", endpointBody)
+	id := uuid.MustParse(created["id"].(string))
+	ctx := context.Background()
+	w, err := svc.GetWorkload(ctx, testutil.Acme, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.InTx(ctx, func(q store.Queries) error {
+		if err := q.SetPlacement(ctx, id, "l40s-48gb", uuid.Nil); err != nil {
+			return err
+		}
+		w.PlacedClass = "l40s-48gb"
+		for _, to := range []domain.State{domain.StateProvisioning, domain.StateFailed, domain.StatePending} {
+			if err := service.Transition(ctx, q, &w, to, "test", testutil.T0); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, body := call(t, h, "GET", "/v1/workloads/"+id.String(), "acme", ""); body["state"] != "pending" || body["placed_class"] != nil {
+		t.Errorf("waiting workload view = %v; want no placed_class", body)
+	}
+}

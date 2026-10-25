@@ -17,6 +17,7 @@ type Context struct {
 	Tier                  domain.IsolationTier
 	GPU                   catalog.GPUClass
 	Image                 catalog.Image
+	Runtime               catalog.Runtime // the image's runtime for GPU's accelerator; Ref is what runs
 	StorageClass          string
 	ImagesNamespace       string
 	UntrustedRuntimeClass string

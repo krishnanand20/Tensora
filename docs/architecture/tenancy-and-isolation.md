@@ -37,6 +37,13 @@ Per-machine trust from sharing levels is planned (Phase 4).
 **Managed inference:** the host runs a model server from the catalog, with validated weights, and the
 user only sends prompts. No user code runs on the host.
 
+**Enforced in code** by `catalog.CheckLaunch`, at create, at start, and again at admission (so a changed
+catalog or tier can't be bypassed): on Apple Silicon, notebooks and endpoints run natively on macOS, so
+only trusted tenants may launch them; untrusted tenants get macOS VMs there. Endpoints are refused when
+their server would load a model format `tensora-ml validate` doesn't check yet (GGUF, so llama.cpp, until
+roadmap step 10). Per-machine rules (`Machine.CanHost`) check region and sharing; making them also weigh
+the runtime's isolation is part of the agent work (roadmap step 6).
+
 ## Threat model
 
 | Threat | Example | Controls |
@@ -70,6 +77,15 @@ user only sends prompts. No user code runs on the host.
 
 **Identity**
 - The tenant comes from a verified identity: a local account, OIDC, or an API token. There's no API parameter that names a tenant.
+- **Local accounts** (built):
+  - *Passwords* are hashed with argon2id, at most a few at a time, so guessing can't overload the server. Unknown emails cost the same to check as real ones, and older hashes are upgraded at sign-in, so timing doesn't reveal which accounts exist.
+  - *Guessing* is limited per email and address pair (10 failures in 15 minutes) and per address (30), counted as attempts start, so parallel guesses can't slip through (429 with `Retry-After`). Knowing the owner's email isn't enough to lock them out. Behind a reverse proxy, the address comes from `X-Forwarded-For` only if the proxy is listed in `TENSORA_TRUSTED_PROXIES`.
+  - *Passwords and session cookies cross only private connections*: HTTPS (directly, or from a trusted proxy that says so), or this machine. Plain HTTP from another machine is refused unless the operator sets `TENSORA_INSECURE_HTTP=true` for a network they trust.
+  - *Session and API tokens* are 256 random bits, stored only as SHA-256 hashes; a new API token is shown once. The session cookie is HttpOnly and SameSite=Strict, and over HTTPS it's `Secure` with the `__Host-` name, so no other host can set it; a request carrying two session cookies is refused. Every cookie request that changes something needs the `X-Tensora-CSRF` header, which other sites can't add.
+  - *An API token can't make tokens or change the password*: those need a signed-in browser, so a stolen token stops working once revoked. Changing the password signs out every other session and reports how many API tokens still work.
+  - A user lists and revokes only their own tokens. Disabling an account ends its sessions and tokens. Timelines name the credential that acted (`browser session`, or the token's name and prefix).
+  - The first account comes from `tensora setup` on the machine itself, never from a first-come web form, and `tensora setup -reset-password` is the way back in. Both need access to the database.
+- **Workload web UIs** (Jupyter, endpoint UIs; roadmap step 7 and the relay) must be served from a different site than the dashboard and API, such as their own hostname. Code running in a workload controls what its UI serves, and on the dashboard's own origin it could send requests with the user's session cookie and the CSRF header.
 - Every store query is scoped by tenant. Dev header auth is refused outside `TENSORA_ENV=dev`.
 
 **Logs** (details in [logs-and-transparency.md](logs-and-transparency.md))

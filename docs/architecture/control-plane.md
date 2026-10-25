@@ -77,11 +77,11 @@ vocabulary, never from raw runtime messages, and `service.CleanReason` cleans ev
 
 | Transition | Example reason |
 |---|---|
-| create | `created by dev@acme` |
-| user action | `stop requested by dev@acme` |
+| create | `created by dev@acme`, or with local accounts `created by you@example.com (API token "laptop" (tsk_Ab3x…))` |
+| user action | `stop requested by you@example.com (browser session)` |
 | queued (trusted tenant) | `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free` |
 | queued (untrusted tenant) | `waiting for l40s-48gb capacity: requested 2 GPU(s), not enough free right now` |
-| admitted | `admitted: 2 × l40s-48gb` |
+| admitted | `admitted: 2 × l40s-48gb`, or for an endpoint `admitted: 1 × l40s-48gb, served by vllm` |
 | retrying (note) | `couldn't start it on the runtime; retrying. The operator's log has the details under this workload's ID.` |
 | runtime unreachable (note) | `couldn't read its status from the runtime; retrying. …`, `couldn't check for free GPUs on the runtime; retrying. …` |
 | failure | A fixed reason from the backend (`model server not ready (RevisionFailed)`), the timeout, or `can't start: GPU class "x" is no longer offered by this installation` |
@@ -136,8 +136,9 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 - Another tenant's object is always **404**.
 - IDs are UUIDv7. Runtime object names derive from IDs, never from user input.
 - Workload responses include `region` and, once admitted, `placed_class`. `gpu_class` is the class requested; the two differ only after an opt-in fallback.
+- Create takes an optional `region`, checked against the catalog's regions (the first is the default). The class must be offered there, and the image must have a runtime for the class's accelerator.
 - *Planned:*
-  - Create takes `region` (checked against the catalog's regions), `fallback`, and `fallback_after`. Until then every workload is in `local`.
+  - Create takes `fallback` and `fallback_after`.
   - Responses include `machine` once agents place workloads on machines.
   - `POST` accepts `Idempotency-Key` (the `idempotency_keys` table exists), and every 503 carries `Retry-After`.
 
@@ -157,7 +158,7 @@ Every tenant also gets a namespace bundle: PSA baseline, a GPU `ResourceQuota`, 
 
 ## Regions and fallback placement
 
-*The data model is built* (migration `00002`): every workload, machine, and usage record has a `region`; workloads record `placed_class` and `machine_id` at admission, in the same transaction as the move to provisioning; capacity is counted and usage accounted by placed class. *Region selection, fallback placement, and per-region controllers are planned* (roadmap).
+*Built:* every workload, machine, and usage record has a `region`; create takes one; each controller reconciles one region (`TENSORA_REGION`) and never sees, counts, or admits another's workloads. Workloads record `placed_class` and `machine_id` at admission, in the same transaction as the move to provisioning; capacity is counted per region by placed class (or by requested class for a workload holding GPUs without a recorded placement, so it's never under-counted), and usage is accounted by placed class. A machine hosts only workloads in its own region, and only its owner's unless it's in a community pool (`Machine.CanHost`). *Planned:* fallback placement (roadmap).
 
 - **Regions** ([ADR-0009](../adr/0009-regions-global-control-plane-regional-cells.md)): every workload gets an immutable `region`, and Solo has one region, `local`. In a datacenter, one controller runs per region (`TENSORA_REGION`).
 - **Fallback placement** ([ADR-0010](../adr/0010-fallbacks-cpu-placement-and-inference-failover.md)): `fallback` is an ordered list of other classes or `cpu`, tried after `fallback_after`. The workload records the requested class (`gpu_class`) and `placed_class`. Freed GPUs go to requested-class waiters first. Placement happens in one place, the controller's `place` step.

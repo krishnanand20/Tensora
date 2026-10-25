@@ -15,7 +15,7 @@ import (
 )
 
 func endpoint(modelURI string) service.CreateWorkloadInput {
-	return service.CreateWorkloadInput{Name: "llm", Kind: domain.KindEndpoint, ImageID: "vllm", GPUClass: "l40s-48gb", GPUCount: 1, ModelURI: modelURI}
+	return service.CreateWorkloadInput{Name: "llm", Kind: domain.KindEndpoint, ImageID: "openai-endpoint", GPUClass: "l40s-48gb", GPUCount: 1, ModelURI: modelURI}
 }
 
 func TestEventsAndExportAreTenantScoped(t *testing.T) {
@@ -77,9 +77,9 @@ func storedEndpoint(t *testing.T, st store.Store, modelURI string) domain.Worklo
 		}
 		w = domain.Workload{
 			ID: uuid.Must(uuid.NewV7()), TenantID: tn.ID, Name: "llm", Kind: domain.KindEndpoint,
-			State: domain.StatePending, ImageID: "vllm", GPUClass: "l40s-48gb", GPUCount: 1,
+			State: domain.StatePending, ImageID: "openai-endpoint", GPUClass: "l40s-48gb", GPUCount: 1,
 			Params: map[string]string{domain.ParamModelURI: modelURI}, CreatedBy: testutil.Acme.Subject,
-			CreatedAt: testutil.T0, UpdatedAt: testutil.T0,
+			CreatedAt: testutil.T0, UpdatedAt: testutil.T0, Region: domain.RegionLocal,
 		}
 		return q.CreateWorkload(ctx, w)
 	})

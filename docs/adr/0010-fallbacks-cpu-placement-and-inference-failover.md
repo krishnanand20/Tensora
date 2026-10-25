@@ -69,7 +69,7 @@ Rules:
 
 ## Consequences
 
-- **Data model:** workloads gain `fallback`, `fallback_after`, `requested_class`, and `placed_class`, and metering prices by `placed_class`. *(As built: the requested class keeps its API name, `gpu_class`; `fallback_after` is stored as `fallback_after_s`.)* Add these in the same change as `region` (ADR-0009), before real data exists.
+- **Data model:** workloads gain `fallback`, `fallback_after`, `requested_class`, and `placed_class`, and usage is accounted by `placed_class`. *(As built: the requested class keeps its API name, `gpu_class`; `fallback_after` is stored as `fallback_after_s`.)* Add these in the same change as `region` (ADR-0009), before real data exists.
 - **Catalog:** classes gain a `kind` (`gpu` or `cpu`). CPU capacity comes from CPU-node allocatable.
 - **New components:** CPU worker nodes in each region; the `tensora-vllm-cpu` ClusterServingRuntime; the regional inference gateway (Envoy-based or a small Go proxy, decided in Phase 3).
 - **Admission gets more complex:** fallback placement must not starve customers waiting for the requested class. A GPU freed up goes to queued GPU-requesters first, before promoting CPU-fallback endpoints.

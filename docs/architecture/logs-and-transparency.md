@@ -22,6 +22,7 @@ state as it was (`still pending`). Reasons are written for you, from a fixed voc
 
 | Situation | Example reason |
 |---|---|
+| You acted, with a local account (the credential is named, never its secret) | `created by you@example.com (API token "laptop" (tsk_Ab3x…))`, `stop requested by you@example.com (browser session)` |
 | Waiting for GPUs (trusted tenant: a machine's owner and their team) | `waiting for l40s-48gb capacity: requested 2 GPU(s), 0 free` |
 | Waiting for GPUs (invited or community user) | `waiting for l40s-48gb capacity: requested 2 GPU(s), not enough free right now` |
 | The runtime refused an action and it's being retried (a note) | `couldn't start it on the runtime; retrying. The operator's log has the details under this workload's ID.` |
@@ -45,6 +46,7 @@ browser, with whatever permissions it uses.
 |---|---|
 | `format`, `exported_at`, `exported_by` | What this file is, when it was made, and by whom |
 | `workload` | The workload as the API shows it, including its state (even `deleted`) |
+| `last_placed_class` | The stored placement. A workload that's waiting again hides it in `workload` (it isn't where the next run will go), so it's kept here. |
 | `created_by`, `params` | Who created it, and every input it was created with |
 | `events` | The complete timeline, oldest first |
 | `usage` | Every hourly usage record: seconds, GPU-seconds, the class that actually ran, and region (usage accounting; never money) |

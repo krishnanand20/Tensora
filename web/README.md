@@ -25,7 +25,8 @@ How it's served:
 Planned (ADR-0009, 0010, 0013, 0014):
 
 - a machines page showing Macs and Linux boxes with their GPUs, health, and sharing level
-- a region or machine picker, and a fallback opt-in, on the launch form
+- a machine picker and a fallback opt-in on the launch form
+- invites, teams, and admin pages (Phase 2); today there's sign-in, sign-out, and an **API tokens** page for local accounts (it already picks a region, when there's more than one, and offers only classes that can run the image there)
 - the placed class and a fallback badge on each workload
 - sharing settings and host disclosures
 - usage reports in hours (never money)

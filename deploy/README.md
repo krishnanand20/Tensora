@@ -29,12 +29,31 @@ Each region is its own cluster with its own environment file. The `single-node` 
 one-region deployment, and its cluster also hosts the control plane. For more regions, add
 `environments/<region-id>.yaml` per cluster, and run the control plane once (ADR-0009).
 
-Planned additions (ADR-0010):
+- **The catalog** is [`catalog.yaml`](catalog.yaml) (not `images/catalog.yaml`, which is for Solo and Lab).
+  It lists every region of the deployment, and only the classes Kubernetes can run: NVIDIA GPUs today.
+- **Each environment's `region`** goes to that cluster's controller (`cluster.region`, then
+  `TENSORA_REGION`), which reconciles only that region's workloads. It must be listed in the catalog:
+  `make deploy-check` and the chart refuse to render otherwise, and the controller refuses to start. A
+  region ID can't change once workloads exist in it.
 
-- CPU worker nodes
-- the `tensora-vllm-cpu` ClusterServingRuntime
+Planned additions:
+
+- CPU worker nodes, the `tensora-vllm-cpu` ClusterServingRuntime, and CPU classes in the catalog (ADR-0010)
 - the regional inference gateway
-- `TENSORA_REGION` passed to each region's controller
+- a controller-only install for additional regions (today the chart also installs the API, web,
+  metering, and the migrate Job, which a second region must not run again; ADR-0009)
+
+## Upgrading to regions and per-platform runtimes
+
+- **Catalog format:** classes now need `accelerator`, and images list `runtimes` instead of one `ref`.
+  An operator-maintained catalog in the old format fails to load, so update it first (compare with
+  `catalog.yaml`).
+- **Endpoint image:** `vllm` is now `openai-endpoint`. Migration `00003` renames it in existing
+  workloads, so waiting and stopped endpoints keep working.
+- **Region of existing workloads:** workloads created before this release are in region `local`. A
+  deployment whose environment now sets another region (`dc-1`) should relabel them once, in the
+  same maintenance window: `UPDATE workloads SET region = 'dc-1' WHERE region = 'local';` (and the
+  same for `usage_records`). Nothing moves: it's the same place, under its real name.
 
 ## Secrets created out of band
 

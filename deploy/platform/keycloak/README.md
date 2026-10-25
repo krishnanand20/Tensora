@@ -2,7 +2,7 @@
 
 Keycloak runs **once, next to the control plane**, not in every region (ADR-0009). Companies that
 already have an identity provider (Okta, Entra ID, Google Workspace, and so on) can point Tensora at
-that instead, using any OIDC issuer. Solo and Lab installs use built-in local accounts (planned) and
+that instead, using any OIDC issuer. Solo and Lab installs use built-in local accounts and
 don't need Keycloak.
 
 The operator is installed by helmfile when `features.keycloak` is true. These still have to be done:

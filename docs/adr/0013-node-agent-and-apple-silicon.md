@@ -1,6 +1,6 @@
 # 0013. Node agent and runtime drivers, with Apple Silicon Macs as first-class hosts
 
-- **Status:** Accepted (the `machines` table and inventory types are in code; the agent and drivers are planned, see the roadmap)
+- **Status:** Accepted (in code: the `machines` table, inventory types, catalog accelerators, Apple Silicon and CPU classes, and a runtime per platform. The agent and drivers are planned, see the roadmap)
 - **Date:** 2026-10-23
 - **Amends:** ADR-0001, and AGENTS.md rules 2 and 6
 

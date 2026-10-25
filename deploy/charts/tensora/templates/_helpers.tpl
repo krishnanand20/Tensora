@@ -63,3 +63,23 @@ volumeMounts:
     mountPath: /etc/tensora
     readOnly: true
 {{- end }}
+
+{{/*
+The region this cluster's controller reconciles (ADR-0009). It must be a region ID and be listed in
+the catalog, or rendering fails: a controller for a region nobody can create workloads in would leave
+every workload pending without a word.
+*/}}
+{{- define "tensora.region" -}}
+{{- $region := required "cluster.region is required (ADR-0009)" .Values.cluster.region -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$" $region) -}}
+{{- fail (printf "cluster.region %q isn't a region ID (lowercase letters, digits, and '-')" $region) -}}
+{{- end -}}
+{{- $ids := list -}}
+{{- range (fromYaml .Values.catalog).regions -}}
+{{- $ids = append $ids .id -}}
+{{- end -}}
+{{- if not (has $region $ids) -}}
+{{- fail (printf "cluster.region %q isn't in the catalog's regions %v" $region $ids) -}}
+{{- end -}}
+{{- $region -}}
+{{- end }}

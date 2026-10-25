@@ -86,3 +86,19 @@ TENSORA_DEV_TENANT=acme bin/tensora workloads
 TENSORA_DEV_TENANT=acme bin/tensora events <id>
 TENSORA_DEV_TENANT=acme bin/tensora export <id>
 ```
+
+To try local accounts (sign-in and API tokens) instead of the dev header, keep the data in a SQLite file:
+
+```bash
+cd controlplane
+export TENSORA_DATABASE_URL=sqlite:$PWD/tensora.db TENSORA_AUTH_MODE=local
+go run ./cmd/tensora setup -email you@example.com   # once: asks for a password (12+ characters)
+go run ./cmd/tensora dev                            # then `make web-dev`, open :5173, and sign in
+```
+
+On the dashboard's **API tokens** page, create a token for the CLI and set `TENSORA_TOKEN` to it. Forgot the
+password? `go run ./cmd/tensora setup -reset-password -email you@example.com` sets a new one.
+
+Sign-in works over HTTPS or from this machine. To sign in from another machine, put an HTTPS reverse proxy in
+front and list its address in `TENSORA_TRUSTED_PROXIES`, or, only on a network you trust, set
+`TENSORA_INSECURE_HTTP=true`.

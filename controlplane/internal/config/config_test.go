@@ -102,3 +102,33 @@ func TestDatabaseURL(t *testing.T) {
 		t.Error("an unknown database URL must be rejected at startup")
 	}
 }
+
+func TestLocalAuthIsAllowedEverywhere(t *testing.T) {
+	if _, err := FromEnv(env(map[string]string{
+		"TENSORA_ENV": "production", "TENSORA_DATABASE_URL": "sqlite:/var/lib/tensora/tensora.db",
+		"TENSORA_AUTH_MODE": "local", "TENSORA_CLUSTER_BACKEND": "kubernetes",
+	})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTrustedProxiesAndPlainHTTP(t *testing.T) {
+	c, err := FromEnv(env(map[string]string{
+		"TENSORA_TRUSTED_PROXIES": " 10.0.0.0/8, 127.0.0.1 ,::1, 192.168.1.77/24", "TENSORA_INSECURE_HTTP": "true",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range c.TrustedProxies {
+		got = append(got, p.String())
+	}
+	if want := "10.0.0.0/8 127.0.0.1/32 ::1/128 192.168.1.0/24"; strings.Join(got, " ") != want || !c.InsecureHTTP {
+		t.Errorf("proxies = %v, insecure = %v; want %s and true", got, c.InsecureHTTP, want)
+	}
+	for k, v := range map[string]string{"TENSORA_TRUSTED_PROXIES": "proxy.local", "TENSORA_INSECURE_HTTP": "maybe"} {
+		if _, err := FromEnv(env(map[string]string{k: v})); err == nil || !strings.Contains(err.Error(), k) {
+			t.Errorf("%s=%s: %v; want an error naming it", k, v, err)
+		}
+	}
+}

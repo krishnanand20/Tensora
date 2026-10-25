@@ -2,9 +2,11 @@ package controller_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,7 +226,7 @@ func TestWorkloadWhoseClassLeftTheCatalogFailsWithAReason(t *testing.T) {
 		w = domain.Workload{
 			ID: uuid.Must(uuid.NewV7()), TenantID: tn.ID, Name: "old", Kind: domain.KindNotebook,
 			State: domain.StatePending, ImageID: "pytorch-notebook", GPUClass: "retired-gpu", GPUCount: 1,
-			Params: map[string]string{}, CreatedBy: "test", CreatedAt: testutil.T0, UpdatedAt: testutil.T0,
+			Params: map[string]string{}, CreatedBy: "test", CreatedAt: testutil.T0, UpdatedAt: testutil.T0, Region: domain.RegionLocal,
 		}
 		return q.CreateWorkload(ctx, w)
 	})
@@ -296,5 +298,94 @@ func TestAdmissionRecordsPlacement(t *testing.T) {
 	got, err := h.svc.GetWorkload(context.Background(), testutil.Acme, w.ID)
 	if err != nil || got.State != domain.StateRunning || got.PlacedClass != "l40s-48gb" || got.MachineID != uuid.Nil {
 		t.Fatalf("admitted workload = %+v, %v", got, err)
+	}
+}
+
+// insertWorkload writes a workload straight to the store, as an older version or another
+// region's API would have.
+func (h *harness) insertWorkload(p domain.Principal, w domain.Workload) domain.Workload {
+	h.t.Helper()
+	ctx := context.Background()
+	err := h.st.InTx(ctx, func(q store.Queries) error {
+		tn, err := q.TenantBySlug(ctx, p.TenantSlug)
+		if err != nil {
+			return err
+		}
+		w.ID, w.TenantID = uuid.Must(uuid.NewV7()), tn.ID
+		w.Kind, w.ImageID, w.GPUCount = cmp.Or(w.Kind, domain.KindNotebook), cmp.Or(w.ImageID, "pytorch-notebook"), 1
+		w.GPUClass = cmp.Or(w.GPUClass, "l40s-48gb")
+		w.Params, w.CreatedBy, w.CreatedAt, w.UpdatedAt = map[string]string{}, "test", testutil.T0, testutil.T0
+		return q.CreateWorkload(ctx, w)
+	})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return w
+}
+
+// A controller reconciles one region (ADR-0009): another region's workloads are never admitted
+// here, or counted against this region's GPUs.
+func TestControllerStaysInItsRegion(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	abroad := h.insertWorkload(testutil.Acme, domain.Workload{Name: "abroad", State: domain.StatePending, Region: "eu-fra-1"})
+	h.reconcile()
+	h.expect(testutil.Acme, abroad.ID, domain.StatePending)
+
+	home := h.create(testutil.Acme, "home", 1)
+	h.reconcile()
+	h.expect(testutil.Acme, home.ID, domain.StateRunning)
+}
+
+// A workload admitted before placements were recorded is adopted onto the class it requested
+// (there were no fallbacks then), says so in its timeline, and goes on to run.
+func TestLegacyUnplacedWorkloadIsAdopted(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	legacy := h.insertWorkload(testutil.Acme, domain.Workload{Name: "legacy", State: domain.StateProvisioning, Region: domain.RegionLocal})
+	h.backend.SetObserved(legacy.ID, cluster.ObservedReady)
+	h.reconcile()
+
+	got, err := h.svc.GetWorkload(context.Background(), testutil.Acme, legacy.ID)
+	if err != nil || got.State != domain.StateRunning || got.PlacedClass != "l40s-48gb" {
+		t.Fatalf("legacy workload = %+v, %v; want running and placed on its requested class", got, err)
+	}
+	reasons := h.reasons(testutil.Acme, legacy.ID)
+	if !slices.ContainsFunc(reasons, func(r string) bool { return strings.HasPrefix(r, "placed on l40s-48gb: it was admitted before") }) {
+		t.Errorf("timeline = %q; the adoption must be recorded", reasons)
+	}
+
+	// It holds the only GPU, so nothing else is admitted onto it.
+	next := h.create(testutil.Globex, "next", 1)
+	h.reconcile()
+	h.expect(testutil.Globex, next.ID, domain.StateQueued)
+}
+
+// Admission re-checks the launch rules too: an untrusted tenant's native Mac workload that got
+// into the queue anyway (the catalog or its tier changed after create) fails with the reason.
+func TestAdmissionRechecksLaunchRules(t *testing.T) {
+	h := newHarness(t, map[string]int{"apple-silicon-32gb": 1})
+	mac := h.insertWorkload(testutil.Acme, domain.Workload{
+		Name: "mac", State: domain.StatePending, Region: domain.RegionLocal, GPUClass: "apple-silicon-32gb",
+	})
+	h.reconcile()
+	h.expect(testutil.Acme, mac.ID, domain.StateFailed)
+	reasons := h.reasons(testutil.Acme, mac.ID)
+	if got := reasons[len(reasons)-1]; got != `can't start: gpu_class "apple-silicon-32gb" isn't available to this tenant` {
+		t.Errorf("reason = %q", got)
+	}
+}
+
+// An endpoint's admission names the model server, so a change of server is never silent (rule 10).
+func TestAdmissionNamesTheServer(t *testing.T) {
+	h := newHarness(t, map[string]int{"l40s-48gb": 1})
+	w, err := h.svc.CreateWorkload(context.Background(), testutil.Acme, service.CreateWorkloadInput{
+		Name: "llm", Kind: domain.KindEndpoint, ImageID: "openai-endpoint", GPUClass: "l40s-48gb", GPUCount: 1,
+		ModelURI: "hf://Qwen/Qwen2.5-0.5B-Instruct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile()
+	if !slices.Contains(h.reasons(testutil.Acme, w.ID), "admitted: 1 × l40s-48gb, served by vllm") {
+		t.Errorf("timeline = %q; want the server named at admission", h.reasons(testutil.Acme, w.ID))
 	}
 }

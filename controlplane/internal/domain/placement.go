@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -88,18 +90,36 @@ func (m Machine) Validate() error {
 	case !m.Sharing.Valid():
 		return Errorf(CodeInvalid, "machine %s: sharing must be private, invite, or community, got %q", m.Name, m.Sharing)
 	}
-	for _, a := range m.Accelerators {
-		if !a.Kind.Valid() || a.Count < 1 || a.MemoryMiB < 0 {
-			return Errorf(CodeInvalid, "machine %s: invalid accelerator %+v", m.Name, a)
+	for i, a := range m.Accelerators {
+		// The agent reports these, and a host may be hostile: bound the text, and never echo it.
+		if !a.Kind.Valid() || a.Count < 1 || a.MemoryMiB < 0 || len(a.Model) > maxModelLen ||
+			strings.IndexFunc(a.Model, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+			return Errorf(CodeInvalid, "machine %s: accelerator %d is invalid", m.Name, i)
 		}
 	}
 	return nil
 }
 
-// CheckPlaced reports whether a workload may enter state to. A metered workload must say what
-// it runs on, because usage is accounted for what actually ran (ADR-0010).
+const maxModelLen = 100
+
+// CanHost reports whether the machine may run w: it must be in w's region (rule 9), and a machine
+// that isn't in a community pool runs only its owner's workloads (ADR-0014). Invite lists arrive
+// with sharing (Phase 4); until then an invite-only machine is treated as private.
+func (m Machine) CanHost(w Workload) error {
+	switch {
+	case m.Region != w.Region:
+		return Errorf(CodeInvalid, "machine %s is in region %s, not the workload's region %s", m.Name, m.Region, w.Region)
+	case m.TenantID != w.TenantID && m.Sharing != SharingCommunity:
+		return Errorf(CodeForbidden, "machine %s isn't shared with this workload's tenant", m.Name)
+	}
+	return nil
+}
+
+// CheckPlaced reports whether a workload may enter state to. Once it's provisioning it holds
+// capacity, and once it's running it's metered, so from then on it must say what it runs on:
+// capacity is counted and usage accounted for what actually runs (ADR-0010).
 func (w Workload) CheckPlaced(to State) error {
-	if to.Metered() && w.PlacedClass == "" {
+	if (to == StateProvisioning || to.Metered()) && w.PlacedClass == "" {
 		return Errorf(CodeInvalidTransition, "workload %s can't be %s before it's placed on a class", w.ID, to)
 	}
 	return nil

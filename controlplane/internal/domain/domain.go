@@ -119,4 +119,28 @@ type Principal struct {
 	Subject    string
 	Email      string
 	TenantSlug string
+	UserID     uuid.UUID // the local account (local auth mode); uuid.Nil for dev and OIDC callers
+	// Via says how the caller authenticated (AuthSession, AuthToken, …), and Credential names the
+	// credential, such as `API token "laptop" (tsk_ab12)`. Timelines record both, so after a leak
+	// the owner can tell which actions the leaked credential took.
+	Via        AuthMethod
+	Credential string
+}
+
+// AuthMethod is how a caller authenticated.
+type AuthMethod string
+
+const (
+	AuthSession AuthMethod = "session" // a signed-in browser (local accounts)
+	AuthToken   AuthMethod = "token"   // an API token (local accounts)
+	AuthOIDC    AuthMethod = "oidc"
+	AuthDev     AuthMethod = "dev"
+)
+
+// Actor is who did something, for timeline reasons: the subject, and the credential when known.
+func (p Principal) Actor() string {
+	if p.Credential == "" {
+		return p.Subject
+	}
+	return p.Subject + " (" + p.Credential + ")"
 }

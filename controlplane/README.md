@@ -10,6 +10,7 @@ The subcommand picks the role:
 | `tensora metering` | Usage accounting: lifecycle events → hourly usage records, for quotas and fairness (no money) | A store | Built |
 | `tensora migrate` | Applies the SQL migrations embedded in the binary | Postgres, or a SQLite file (also migrated whenever it's opened) | Built |
 | `tensora dev` | API, controller, and usage accounting in one process with seeded tenants | Nothing | Built |
+| `tensora setup -email you@example.com` | Creates the first account, the machine's owner, for `TENSORA_AUTH_MODE=local`, with a trusted tenant and a quota on every class. Asks for the password without echoing it (or `-password-stdin`). Refused once an account exists. With `-reset-password`, sets a new password for an existing account and signs it out everywhere: the way back in, since there's no email reset. | A store | Built |
 | `tensora up` | Solo: everything in one process, with SQLite and the embedded dashboard | Nothing | Planned |
 | `tensora agent` | Node agent on each machine (Linux, macOS) | An enrolment token | Planned |
 
@@ -21,7 +22,8 @@ The same binary is a **CLI client** for a running API ([logs and transparency](.
 | `tensora events <id> [-json]` | Prints the full timeline: every state change and note, when, why, and by whom |
 | `tensora export <id> [-o file] [-f]` | Saves everything recorded about the workload to a JSON file, owner-only (`0600`). It never replaces an existing file without `-f`; `-o -` writes to stdout. Works for deleted workloads too. |
 
-The client reads `TENSORA_API_URL` (default `http://127.0.0.1:8080`), `TENSORA_TOKEN` (bearer token),
+The client reads `TENSORA_API_URL` (default `http://127.0.0.1:8080`), `TENSORA_TOKEN` (an API token from the
+dashboard's **API tokens** page, `tsk_…`),
 `TENSORA_DEV_TENANT` (dev mode), and `TENSORA_INSECURE_HTTP`. It won't send a token over plain `http://` to
 another machine unless `TENSORA_INSECURE_HTTP=true`. Errors print the API's message and request ID, and exit
 with status 1.
@@ -53,15 +55,30 @@ your laptop, use `TENSORA_CLUSTER_BACKEND=kubernetes`. It reads `KUBECONFIG`. Ne
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/healthz`, `/readyz` | Liveness, and readiness (checks the store) |
-| GET | `/v1/catalog` | GPU classes and images visible to the caller's tenant |
+| GET | `/v1/catalog` | Regions, and the classes (with accelerator and regions) and images (with each runtime's accelerators and server) visible to the caller's tenant |
 | GET | `/v1/workloads` | `{"items": [...]}`. `?include_deleted=true` adds deleted workloads. |
-| POST | `/v1/workloads` | `{name, kind, image_id, gpu_class, gpu_count, ssh_public_key?, model_uri?}` → 201. `kind` is `vm` (GPU VM, needs `ssh_public_key`), `notebook`, or `endpoint` (needs `model_uri`: `s3://` or `hf://`, with no credentials in it). |
+| POST | `/v1/workloads` | `{name, kind, image_id, gpu_class, gpu_count, region?, ssh_public_key?, model_uri?}` → 201. `region` defaults to the catalog's first. `kind` is `vm` (GPU VM, needs `ssh_public_key`), `notebook`, or `endpoint` (needs `model_uri`: `s3://` or `hf://`, with no credentials in it). |
 | GET | `/v1/workloads/{id}` | `?include_deleted=true` also finds a deleted workload |
 | POST | `/v1/workloads/{id}/stop` | 202; VMs and notebooks keep their disks |
 | POST | `/v1/workloads/{id}/start` | 202; re-checks quota |
 | DELETE | `/v1/workloads/{id}` | 202; idempotent |
 | GET | `/v1/workloads/{id}/events` | `{"items": [{id, from?, to, reason, at}]}`, the full timeline, oldest first. A note has `from` equal to `to`. Works after deletion. |
 | GET | `/v1/workloads/{id}/export` | The complete log as a JSON attachment (`tensora.workload-export/v1`): workload, inputs, timeline, usage, `output_logs`, and `redactions`. Works after deletion. |
+| GET | `/v1/auth/me` | Who's calling: `{subject, email, tenant, auth_mode}` |
+| POST | `/v1/auth/login` | Local mode. `{email, password}` → sets the session cookie (HttpOnly, SameSite=Strict, 7 days; over HTTPS, `Secure` and named `__Host-tensora_session`). Needs the `X-Tensora-CSRF` header, and HTTPS or this machine (see below). Repeated failures are slowed down (429 with `Retry-After`). |
+| POST | `/v1/auth/logout` | Local mode. Ends the session |
+| POST | `/v1/auth/password` | Local mode, signed-in browser only. `{current_password, new_password}`; signs out every other session → `{status, api_tokens_active}`, the API tokens that still work |
+| GET, POST | `/v1/tokens` | Local mode. List your API tokens, or create one (signed-in browser only): `{name, expires_in_days}` (0 = never) → 201 with `token`, shown only this once |
+| DELETE | `/v1/tokens/{id}` | Local mode. Revokes one of your tokens; another user's is 404 |
+
+**Authentication** (`TENSORA_AUTH_MODE`): `local` takes an API token (`Authorization: Bearer tsk_…`) or the
+dashboard's session cookie; with the cookie, a request that changes something must also send
+`X-Tensora-CSRF` (any value), which other sites can't add. Passwords and session cookies are accepted only
+over HTTPS or from this machine: behind a reverse proxy that terminates HTTPS, list it in
+`TENSORA_TRUSTED_PROXIES`, which also makes its `X-Forwarded-For` count for sign-in limits;
+`TENSORA_INSECURE_HTTP=true` allows plain HTTP from other machines on a network you trust. API tokens
+can't create tokens or change the password, and timelines name the credential that acted. `oidc` takes an
+identity provider's token, and `dev` trusts the `X-Dev-Tenant` header (dev only).
 
 Errors look like `{"error": {"code": "quota_exceeded", "message": "...", "request_id": "..."}}`, and every
 response carries an `X-Request-ID` header generated by the server. The design behind the
@@ -69,9 +86,9 @@ lifecycle, admission, and usage accounting is in [docs/architecture/control-plan
 
 **Planned** (ADR-0009, 0010, 0012, 0013, 0014; see the roadmap):
 
-- create takes `region`, `fallback`, and `fallback_after` (today every workload is in `local`)
+- create takes `fallback` and `fallback_after`
 - responses include `machine` (they already include `region` and, once admitted, `placed_class`)
-- new resources: machines (stored, not yet exposed), users and teams, API tokens, and sharing settings
+- new resources: machines (stored, not yet exposed), more users with invites and teams (Phase 2), and sharing settings
 - `POST` accepts `Idempotency-Key`, and 503s carry `Retry-After`
 
 ## Build

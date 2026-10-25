@@ -20,6 +20,8 @@ type CreateWorkloadInput struct {
 	GPUCount     int                 `json:"gpu_count"`
 	SSHPublicKey string              `json:"ssh_public_key,omitempty"` // vm only
 	ModelURI     string              `json:"model_uri,omitempty"`      // endpoint only
+	// Region is where it runs and its data stays (ADR-0009); empty means the catalog's default.
+	Region domain.Region `json:"region,omitempty"`
 }
 
 func invalid(format string, args ...any) error {

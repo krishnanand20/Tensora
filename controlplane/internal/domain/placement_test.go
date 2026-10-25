@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -32,9 +34,12 @@ func TestMachineValidate(t *testing.T) {
 		"unknown device":    func(m *Machine) { m.Accelerators = []Accelerator{{Kind: "tpu", Count: 1}} },
 		"zero devices":      func(m *Machine) { m.Accelerators = []Accelerator{{Kind: AcceleratorNVIDIA, Count: 0}} },
 		"name with a space": func(m *Machine) { m.Name = "my mac" },
+		"escape in model":   func(m *Machine) { m.Accelerators[0].Model = "M3\x1b[2J" },
+		"huge model text":   func(m *Machine) { m.Accelerators[0].Model = strings.Repeat("x", 101) },
 	}
 	for name, mutate := range tests {
 		m := good
+		m.Accelerators = slices.Clone(good.Accelerators)
 		mutate(&m)
 		if code, _ := CodeOf(m.Validate()); code != CodeInvalid {
 			t.Errorf("%s: Validate() code = %q, want %q", name, code, CodeInvalid)
@@ -42,20 +47,60 @@ func TestMachineValidate(t *testing.T) {
 	}
 }
 
-// Usage is accounted for what actually ran, so nothing is metered before it's placed (ADR-0010).
-func TestMeteredWorkloadsMustBePlaced(t *testing.T) {
+// Capacity is counted and usage accounted for what actually runs, so nothing is provisioning or
+// running before it's placed (ADR-0010).
+func TestWorkloadsArePlacedBeforeTheyHoldGPUs(t *testing.T) {
 	w := Workload{ID: uuid.New(), GPUClass: "l40s-48gb"}
 	for _, s := range AllStates() {
-		err := w.CheckPlaced(s)
-		if s.Metered() && err == nil {
-			t.Errorf("%s: an unplaced workload must not enter a metered state", s)
-		}
-		if !s.Metered() && err != nil {
-			t.Errorf("%s: %v", s, err)
+		needsPlacement := s == StateProvisioning || s.Metered()
+		if err := w.CheckPlaced(s); (err != nil) != needsPlacement {
+			t.Errorf("%s: CheckPlaced = %v, want an error: %v", s, err, needsPlacement)
 		}
 	}
 	w.PlacedClass = "l40s-48gb"
 	if err := w.CheckPlaced(StateRunning); err != nil {
 		t.Errorf("placed workload: %v", err)
+	}
+}
+
+func TestMachineCanHost(t *testing.T) {
+	owner, other := uuid.New(), uuid.New()
+	m := Machine{Name: "box", TenantID: owner, Region: RegionLocal, Sharing: SharingPrivate}
+	tests := []struct {
+		name    string
+		sharing SharingLevel
+		tenant  uuid.UUID
+		region  Region
+		ok      bool
+	}{
+		{"owner, same region", SharingPrivate, owner, RegionLocal, true},
+		{"owner, other region", SharingPrivate, owner, "eu-fra-1", false}, // rule 9
+		{"stranger, private", SharingPrivate, other, RegionLocal, false},
+		{"stranger, invite-only (no invite lists yet)", SharingInvite, other, RegionLocal, false},
+		{"stranger, community pool", SharingCommunity, other, RegionLocal, true},
+		{"stranger, community pool, other region", SharingCommunity, other, "eu-fra-1", false},
+	}
+	for _, tt := range tests {
+		m.Sharing = tt.sharing
+		err := m.CanHost(Workload{TenantID: tt.tenant, Region: tt.region})
+		if (err == nil) != tt.ok {
+			t.Errorf("%s: CanHost = %v, want ok=%v", tt.name, err, tt.ok)
+		}
+	}
+}
+
+func TestNormalizeEmail(t *testing.T) {
+	for in, want := range map[string]string{
+		"  Me@Example.COM ": "me@example.com",
+		"me@example":        "",
+		"@example.com":      "",
+		"me@@example.com":   "",
+		"me @example.com":   "",
+		"me@exa\nmple.com":  "",
+	} {
+		got, ok := NormalizeEmail(in)
+		if got != want || ok != (want != "") {
+			t.Errorf("NormalizeEmail(%q) = %q, %v; want %q", in, got, ok, want)
+		}
 	}
 }

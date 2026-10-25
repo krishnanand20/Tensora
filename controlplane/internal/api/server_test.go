@@ -40,7 +40,7 @@ func errCode(body map[string]any) any {
 	return e["code"]
 }
 
-const endpointBody = `{"name":"llm","kind":"endpoint","image_id":"vllm","gpu_class":"l40s-48gb","gpu_count":1,"model_uri":"hf://Qwen/Qwen2.5-0.5B-Instruct"}`
+const endpointBody = `{"name":"llm","kind":"endpoint","image_id":"openai-endpoint","gpu_class":"l40s-48gb","gpu_count":1,"model_uri":"hf://Qwen/Qwen2.5-0.5B-Instruct"}`
 
 func TestHealth(t *testing.T) {
 	h := newHandler(t)
@@ -120,5 +120,30 @@ func TestCatalogHidesInternalsAndInternalOnlyClasses(t *testing.T) {
 	}
 	if !ids("internal")["rtx4090-24gb"] {
 		t.Error("trusted tenant should see internal-only GPU class")
+	}
+	// Native macOS execution is for machines' owners only (rule 4).
+	if ids("acme")["apple-silicon-32gb"] || !ids("internal")["apple-silicon-32gb"] {
+		t.Error("Apple classes must be visible to trusted tenants only")
+	}
+
+	// Regions, accelerators, and what serves each image, but never a runtime's internal ref.
+	_, body := call(t, h, "GET", "/v1/catalog", "internal", "")
+	regions := body["regions"].([]any)
+	if len(regions) == 0 || regions[0].(map[string]any)["id"] != "local" {
+		t.Errorf("regions = %v; want local first", regions)
+	}
+	for _, g := range body["gpu_classes"].([]any) {
+		class := g.(map[string]any)
+		if class["accelerator"] == nil || len(class["regions"].([]any)) == 0 {
+			t.Errorf("class %v lacks accelerator or regions", class["id"])
+		}
+	}
+	for _, i := range body["images"].([]any) {
+		img := i.(map[string]any)
+		for _, r := range img["runtimes"].([]any) {
+			if _, ok := r.(map[string]any)["ref"]; ok {
+				t.Errorf("image %v leaks a runtime ref", img["id"])
+			}
+		}
 	}
 }

@@ -6,6 +6,7 @@
 | **Admission** | The controller's decision to place a pending or queued workload onto free capacity |
 | **Agent (node agent)** | `tensora agent`: runs on each machine (Linux or macOS), dials out to the control plane, reports inventory, and runs workloads through drivers (ADR-0013) |
 | **Allocation (usage accounting)** | Time a resource is reserved for a workload in a metered state, whatever its utilization. Used for quotas and fairness, never money (ADR-0011). |
+| **API token** | A credential for the CLI and scripts (`tsk_…`), made on the dashboard's API tokens page. Shown once, stored only as a hash, revocable, and optionally expiring. |
 | **Apple Silicon** | Apple's M-series chips. Their GPU is used through **Metal**, and CPU and GPU share **unified memory**. |
 | **CDI** | Containerized Data Importer (Datacenter): imports and clones VM disk images into PVCs (DataVolume, DataSource) |
 | **Cell** | One region's runtime (agent machines or a Kubernetes cluster), its storage, and its regional controller (ADR-0009) |
@@ -18,7 +19,8 @@
 | **Fallback** | An opt-in substitute (another GPU class, CPU, machine, replica, model, or region) used when the requested one is unavailable (ADR-0010) |
 | **Gateway API** | The Kubernetes ingress API that succeeds Ingress (Datacenter) |
 | **GGUF** | A code-free model file format used by llama.cpp. Allowed once the validator checks it (ADR-0013). |
-| **GPU class** | A catalog entry (`l40s-48gb`, `apple-m4-max-128gb`) mapping a GPU type to runtime resource names |
+| **GPU class** | A catalog entry for what a workload runs on (`l40s-48gb`, `apple-silicon-32gb`, `cpu-4c-16g`), with its accelerator kind and the regions offering it. CPU classes are classes too. |
+| **Runtime** | How a catalog image runs on a kind of accelerator: for an endpoint, vLLM on NVIDIA, MLX on Apple Silicon, or llama.cpp on anything |
 | **GPU Operator** | NVIDIA operator that installs the driver, toolkit, device plugins, vfio-manager, MIG manager, and DCGM (Datacenter) |
 | **Host** | The owner of a machine that runs workloads. Can see guest data on their own machine. |
 | **Inference gateway** | A proxy in front of endpoints: API keys, token counts, rate limits, and request failover (ADR-0010) |
